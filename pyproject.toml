@@ -1,0 +1,40 @@
+[project]
+name = "xiao-hei-vln"
+version = "0.1.0"
+description = "Team Xiao Hei's VLM stack for the CMU VLN Challenge 2026"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # numpy 1.26 is what the challenge docker base ships via apt; loose pin
+    # avoids fighting the system package during the docker build.
+    "numpy>=1.26",
+    "pydantic>=2.7",
+]
+
+[project.scripts]
+xiao-hei-dummy-vlm = "xiao_hei_vln.app.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xiao_hei_vln"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

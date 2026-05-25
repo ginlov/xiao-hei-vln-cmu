@@ -216,3 +216,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific ------------------------------------------------------
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor backups / swap files
+*~
+*.swp
+*.swo
+
+# Local docker-compose overrides (developer-only tweaks; not for submission)
+docker/compose.override.yml
+docker/compose.*.local.yml
+
+# ROS bag recordings — large binary blobs; record them outside the repo
+*.bag
+*.db3
+*.mcap
+
+# Local sim/run artifacts captured for debugging
+/tmp_runs/
+*.pcd
+
+# Claude Code per-project state (lives under /home/leo/.claude/, but ignore
+# anything that leaks into the worktree just in case)
+.claude/

@@ -1,0 +1,38 @@
+services:
+  system:
+    image: zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation
+    container_name: iros2026_system
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /etc/localtime:/etc/localtime:ro
+      - /dev/input:/dev/input
+      - /dev/bus/usb:/dev/bus/usb
+    stdin_open: true
+    tty: true
+
+  ai_module:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: xiao-hei/ai_module:latest
+    container_name: xiao_hei_ai_module
+    network_mode: host
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - PYTHONUNBUFFERED=1
+    # Bind-mount source for fast iteration (editable install picks up changes).
+    # Comment out for submission-style runs that should use only the baked image.
+    volumes:
+      - ../src:/opt/xiao_hei_vln/src:ro
+    stdin_open: true
+    tty: true
+    depends_on:
+      - system
+    restart: unless-stopped
