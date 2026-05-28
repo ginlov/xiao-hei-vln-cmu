@@ -244,3 +244,9 @@ docker/compose.*.local.yml
 # Claude Code per-project state (lives under /home/leo/.claude/, but ignore
 # anything that leaks into the worktree just in case)
 .claude/
+
+# generated_dataset: raw VLA-3D scenes (~2 GB, fetched separately) and
+# regeneratable training corpora / scene splits.
+generated_dataset/vla-3d/
+generated_dataset/*.jsonl
+generated_dataset/splits/
