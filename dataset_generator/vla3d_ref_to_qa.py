@@ -178,6 +178,7 @@ def main(out_path: Path, seed: int = 42) -> None:
         pct = 100 * c / len(rebalanced)
         print(f"  {r:<20} {c:>6}  ({pct:.1f}%)")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
         for p in rebalanced:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
@@ -192,5 +193,5 @@ def main(out_path: Path, seed: int = 42) -> None:
 
 if __name__ == "__main__":
     import sys
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "vla3d_ref.jsonl"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent.parent / "dataset" / "vla3d_ref.jsonl"
     main(out)

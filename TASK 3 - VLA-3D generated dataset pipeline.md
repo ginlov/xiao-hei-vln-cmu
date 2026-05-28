@@ -102,16 +102,16 @@ exploration strategy is finalized.
 
 ## How to reproduce
 
-The data is not committed. See `generated_dataset/README.md` for
-the full workflow:
+The data is not committed. See `dataset_generator/README.md` for
+the full workflow (generators write into a sibling `dataset/` dir):
 
 ```bash
-export VLA3D_ROOT=/path/to/VLA-3D/Unity
-uv run python generated_dataset/vla3d_ref_to_qa.py
-uv run python generated_dataset/vla3d_num_gen.py
-uv run python generated_dataset/vla3d_nested_gen.py
-uv run python generated_dataset/check_question_types.py
-uv run python generated_dataset/split_and_dump.py --kfold 5 --seed 42
+uv run python dataset_generator/download_vla3d.py   # fetch ~2 GB Unity subset
+uv run python dataset_generator/vla3d_ref_to_qa.py
+uv run python dataset_generator/vla3d_num_gen.py
+uv run python dataset_generator/vla3d_nested_gen.py
+uv run python dataset_generator/check_question_types.py
+uv run python dataset_generator/split_and_dump.py --kfold 5 --seed 42
 ```
 
 ## Open questions / next tasks

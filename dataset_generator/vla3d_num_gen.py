@@ -276,6 +276,7 @@ def main(out_path: Path, seed: int = 42) -> None:
     for tid, c in sorted(per_template_counts.items()):
         print(f"  {tid:<3} {c:>5}")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
         for p in all_pairs:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
@@ -295,5 +296,5 @@ def main(out_path: Path, seed: int = 42) -> None:
 
 if __name__ == "__main__":
     import sys
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "vla3d_num.jsonl"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent.parent / "dataset" / "vla3d_num.jsonl"
     main(out)

@@ -40,6 +40,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).parent
+DATASET_DIR = HERE.parent / "dataset"
 
 DEFAULT_SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
 OPTIONAL_SOURCES = ("phase1_raw.jsonl", "vla3d_hard.jsonl")
@@ -166,14 +167,14 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--kfold", type=int, default=0,
                     help="If >0, produce K-fold splits instead of a single one")
-    ap.add_argument("--out", type=Path, default=HERE / "splits")
+    ap.add_argument("--out", type=Path, default=DATASET_DIR / "splits")
     ap.add_argument("--include-legacy", action="store_true",
                     help="Also include phase1_raw.jsonl (template-based fallback)")
     args = ap.parse_args()
 
-    sources = [HERE / s for s in DEFAULT_SOURCES]
+    sources = [DATASET_DIR / s for s in DEFAULT_SOURCES]
     if args.include_legacy:
-        sources += [HERE / s for s in OPTIONAL_SOURCES]
+        sources += [DATASET_DIR / s for s in OPTIONAL_SOURCES]
 
     print("Loading source jsonl files:")
     pairs = load_pairs(sources)

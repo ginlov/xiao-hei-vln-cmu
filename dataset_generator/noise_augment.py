@@ -156,7 +156,7 @@ def _demo(scene_name: str = "loft", seed: int = 7) -> None:
     sc = load_vla_scene(scene_dir)
 
     # Pull one nested pair for this scene
-    nested = HERE / "vla3d_nested.jsonl"
+    nested = HERE.parent / "dataset" / "vla3d_nested.jsonl"
     pair = None
     if nested.exists():
         for line in nested.open():

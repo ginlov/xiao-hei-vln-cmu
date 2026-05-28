@@ -20,7 +20,7 @@ from collections import defaultdict
 
 # Where the VLA-3D Unity subset lives. Override with the VLA3D_ROOT env var
 # if you keep the data elsewhere. The data is not committed to this repo —
-# see generated_dataset/README.md for the download instructions.
+# see dataset_generator/README.md for the download instructions.
 DEFAULT_VLA3D_ROOT = Path(
     os.environ.get("VLA3D_ROOT", Path(__file__).parent / "vla-3d" / "Unity")
 )

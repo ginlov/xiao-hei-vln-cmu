@@ -1,7 +1,9 @@
-# generated_dataset
+# dataset_generator
 
 Generates the training Q&A corpus for Team Xiao Hei's VLM from the
-[VLA-3D](https://github.com/HaochenZ11/VLA-3D) Unity subset.
+[VLA-3D](https://github.com/HaochenZ11/VLA-3D) Unity subset. The
+generators live here; the data they emit lands in a sibling `dataset/`
+directory (gitignored).
 
 The 15 Unity scenes covered by VLA-3D are the same scenes the CMU VLN
 Challenge uses for training, with object IDs aligned 1:1 to the
@@ -25,18 +27,21 @@ contract in `src/xiao_hei_vln/messages/`:
 
 ## One-time setup: download VLA-3D
 
-The 2 GB raw data is **not committed**. Download it once:
+The 2 GB raw data is **not committed** (it isn't in the VLA-3D GitHub
+repo either — it lives on CMU AirLab's public bucket). Fetch it once
+with the helper, which downloads `Unity.zip` and unpacks it into the
+default location:
 
 ```bash
-# Option A — from the VLA-3D GitHub repo
-git clone https://github.com/HaochenZ11/VLA-3D /tmp/vla-3d
-# The 15 Unity scenes live under /tmp/vla-3d/Unity/
+uv run python dataset_generator/download_vla3d.py
+# → dataset_generator/vla-3d/Unity/<scene>/...   (the loader's default)
+```
 
-# Either move/symlink it into the default location ...
-mv /tmp/vla-3d/Unity generated_dataset/vla-3d/Unity
+To put it elsewhere and point the scripts at it instead:
 
-# ... or point the scripts at it via env var:
-export VLA3D_ROOT=/tmp/vla-3d/Unity
+```bash
+uv run python dataset_generator/download_vla3d.py --dest /data/vla-3d
+export VLA3D_ROOT=/data/vla-3d/Unity
 ```
 
 The pipeline expects each scene to be a directory under `$VLA3D_ROOT/`
@@ -51,26 +56,28 @@ containing at minimum:
 ## Generate the corpus
 
 ```bash
-uv run python generated_dataset/vla3d_ref_to_qa.py     # → vla3d_ref.jsonl     (~67 MB)
-uv run python generated_dataset/vla3d_num_gen.py       # → vla3d_num.jsonl     (~3 MB)
-uv run python generated_dataset/vla3d_nested_gen.py    # → vla3d_nested.jsonl  (~14 MB)
-uv run python generated_dataset/check_question_types.py # sanity check
+uv run python dataset_generator/vla3d_ref_to_qa.py     # → dataset/vla3d_ref.jsonl     (~67 MB)
+uv run python dataset_generator/vla3d_num_gen.py       # → dataset/vla3d_num.jsonl     (~3 MB)
+uv run python dataset_generator/vla3d_nested_gen.py    # → dataset/vla3d_nested.jsonl  (~14 MB)
+uv run python dataset_generator/check_question_types.py # sanity check
 ```
 
-All three generators are deterministic — seed `42` is fixed, so the
-same VLA-3D source data + this code reproduces byte-identical jsonl.
-The generated files are gitignored; regenerate or fetch them from a
-release artifact when training.
+Every generator writes into the sibling `dataset/` directory. All three
+are deterministic — seed `42` is fixed, so the same VLA-3D source data +
+this code reproduces byte-identical jsonl. The `dataset/` output is
+gitignored; regenerate or fetch it from a release artifact when training.
 
 ## Build train/val/test splits
 
 ```bash
 # Single 10/3/2 scene split
-uv run python generated_dataset/split_and_dump.py --seed 42
+uv run python dataset_generator/split_and_dump.py --seed 42
 
 # Or 5-fold scene-level cross-validation
-uv run python generated_dataset/split_and_dump.py --kfold 5 --seed 42
+uv run python dataset_generator/split_and_dump.py --kfold 5 --seed 42
 ```
+
+Splits are written under `dataset/splits/`.
 
 Scene-level (Group K-Fold) splitting prevents leakage: every sample
 from a given scene lands in the same split, so test accuracy reflects
@@ -79,7 +86,8 @@ true generalization to unseen scenes.
 ## Layout
 
 ```
-generated_dataset/
+dataset_generator/          # generator code (committed)
+├── download_vla3d.py       Fetch + unpack the VLA-3D Unity subset (~2 GB) into vla-3d/
 ├── vla3d_loader.py         Unified VLA-3D scene loader (objects, scene_graph, ref statements)
 ├── vla3d_ref_to_qa.py      Rewrite VLA-3D ref statements → 6,730 "Find …" pairs
 ├── vla3d_num_gen.py        8 numerical templates (count, color-conditioned, refusal)
@@ -87,7 +95,13 @@ generated_dataset/
 ├── noise_augment.py        Perception-noise library (drop/swap/jitter, target-protected)
 ├── split_and_dump.py       Scene-level single split + K-Fold
 ├── check_question_types.py CI sanity: jsonl `type` ↔ runtime classify_question()
-└── vla-3d/Unity/           VLA-3D source data (NOT committed; download per above)
+└── vla-3d/Unity/           VLA-3D source data — INPUT (NOT committed; download per above)
+
+dataset/                    # generated output (NOT committed)
+├── vla3d_ref.jsonl
+├── vla3d_num.jsonl
+├── vla3d_nested.jsonl
+└── splits/                 train/val/test (or fold_*/) + manifest.json
 ```
 
 ## Integrating into a responder

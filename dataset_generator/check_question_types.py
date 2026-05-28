@@ -22,6 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).parent
+DATASET_DIR = HERE.parent / "dataset"
 SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
 
 
@@ -42,7 +43,7 @@ def main() -> int:
     examples: list[tuple[str, str, str]] = []
 
     for fn in SOURCES:
-        path = HERE / fn
+        path = DATASET_DIR / fn
         if not path.exists():
             print(f"  [skip] {fn} (not found)")
             continue

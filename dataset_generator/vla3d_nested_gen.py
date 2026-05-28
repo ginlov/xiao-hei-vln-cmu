@@ -266,7 +266,7 @@ def generate_scene(sc: VLAScene) -> tuple[list[dict], dict]:
     return out, dict(counter)
 
 
-def main(out_path: Path = HERE / "vla3d_nested.jsonl") -> None:
+def main(out_path: Path = HERE.parent / "dataset" / "vla3d_nested.jsonl") -> None:
     scenes = load_all_vla_scenes()
     print(f"Loaded {len(scenes)} scenes\n")
 
@@ -290,6 +290,7 @@ def main(out_path: Path = HERE / "vla3d_nested.jsonl") -> None:
     type_counts = C(p["type"] for p in all_pairs)
     print(f"\nBy type: {dict(type_counts)}")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
         for p in all_pairs:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
