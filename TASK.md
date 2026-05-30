@@ -32,7 +32,7 @@ This task includes three phases:
 - Plan of building a dummy system for this repo so that I get use it from now.
 - Implement it and write report on how to use, how to build, how to integrate VLM later and how to replace the ai module container in challenge repo by that container.
 
-## Task 3 - Integrate Qwen3.5VL for testing
+## Task 4 - Integrate Qwen3.5VL for testing
 This task is to integrate Qwen3.5VL into the model to get initial results.
 
 This task includes three phases:
@@ -41,7 +41,7 @@ This task includes three phases:
 - Implement that serving service.
 - Design the prompt for the type one question which is numerical question, when we receive the question, Qwen model need to return the waypoint for the robot to navigate and also at the end, answer that numerical questions.
 
-### Task 3.1
+### Task 4.1
 It seems like the dependencies of vllm are too different from the ROS system. Setting up a separate container for vllm only is better approach. For this task.
 - Let set up a new container for Qwen3.5 VL only.
 - Integrate the system so that we just need to start all in one.
