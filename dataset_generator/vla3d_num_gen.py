@@ -1,8 +1,8 @@
 """Derive numerical (counting) Q&A pairs from VLA-3D scene_graph + colors.
 
-We use the same N1–N5 templates as our earlier Phase 1, but powered by
-VLA-3D's richer data: 8 relation types in `scene_graph.json` and 3 dominant
-colors per object in `object_result.csv`.
+We start from the N1–N5 templates of our earlier Phase 1 and extend them
+to N1–N8 here, powered by VLA-3D's richer data: 8 relation types in
+`scene_graph.json` and 3 dominant colors per object in `object_result.csv`.
 
 Templates:
 
@@ -27,7 +27,11 @@ from pathlib import Path
 
 from vla3d_loader import load_all_vla_scenes, render_object_list, VLAScene, VLAObject
 
-random.seed(42)
+# Randomness is threaded explicitly through `rng = random.Random(seed)` in
+# `main()` → `generate_scene` → `emit_refusal`. We deliberately do NOT call
+# `random.seed(...)` at module scope: that would mutate the global RNG at
+# import time, making byte-identical reproducibility depend on import order
+# in any module that does `from vla3d_num_gen import ...`.
 
 # ── Filters & caps ────────────────────────────────────────────────────────────
 
@@ -175,7 +179,7 @@ def emit_total_count(sc: VLAScene) -> list[dict]:
     return out
 
 
-def emit_refusal(sc: VLAScene) -> list[dict]:
+def emit_refusal(sc: VLAScene, rng: random.Random) -> list[dict]:
     """N5: ask for a category we KNOW is not in the scene → answer 0.
 
     We mine plausible-sounding nouns from OTHER scenes that DON'T appear here.
@@ -188,7 +192,7 @@ def emit_refusal(sc: VLAScene) -> list[dict]:
         "trophy", "globe", "fan", "projector", "printer",
     ]
     available = [c for c in candidates if c not in present]
-    random.shuffle(available)
+    rng.shuffle(available)
     ol = render_object_list(sc)
     out = []
     for label in available[:MAX_REFUSALS_PER_SCENE]:
@@ -243,7 +247,7 @@ def generate_scene(sc: VLAScene, rng: random.Random) -> list[dict]:
     bucket["N2"] = emit_relation_count(sc, "N2", "near", "near")
     bucket["N3"] = emit_relation_count(sc, "N3", "above", "above")
     bucket["N4"] = emit_total_count(sc)
-    bucket["N5"] = emit_refusal(sc)
+    bucket["N5"] = emit_refusal(sc, rng)
     bucket["N6"] = emit_color_on(sc)
     bucket["N7"] = emit_relation_count(sc, "N7", "below", "below")
     bucket["N8"] = emit_relation_count(sc, "N8", "hanging_on", "hanging on")

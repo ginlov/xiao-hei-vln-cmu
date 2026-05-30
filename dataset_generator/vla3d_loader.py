@@ -240,11 +240,15 @@ def load_vla_scene(scene_dir: Path | str) -> VLAScene:
 def render_object(o: VLAObject) -> str:
     """One-line text record matching the runtime `object_list.txt` schema:
 
-        id  cx cy cz  lx ly lz  heading  label
+        id  cx cy cz  lx ly lz  heading  "label"
+
+    The label is double-quoted so multi-word labels (e.g. ``potted plant``)
+    round-trip through ``xiao_hei_vln.dummy.fixtures.read_object_list``,
+    which requires a quoted label.
     """
     return (
         f"{o.id} {o.x:.2f} {o.y:.2f} {o.z:.2f} "
-        f"{o.lx:.2f} {o.ly:.2f} {o.lz:.2f} {o.heading:.2f} {o.raw_label}"
+        f"{o.lx:.2f} {o.ly:.2f} {o.lz:.2f} {o.heading:.2f} \"{o.raw_label}\""
     )
 
 

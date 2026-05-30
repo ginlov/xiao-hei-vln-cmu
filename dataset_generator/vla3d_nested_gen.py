@@ -20,14 +20,16 @@ from __future__ import annotations
 
 import json
 import math
-import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from vla3d_loader import load_all_vla_scenes, render_object_list, VLAScene, VLAObject
 from vla3d_num_gen import pluralize, BAD_LABELS
 
-random.seed(42)
+# No RNG is needed: this generator is deterministic by traversal — it walks
+# scenes / regions / relationships / labels in insertion order (dicts preserve
+# it in Python 3.7+) and accepts/rejects candidates by geometric thresholds.
+# Same VLA-3D input → byte-identical jsonl, no seed argument needed.
 
 HERE = Path(__file__).parent
 

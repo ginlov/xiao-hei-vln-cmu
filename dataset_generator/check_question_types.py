@@ -39,6 +39,7 @@ def runtime_classifier(text: str) -> str:
 def main() -> int:
     total = 0
     mismatches = 0
+    loaded = 0
     buckets: Counter[tuple[str, str]] = Counter()
     examples: list[tuple[str, str, str]] = []
 
@@ -47,6 +48,7 @@ def main() -> int:
         if not path.exists():
             print(f"  [skip] {fn} (not found)")
             continue
+        loaded += 1
         for line in path.open():
             line = line.strip()
             if not line:
@@ -61,7 +63,7 @@ def main() -> int:
                 if len(examples) < 10:
                     examples.append((ours, theirs, p["question"]))
 
-    print(f"Checked {total} pairs across {len(SOURCES)} files")
+    print(f"Checked {total} pairs across {loaded} files")
     print(f"Mismatches: {mismatches}")
     print("\n(ours, runtime) bucket counts:")
     for (ours, theirs), n in sorted(buckets.items()):
