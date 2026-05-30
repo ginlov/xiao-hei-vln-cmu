@@ -1,4 +1,5 @@
 services:
+  # Challenge simulator (unmodified official image).
   system:
     image: zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation
     container_name: iros2026_system
@@ -17,6 +18,7 @@ services:
     stdin_open: true
     tty: true
 
+  # Our AI module (dummy responder, no GPU needed).
   ai_module:
     build:
       context: ..
@@ -31,8 +33,6 @@ services:
       - PYTHONUNBUFFERED=1
       - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
       - XIAO_HEI_VLM_TICK_HZ
-    # Bind-mount source for fast iteration (editable install picks up changes).
-    # Comment out for submission-style runs that should use only the baked image.
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
     stdin_open: true

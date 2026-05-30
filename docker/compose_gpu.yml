@@ -1,4 +1,5 @@
 services:
+  # Challenge simulator (unmodified official image).
   system:
     image: zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation
     container_name: iros2026_system
@@ -57,6 +58,7 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Our AI module — replaces the challenge's iros2026_ai_module.
   ai_module:
     build:
       context: ..
@@ -73,8 +75,6 @@ services:
       - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
       - XIAO_HEI_QWEN_MODEL
       - XIAO_HEI_VLM_TICK_HZ
-    # Bind-mount source for fast iteration (editable install picks up changes).
-    # Comment out for submission-style runs that should use only the baked image.
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
     stdin_open: true
