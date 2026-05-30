@@ -28,16 +28,32 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        # Set to "qwen" to bake vLLM + Pillow + huggingface-hub into the image
+        # for the Qwen3.5 responder. Leave empty for the dummy-only image.
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
     environment:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - PYTHONUNBUFFERED=1
-    # Bind-mount source for fast iteration (editable install picks up changes).
-    # Comment out for submission-style runs that should use only the baked image.
+      # Pick the responder at runtime: `dummy` (default) or `qwen`.
+      - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
+      # Forward HF / Qwen knobs so compose users can tune without rebuilding.
+      - HF_HOME=/root/.cache/huggingface
+      - HUGGING_FACE_HUB_TOKEN
+      - XIAO_HEI_QWEN_MODEL
+      - XIAO_HEI_QWEN_DTYPE
+      - XIAO_HEI_QWEN_MAX_MODEL_LEN
+      - XIAO_HEI_QWEN_GPU_MEM_UTIL
+      - XIAO_HEI_VLM_TICK_HZ
     volumes:
+      # Bind-mount source for fast iteration (editable install picks up changes).
+      # Comment out for submission-style runs that should use only the baked image.
       - ../src:/opt/xiao_hei_vln/src:ro
+      # Persist downloaded Qwen weights across rebuilds.
+      - hf_cache:/root/.cache/huggingface
     stdin_open: true
     tty: true
     depends_on:
@@ -50,3 +66,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+volumes:
+  hf_cache: {}

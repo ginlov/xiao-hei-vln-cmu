@@ -1,18 +1,39 @@
-"""rclpy entry point: dummy VLM driving the Task-1 stack at 2 Hz.
+"""rclpy entry point: drives the Task-1 stack at 2 Hz with the configured responder.
 
-Replace `DummyResponder` with the real model when it's ready — every
-other moving part stays put.
+Pick the responder with `XIAO_HEI_RESPONDER`:
+
+  - `dummy` (default) — the deterministic port of `dummyVLM.cpp`. No GPU.
+  - `qwen`            — Qwen3.5 via an in-process vLLM engine (see
+                        `docs/task3_phase1_framework.md`). Requires the
+                        `[qwen]` optional install + a CUDA GPU.
 """
 
 from __future__ import annotations
 
 import os
 
-from xiao_hei_vln.dummy import DummyResponder
 from xiao_hei_vln.messages.common import Stamp
 from xiao_hei_vln.sync import LatestCache
 
 TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
+RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
+
+
+def _build_responder(name: str):
+    if name == "dummy":
+        from xiao_hei_vln.dummy import DummyResponder
+
+        return DummyResponder()
+    if name == "qwen":
+        from xiao_hei_vln.qwen import QwenConfig, QwenEngine, QwenResponder
+
+        config = QwenConfig.from_env()
+        engine = QwenEngine(config)
+        engine.warmup()
+        return QwenResponder(engine, config)
+    raise ValueError(
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
+    )
 
 
 def main() -> None:
@@ -24,12 +45,13 @@ def main() -> None:
     from xiao_hei_vln.adapters.ros.subscribers import bind_subscribers
 
     rclpy.init()
-    node: Node = rclpy.create_node("xiao_hei_dummy_vlm")
+    node_name = "xiao_hei_qwen_vlm" if RESPONDER_NAME == "qwen" else "xiao_hei_dummy_vlm"
+    node: Node = rclpy.create_node(node_name)
 
     cache = LatestCache()
     subs = bind_subscribers(node, cache)
     publisher = VLMOutputPublisher(node)
-    responder = DummyResponder()
+    responder = _build_responder(RESPONDER_NAME)
 
     state = {"tick_id": 0, "last_question_text": None}
 
@@ -60,7 +82,8 @@ def main() -> None:
     period_s = 1.0 / TICK_HZ
     node.create_timer(period_s, tick)
     node.get_logger().info(
-        f"xiao_hei_dummy_vlm ready (tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers)",
+        f"{node_name} ready (responder={RESPONDER_NAME}, "
+        f"tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers)",
     )
 
     try:

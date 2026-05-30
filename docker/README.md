@@ -101,10 +101,35 @@ The container will auto-start the VLM on `docker compose up` — no
 need to `docker exec` and `ros2 launch` like the reference C++ dummy
 required.
 
-## Replacing the dummy with the real VLM later
+## Switching responders (Qwen3.5)
 
-Only **`src/xiao_hei_vln/app/main.py`** needs to change: swap
-`DummyResponder()` for the real model. Everything else stays put:
+The container exposes both responders behind environment variables —
+no code change needed:
+
+```bash
+# Build the heavier image with vLLM + PIL + huggingface-hub
+XIAO_HEI_EXTRA=qwen docker compose -f docker/compose_gpu.yml build ai_module
+
+# Bring it up running the Qwen3.5 responder
+XIAO_HEI_RESPONDER=qwen docker compose -f docker/compose_gpu.yml up -d
+```
+
+Defaults: `XIAO_HEI_EXTRA=""` (dummy image, fast build) and
+`XIAO_HEI_RESPONDER=dummy`. The compose file forwards
+`XIAO_HEI_QWEN_MODEL`, `XIAO_HEI_QWEN_DTYPE`,
+`XIAO_HEI_QWEN_MAX_MODEL_LEN`, `XIAO_HEI_QWEN_GPU_MEM_UTIL`, and
+`HUGGING_FACE_HUB_TOKEN` so you can swap the model or quantization
+without rebuilding. Weights download to the named `hf_cache` volume
+and persist across rebuilds.
+
+See `docs/task3_phase1_framework.md` for the rationale behind the
+defaults (Qwen3.5-4B bf16, in-process vLLM, guided JSON decoding).
+
+## Replacing with another VLM later
+
+Only **`src/xiao_hei_vln/app/main.py`** needs to change: add a new
+branch to `_build_responder()` returning anything that implements
+`respond / is_done / reset`. Everything else stays put:
 
 - The topic contract (`bind_subscribers`, `VLMOutputPublisher`)
 - `LatestCache` and the 2 Hz tick
