@@ -9,7 +9,7 @@ from xiao_hei_vln.qwen import QwenConfig
 
 def test_defaults_match_phase1_plan() -> None:
     cfg = QwenConfig()
-    assert cfg.model == "Qwen/Qwen3.5-4B-Instruct"
+    assert cfg.model == "/models/Qwen3.5-4B"
     assert cfg.dtype == "bfloat16"
     assert cfg.max_model_len == 4096
     assert cfg.temperature == 0.0

@@ -16,7 +16,7 @@ class QwenConfig:
     """Engine + responder knobs."""
 
     # --- model / vLLM engine ----------------------------------------------
-    model: str = "Qwen/Qwen3.5-4B-Instruct"
+    model: str = "/models/Qwen3.5-4B"
     dtype: str = "bfloat16"
     max_model_len: int = 4096
     gpu_memory_utilization: float = 0.85
