@@ -23,18 +23,21 @@ COPY src ./src
 #   - "qwen":       installs vLLM + Pillow + huggingface-hub for the Qwen3.5
 #                   responder. Heavy (~5 GB after CUDA wheels). Requires a
 #                   CUDA-capable host at runtime; see docs/task3_phase1_framework.md.
-# Some apt-installed packages lack RECORD files, so pip cannot uninstall them
-# when vLLM pulls in newer versions. Delete their dist-info dirs manually,
-# then let pip install fresh copies with proper metadata.
+# The base image has many apt-installed Python packages without RECORD files,
+# so pip cannot uninstall them when vLLM pulls newer versions. Nuke every
+# offender from dist-packages before pip runs. Safe — it's a container and
+# pip will reinstall whatever it needs with proper metadata.
 ARG XIAO_HEI_EXTRA=""
 RUN if [ -n "$XIAO_HEI_EXTRA" ]; then \
         rm -rf /usr/lib/python3/dist-packages/packaging* \
                /usr/lib/python3/dist-packages/setuptools* \
                /usr/lib/python3/dist-packages/pkg_resources* \
+               /usr/lib/python3/dist-packages/_distutils_hack* \
                /usr/lib/python3/dist-packages/Pillow* \
                /usr/lib/python3/dist-packages/PIL* \
                /usr/lib/python3/dist-packages/sympy* \
-               /usr/lib/python3/dist-packages/mpmath* && \
+               /usr/lib/python3/dist-packages/mpmath* \
+               /usr/lib/python3/dist-packages/numpy* && \
         python3 -m pip install --no-cache-dir --break-system-packages -e ".[${XIAO_HEI_EXTRA}]"; \
     else \
         python3 -m pip install --no-cache-dir --break-system-packages -e .; \
