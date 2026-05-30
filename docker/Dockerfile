@@ -23,8 +23,14 @@ COPY src ./src
 #   - "qwen":       installs vLLM + Pillow + huggingface-hub for the Qwen3.5
 #                   responder. Heavy (~5 GB after CUDA wheels). Requires a
 #                   CUDA-capable host at runtime; see docs/task3_phase1_framework.md.
+# Some apt-installed packages (packaging, pillow, mpmath, sympy, setuptools) lack
+# RECORD files, which causes pip to fail when vLLM tries to upgrade them. Force-
+# reinstalling them first creates the RECORD, so pip can then upgrade normally.
 ARG XIAO_HEI_EXTRA=""
 RUN if [ -n "$XIAO_HEI_EXTRA" ]; then \
+        python3 -m pip install --no-cache-dir --break-system-packages \
+            --force-reinstall --no-deps \
+            packaging setuptools pillow sympy mpmath && \
         python3 -m pip install --no-cache-dir --break-system-packages -e ".[${XIAO_HEI_EXTRA}]"; \
     else \
         python3 -m pip install --no-cache-dir --break-system-packages -e .; \
