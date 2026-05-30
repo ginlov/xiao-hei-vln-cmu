@@ -1,14 +1,17 @@
-"""vLLM-backed inference engine for Qwen3.5.
+"""Inference engines for Qwen3.5.
 
-`QwenEngine` lazily imports `vllm`, `transformers`, and `PIL` only when
-constructed, so this module can be imported in test / dev / dummy
-environments without those packages installed. Tests inject an
-`EngineProtocol`-shaped fake into `QwenResponder` instead of building
-a real engine.
+Two implementations of `EngineProtocol`:
 
-Outputs are decoded with vLLM `guided_decoding=GuidedDecodingParams(json=...)`
-against the `VLMOutput` JSON schema, so the model's emission is always
-parseable by `parse_vlm_output()`.
+- `HTTPQwenEngine` (recommended) — calls a vLLM OpenAI-compatible HTTP
+  server running as a docker-compose sidecar. The ai_module image only
+  needs the lightweight `openai` + `pillow` packages. No CUDA deps.
+- `QwenEngine` (legacy) — loads vLLM in-process. Requires `pip install
+  .[qwen-local]` and a CUDA GPU in the same container. Kept for
+  single-process local-GPU development without docker-compose.
+
+Both are lazy-imported — this module can be imported in test / dev /
+dummy environments without those packages installed. Tests inject an
+`EngineProtocol`-shaped fake into `QwenResponder`.
 """
 
 from __future__ import annotations
@@ -107,6 +110,127 @@ class QwenEngine:
             tokenize=False,
             add_generation_prompt=True,
         )
+
+
+class HTTPQwenEngine:
+    """Calls a vLLM OpenAI-compatible HTTP server (sidecar container).
+
+    The ai_module image needs only `openai` + `pillow` — no vLLM, torch,
+    or CUDA wheels. The vLLM server runs in a separate container built
+    from the official `vllm/vllm-openai` image.
+    """
+
+    def __init__(self, config: QwenConfig, *, client: Any | None = None) -> None:
+        self._config = config
+        if config.vllm_base_url is None:
+            raise ValueError("HTTPQwenEngine requires config.vllm_base_url to be set")
+
+        if client is not None:
+            self._client = client
+        else:
+            from openai import OpenAI  # type: ignore[import-not-found]
+
+            self._client = OpenAI(
+                base_url=config.vllm_base_url,
+                api_key="EMPTY",
+                timeout=60.0,
+            )
+        self._model = config.model
+        self._response_format: dict[str, Any] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "VLMOutput",
+                "schema": _VLM_OUTPUT_SCHEMA,
+            },
+        }
+
+    # --- public surface ---------------------------------------------------
+
+    def warmup(self) -> None:
+        """Block until the vLLM server is reachable, then run a test inference."""
+        import logging
+        import time
+
+        log = logging.getLogger(__name__)
+        max_wait = 300
+        interval = 5
+        elapsed = 0
+
+        while elapsed < max_wait:
+            try:
+                self._client.models.list()
+                break
+            except Exception:
+                log.info(
+                    "Waiting for vLLM server at %s… (%ds)",
+                    self._config.vllm_base_url,
+                    elapsed,
+                )
+                time.sleep(interval)
+                elapsed += interval
+        else:
+            raise RuntimeError(
+                f"vLLM server at {self._config.vllm_base_url} "
+                f"not ready after {max_wait}s",
+            )
+
+        self.infer(
+            system="warmup",
+            user_text='{"kind":"numerical","value":0}',
+            image=None,
+        )
+        log.info("HTTPQwenEngine warmup complete")
+
+    def infer(self, system: str, user_text: str, image: ImageFrame | None) -> VLMOutput:
+        messages = self._build_messages(system, user_text, image)
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            temperature=self._config.temperature,
+            max_tokens=self._config.max_output_tokens,
+            seed=self._config.seed,
+            response_format=self._response_format,
+        )
+        text = response.choices[0].message.content
+        return parse_vlm_output(json.loads(text))
+
+    # --- internals --------------------------------------------------------
+
+    def _build_messages(
+        self,
+        system: str,
+        user_text: str,
+        image: ImageFrame | None,
+    ) -> list[dict[str, Any]]:
+        user_content: list[dict[str, Any]] = []
+        if image is not None:
+            data_url = _image_frame_to_data_url(
+                image,
+                long_edge=self._config.image_long_edge,
+            )
+            user_content.append(
+                {"type": "image_url", "image_url": {"url": data_url}},
+            )
+        user_content.append({"type": "text", "text": user_text})
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+
+
+# --- image helpers --------------------------------------------------------
+
+
+def _image_frame_to_data_url(frame: ImageFrame, *, long_edge: int) -> str:
+    """Convert an `ImageFrame` (BGR8 bytes) to a base64 JPEG data URL."""
+    import base64
+    import io
+
+    pil_image = _image_frame_to_pil(frame, long_edge=long_edge)
+    buf = io.BytesIO()
+    pil_image.save(buf, format="JPEG", quality=90)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
 
 
 def _image_frame_to_pil(frame: ImageFrame | None, *, long_edge: int) -> PILImage | None:

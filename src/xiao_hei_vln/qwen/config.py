@@ -22,6 +22,11 @@ class QwenConfig:
     gpu_memory_utilization: float = 0.85
     trust_remote_code: bool = True
 
+    # --- sidecar (HTTPQwenEngine) -----------------------------------------
+    # When set, the responder calls vLLM over HTTP instead of loading the
+    # engine in-process. Expected value: "http://localhost:8000/v1".
+    vllm_base_url: str | None = None
+
     # --- sampling ---------------------------------------------------------
     temperature: float = 0.0
     max_output_tokens: int = 256
@@ -40,7 +45,9 @@ class QwenConfig:
     def from_env(cls) -> QwenConfig:
         """Build a config from `XIAO_HEI_QWEN_*` env vars (all optional)."""
         env = os.environ.get
+        raw_url = env("XIAO_HEI_QWEN_VLLM_BASE_URL", "") or None
         return cls(
+            vllm_base_url=raw_url,
             model=env("XIAO_HEI_QWEN_MODEL", cls.model),
             dtype=env("XIAO_HEI_QWEN_DTYPE", cls.dtype),
             max_model_len=int(env("XIAO_HEI_QWEN_MAX_MODEL_LEN", str(cls.max_model_len))),

@@ -3,9 +3,10 @@
 Pick the responder with `XIAO_HEI_RESPONDER`:
 
   - `dummy` (default) — the deterministic port of `dummyVLM.cpp`. No GPU.
-  - `qwen`            — Qwen3.5 via an in-process vLLM engine (see
-                        `docs/task3_phase1_framework.md`). Requires the
-                        `[qwen]` optional install + a CUDA GPU.
+  - `qwen`            — Qwen3.5 via vLLM. By default talks to a vLLM
+                        HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
+                        Falls back to in-process vLLM when the URL is
+                        unset (`pip install .[qwen-local]` + CUDA GPU).
 """
 
 from __future__ import annotations
@@ -25,10 +26,10 @@ def _build_responder(name: str):
 
         return DummyResponder()
     if name == "qwen":
-        from xiao_hei_vln.qwen import QwenConfig, QwenEngine, QwenResponder
+        from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
 
         config = QwenConfig.from_env()
-        engine = QwenEngine(config)
+        engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
         engine.warmup()
         return QwenResponder(engine, config)
     raise ValueError(

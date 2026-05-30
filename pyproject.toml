@@ -12,9 +12,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy GPU-only stack for the Qwen3.5 responder; see docs/task3_phase1_framework.md.
-# Kept optional so dev installs, CI, and the dummy-responder docker path stay lean.
+# Lightweight HTTP client for the vLLM sidecar (default Qwen path).
 qwen = [
+    "openai>=1.30",
+    "pillow>=10",
+]
+# Heavy in-process vLLM engine. Requires CUDA GPU in the same process.
+# Use this only for single-process local development without docker-compose.
+qwen-local = [
     "vllm>=0.7,<0.10",
     "pillow>=10",
     "huggingface-hub>=0.24",

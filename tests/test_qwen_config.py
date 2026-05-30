@@ -14,6 +14,7 @@ def test_defaults_match_phase1_plan() -> None:
     assert cfg.max_model_len == 4096
     assert cfg.temperature == 0.0
     assert cfg.image_long_edge == 1280
+    assert cfg.vllm_base_url is None
 
 
 def test_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,3 +40,15 @@ def test_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.max_ticks_per_question == 50
     assert cfg.seed == 123
     assert cfg.trust_remote_code is False
+
+
+def test_from_env_loads_vllm_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XIAO_HEI_QWEN_VLLM_BASE_URL", "http://localhost:8000/v1")
+    cfg = QwenConfig.from_env()
+    assert cfg.vllm_base_url == "http://localhost:8000/v1"
+
+
+def test_empty_vllm_base_url_treated_as_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XIAO_HEI_QWEN_VLLM_BASE_URL", "")
+    cfg = QwenConfig.from_env()
+    assert cfg.vllm_base_url is None

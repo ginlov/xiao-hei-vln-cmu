@@ -40,3 +40,8 @@ This task includes three phases:
 - Research the proper library, framework to run Qwen3.5 VL for this challenge since we are gonna receive data frequently depends on the frequency we set.
 - Implement that serving service.
 - Design the prompt for the type one question which is numerical question, when we receive the question, Qwen model need to return the waypoint for the robot to navigate and also at the end, answer that numerical questions.
+
+### Task 3.1
+It seems like the dependencies of vllm are too different from the ROS system. Setting up a separate container for vllm only is better approach. For this task.
+- Let set up a new container for Qwen3.5 VL only.
+- Integrate the system so that we just need to start all in one.
