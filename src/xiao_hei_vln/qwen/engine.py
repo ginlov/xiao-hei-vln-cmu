@@ -59,7 +59,7 @@ class QwenEngine:
             gpu_memory_utilization=self._config.gpu_memory_utilization,
             trust_remote_code=self._config.trust_remote_code,
             seed=self._config.seed if self._config.seed is not None else 0,
-            limit_mm_per_prompt={"image": 1},
+            limit_mm_per_prompt={"image": 4},
         )
         self._processor = AutoProcessor.from_pretrained(
             self._config.model,

@@ -37,7 +37,6 @@ services:
     volumes:
       - hf_cache:/root/.cache/huggingface
     command:
-      - "--model"
       - "${XIAO_HEI_QWEN_MODEL:-Qwen/Qwen3.5-4B-Instruct}"
       - "--dtype"
       - "${XIAO_HEI_QWEN_DTYPE:-bfloat16}"
@@ -47,7 +46,7 @@ services:
       - "${XIAO_HEI_QWEN_GPU_MEM_UTIL:-0.85}"
       - "--trust-remote-code"
       - "--limit-mm-per-prompt"
-      - "image=1"
+      - '{"image": 4}'
       - "--port"
       - "8000"
     deploy:
