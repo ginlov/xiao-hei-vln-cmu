@@ -36,6 +36,7 @@ replay = [
 # as an alias so the Task-2 docker image / docs keep working.
 xiao-hei-vlm = "xiao_hei_vln.app.main:main"
 xiao-hei-dummy-vlm = "xiao_hei_vln.app.main:main"
+xiao-hei-eval = "xiao_hei_vln.evaluator.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
