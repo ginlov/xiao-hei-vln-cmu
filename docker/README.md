@@ -145,6 +145,7 @@ compose), every VLM tick is recorded for post-run debugging:
 vlm_logs/
   session_20260530_143022/
     session.json                  # Config snapshot (model, tick_hz, etc.)
+    predictions.jsonl             # Final answer per question (for offline eval)
     q_001_how_many_chairs/
       ticks.jsonl                 # One JSON line per tick
       images/
@@ -180,6 +181,12 @@ open vlm_logs/session_20260530_143022/q_001_*/report.html
 
 # Single question report
 python scripts/generate_report.py vlm_logs/session_*/ -q chairs
+
+# Offline evaluation (after a run)
+python -m xiao_hei_vln.eval_pipeline \
+    --gt dataset/vla3d_num.jsonl \
+    --pred vlm_logs/session_20260530_143022/predictions.jsonl \
+    --out results.json
 ```
 
 To disable logging, unset the env var:
