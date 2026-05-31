@@ -90,3 +90,22 @@ vlm_logs/
 - **Phase 1 — VLMLogger core**: implement `VLMLogger` class that writes `session.json` on init, appends to `ticks.jsonl` per tick, saves JPEG images, and saves lidar/terrain point clouds as `.npy` files. Toggled by `XIAO_HEI_VLM_LOG_DIR` env var.
 - **Phase 2 — Integration**: wire the logger into `QwenResponder` so it captures prompts, input metadata, output, and latency. Add `log_dir` passthrough from `compose_gpu.yml` with a bind-mount volume.
 - **Phase 3 — HTML report generator**: `scripts/generate_report.py` produces a self-contained HTML report per question with camera playback (JS slider), pose trajectory + waypoints (matplotlib), sensor BEV scatter plot, expandable per-tick I/O table, and latency chart. Works per-question or all questions in a session. Text-only replay via `scripts/replay_session.py` also available.
+
+## Task 6 — Documentation webpage
+
+Since the repo keeps going bigger, having a webpage documentation is a good idea, the ultimate purpose is:
+
+- Guide people through common class/prototype.
+- Introduce system architecture focusing on VLM communication and configurable parameters of ai_module.
+- Tutor for new model development, evaluation.
+- Data generation and current status.
+
+### Technology
+
+MkDocs + Material theme with mkdocstrings for API reference. Deploys to GitHub Pages at `<user>.github.io/xiao-hei-vln-cmu/`.
+
+### Phases
+
+- **Phase 1 — Scaffolding + core content**: `mkdocs.yml`, landing page, architecture diagram, quickstart, docker, configuration reference.
+- **Phase 2 — Concepts + guides**: messages, responder protocol, tick loop, Qwen engine, new-model tutorial, evaluation guide, data generation, VLM logging guide, auto-generated API docs.
+- **Phase 3 — GitHub Pages integration**: CI workflow (`.github/workflows/docs.yml`), verify live deployment.

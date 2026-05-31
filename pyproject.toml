@@ -29,6 +29,11 @@ replay = [
     "matplotlib>=3.8",
     "pillow>=10",
 ]
+# Documentation site (mkdocs serve / mkdocs gh-deploy).
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
 
 [project.scripts]
 # `xiao-hei-vlm` is the canonical entry; pick the responder via the
