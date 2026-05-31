@@ -71,6 +71,7 @@ Logs are organized per question within each session:
 vlm_logs/
   session_20260530_143022/
     session.json                    # Config snapshot, model, responder, tick_hz
+    predictions.jsonl               # Final answer per question (for offline eval)
     q_001_how_many_chairs/
       ticks.jsonl                   # One JSON line per tick for this question
       images/

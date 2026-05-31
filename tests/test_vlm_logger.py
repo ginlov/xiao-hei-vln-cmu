@@ -264,3 +264,32 @@ def test_slugify_empty_falls_back_to_untitled(logger: VLMLogger) -> None:
     logger.new_question("?!@#$%")
     dirs = sorted(d.name for d in logger.session_dir.iterdir() if d.is_dir())
     assert "q_001_untitled" in dirs
+
+
+# --- predictions.jsonl tests ---
+
+
+def test_write_prediction_creates_jsonl(logger: VLMLogger) -> None:
+    output = NumericalResponse(value=4, rationale="counted 4")
+    logger.write_prediction("How many chairs", output)
+
+    pred_file = logger.session_dir / "predictions.jsonl"
+    assert pred_file.exists()
+    record = json.loads(pred_file.read_text().strip())
+    assert record["question"] == "How many chairs"
+    assert record["prediction"]["kind"] == "numerical"
+    assert record["prediction"]["value"] == 4
+
+
+def test_write_prediction_appends_multiple(logger: VLMLogger) -> None:
+    logger.write_prediction("How many chairs", NumericalResponse(value=3))
+    logger.write_prediction(
+        "Find the red cup",
+        WaypointPathResponse(waypoints=[Waypoint(x=1.0, y=2.0)]),
+    )
+
+    pred_file = logger.session_dir / "predictions.jsonl"
+    lines = pred_file.read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["question"] == "How many chairs"
+    assert json.loads(lines[1])["prediction"]["kind"] == "waypoint_path"

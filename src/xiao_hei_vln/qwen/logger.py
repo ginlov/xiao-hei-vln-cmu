@@ -135,6 +135,15 @@ class VLMLogger:
             json.dumps(record, separators=(",", ":")) + "\n",
         )
 
+    def write_prediction(self, question_text: str, output: VLMOutput) -> None:
+        """Append a final prediction for offline evaluation."""
+        record = {
+            "question": question_text,
+            "prediction": output.model_dump(),
+        }
+        with (self._session_dir / "predictions.jsonl").open("a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def close(self) -> None:
         self._close_question()
         log.info("VLMLogger session closed: %s", self._session_dir)

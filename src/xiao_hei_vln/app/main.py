@@ -24,7 +24,7 @@ def _build_responder(name: str):
     if name == "dummy":
         from xiao_hei_vln.dummy import DummyResponder
 
-        return DummyResponder()
+        return DummyResponder(), None
     if name == "qwen":
         from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
         from xiao_hei_vln.qwen.logger import VLMLogger
@@ -42,7 +42,7 @@ def _build_responder(name: str):
                 responder_name="qwen",
                 tick_hz=TICK_HZ,
             )
-        return QwenResponder(engine, config, logger=logger)
+        return QwenResponder(engine, config, logger=logger), logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
     )
@@ -63,7 +63,7 @@ def main() -> None:
     cache = LatestCache()
     subs = bind_subscribers(node, cache)
     publisher = VLMOutputPublisher(node)
-    responder = _build_responder(RESPONDER_NAME)
+    responder, logger = _build_responder(RESPONDER_NAME)
 
     state = {"tick_id": 0, "last_question_text": None}
 
@@ -86,6 +86,8 @@ def main() -> None:
             publisher.publish(out)
 
         if responder.is_done():
+            if logger is not None and out is not None and snapshot.question is not None:
+                logger.write_prediction(snapshot.question.text, out)
             node.get_logger().info("Response complete; awaiting next question.")
             cache.clear_question()
             state["last_question_text"] = None
