@@ -1,0 +1,92 @@
+site_name: Xiao Hei VLN
+site_description: Team Xiao Hei's VLM stack for the CMU VLN Challenge 2026
+repo_url: https://github.com/longgiang2015bn/xiao-hei-vln-cmu
+repo_name: xiao-hei-vln-cmu
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Getting Started:
+      - Quickstart: getting-started/quickstart.md
+      - Docker: getting-started/docker.md
+      - Configuration: getting-started/configuration.md
+  - Concepts:
+      - Messages & I/O: concepts/messages.md
+      - Responder Protocol: concepts/responder.md
+      - Tick Loop: concepts/tick-loop.md
+      - Qwen Engine: concepts/qwen-engine.md
+  - Guides:
+      - New Model Integration: guides/new-model.md
+      - Evaluation: guides/evaluation.md
+      - Data Generation: guides/data-generation.md
+      - VLM Logging & Replay: guides/vlm-logging.md
+  - API Reference:
+      - messages: api/messages.md
+      - qwen: api/qwen.md
+      - evaluator: api/evaluator.md
+      - sync: api/sync.md
+  - Task Reports:
+      - tasks/index.md
+      - Design Docs:
+          - I/O Specification: task1_io_spec.md
+          - Sensor Measurements: task1_phase1_measurements.md
+          - Framework Design: task3_phase1_framework.md
+          - Prompt Design: task3_phase3_prompt.md
+
+strict: true
