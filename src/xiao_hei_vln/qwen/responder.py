@@ -83,6 +83,10 @@ class QwenResponder:
             return self._timeout_response(snapshot.question.type)
 
         self._tick_count += 1
+
+        if self._tick_count == 1 and self._logger is not None:
+            self._logger.new_question(snapshot.question.text)
+
         system_prompt, user_text = self._build_prompts(snapshot, snapshot.question)
 
         output: VLMOutput | None = None

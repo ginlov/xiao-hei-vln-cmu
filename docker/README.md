@@ -144,10 +144,15 @@ compose), every VLM tick is recorded for post-run debugging:
 ```
 vlm_logs/
   session_20260530_143022/
-    session.json      # Config snapshot (model, tick_hz, etc.)
-    ticks.jsonl       # One JSON line per tick (prompts, output, latency)
-    images/           # Camera frame JPEGs
-      tick_000001.jpg
+    session.json                  # Config snapshot (model, tick_hz, etc.)
+    q_001_how_many_chairs/
+      ticks.jsonl                 # One JSON line per tick
+      images/
+        tick_000003.jpg
+    q_002_find_the_red_cup/
+      ticks.jsonl
+      images/
+        tick_000007.jpg
 ```
 
 The `compose_gpu.yml` bind-mounts `../vlm_logs` into the container, so

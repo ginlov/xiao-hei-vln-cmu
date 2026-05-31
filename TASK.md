@@ -64,13 +64,20 @@ This task adds a file-based logger that records every VLM tick to disk so runs c
 
 ### File layout
 
+Logs are organized per question within each session:
+
 ```
 vlm_logs/
   session_20260530_143022/
-    session.json          # Config snapshot, model, responder, tick_hz
-    ticks.jsonl           # One JSON line per tick — all metadata above
-    images/
-      tick_000001.jpg     # Camera frame at that tick (only when present)
+    session.json                    # Config snapshot, model, responder, tick_hz
+    q_001_how_many_chairs/
+      ticks.jsonl                   # One JSON line per tick for this question
+      images/
+        tick_000003.jpg
+    q_002_find_the_red_cup/
+      ticks.jsonl
+      images/
+        tick_000007.jpg
 ```
 
 ### Phases

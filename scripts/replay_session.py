@@ -15,11 +15,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 
-def load_session(session_dir: Path) -> tuple[dict, list[dict]]:
+def load_session(session_dir: Path) -> tuple[dict, list[tuple[str, list[dict]]]]:
+    """Load session.json and per-question ticks.
+
+    Returns (session_meta, [(question_dir_name, [tick_records])]).
+    """
     session_json = session_dir / "session.json"
     if not session_json.exists():
         print(f"Error: {session_json} not found", file=sys.stderr)
@@ -27,17 +30,22 @@ def load_session(session_dir: Path) -> tuple[dict, list[dict]]:
 
     session = json.loads(session_json.read_text())
 
-    ticks_jsonl = session_dir / "ticks.jsonl"
-    if not ticks_jsonl.exists():
-        print(f"Error: {ticks_jsonl} not found", file=sys.stderr)
-        sys.exit(1)
+    questions: list[tuple[str, list[dict]]] = []
+    q_dirs = sorted(
+        d for d in session_dir.iterdir()
+        if d.is_dir() and d.name.startswith("q_")
+    )
+    for q_dir in q_dirs:
+        ticks_file = q_dir / "ticks.jsonl"
+        if not ticks_file.exists():
+            continue
+        ticks = []
+        for line in ticks_file.read_text().strip().splitlines():
+            if line:
+                ticks.append(json.loads(line))
+        questions.append((q_dir.name, ticks))
 
-    ticks = []
-    for line in ticks_jsonl.read_text().strip().splitlines():
-        if line:
-            ticks.append(json.loads(line))
-
-    return session, ticks
+    return session, questions
 
 
 def print_session_summary(session: dict) -> None:
@@ -54,18 +62,30 @@ def print_session_summary(session: dict) -> None:
     print()
 
 
-def print_tick_table(ticks: list[dict]) -> None:
+def print_question_ticks(
+    q_name: str,
+    ticks: list[dict],
+    session_dir: Path,
+    *,
+    show_images: bool = False,
+) -> None:
     if not ticks:
-        print("  (no ticks recorded)")
+        print(f"  {q_name}: (no ticks)")
         return
+
+    q_text = ticks[0].get("question_text", "?")
+    q_type = ticks[0].get("question_type", "?")
+    print(f"  Question : {q_text!r}")
+    print(f"  Type     : {q_type}")
+    print(f"  Ticks    : {len(ticks)}")
 
     cols = [
         f"{'tick':>6}", f"{'time_s':>8}", f"{'infer_ms':>9}",
-        f"{'output_kind':<18}", f"{'img':>3}", "question",
+        f"{'output_kind':<18}", f"{'img':>3}",
     ]
     header = "  ".join(cols)
-    print(header)
-    print("-" * len(header))
+    print(f"  {header}")
+    print(f"  {'-' * len(header)}")
 
     for t in ticks:
         tick_id = t.get("tick_id", "?")
@@ -74,93 +94,87 @@ def print_tick_table(ticks: list[dict]) -> None:
         output = t.get("output")
         kind = output.get("kind", "?") if output else "(none)"
         has_image = "Y" if t.get("image_path") else " "
-        question = t.get("question_text", "")
-        if question and len(question) > 40:
-            question = question[:37] + "..."
         row = (
             f"{tick_id:>6}  {tick_time:>8.2f}  {inference_ms:>9.1f}"
-            f"  {kind:<18}  {has_image:>3}  {question}"
+            f"  {kind:<18}  {has_image:>3}"
         )
-        print(row)
+        print(f"  {row}")
 
+    outputs = [t.get("output") for t in ticks]
+    final = outputs[-1]
+    if final and final.get("kind") == "numerical":
+        print(f"  Answer   : {final.get('value')}")
+    elif final and final.get("kind") == "object_reference":
+        print(f"  Object   : {final.get('label')}")
 
-def print_grouped_by_question(ticks: list[dict]) -> None:
-    groups: dict[str, list[dict]] = defaultdict(list)
+    latencies = [t.get("inference_ms", 0.0) for t in ticks]
+    if latencies:
+        print(
+            f"  Latency  : min={min(latencies):.1f}ms  "
+            f"max={max(latencies):.1f}ms  "
+            f"avg={sum(latencies) / len(latencies):.1f}ms",
+        )
+
     for t in ticks:
-        q = t.get("question_text", "(no question)")
-        groups[q].append(t)
+        output = t.get("output")
+        if output and output.get("rationale"):
+            print(f"    tick {t['tick_id']}: {output['rationale']}")
 
-    for question, group_ticks in groups.items():
-        print()
-        print(f"  Question: {question!r} ({len(group_ticks)} ticks)")
-        print(f"  Type    : {group_ticks[0].get('question_type', '?')}")
-
-        outputs = [t.get("output") for t in group_ticks]
-        kinds = [o.get("kind", "?") if o else "(none)" for o in outputs]
-        final = outputs[-1]
-
-        print(f"  Outputs : {' → '.join(kinds)}")
-        if final and final.get("kind") == "numerical":
-            print(f"  Answer  : {final.get('value')}")
-        elif final and final.get("kind") == "object_reference":
-            print(f"  Object  : {final.get('label')}")
-
-        latencies = [t.get("inference_ms", 0.0) for t in group_ticks]
-        if latencies:
-            print(
-                f"  Latency : min={min(latencies):.1f}ms  "
-                f"max={max(latencies):.1f}ms  "
-                f"avg={sum(latencies) / len(latencies):.1f}ms",
-            )
-
-        for t in group_ticks:
-            output = t.get("output")
-            if output and output.get("rationale"):
-                print(f"    tick {t['tick_id']}: {output['rationale']}")
+    if show_images:
+        _show_images(session_dir / q_name, ticks)
 
 
-def show_images(session_dir: Path, ticks: list[dict]) -> None:
+def _show_images(q_dir: Path, ticks: list[dict]) -> None:
     try:
         from PIL import Image  # type: ignore[import-not-found]
     except ImportError:
-        print("Error: pillow required for --images (pip install pillow)", file=sys.stderr)
+        print(
+            "  (pillow required for --images)", file=sys.stderr,
+        )
         return
 
     for t in ticks:
         img_path = t.get("image_path")
         if img_path:
-            full_path = session_dir / img_path
+            full_path = q_dir / img_path
             if full_path.exists():
                 img = Image.open(full_path)
                 img.show(title=f"tick_{t['tick_id']}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay a VLM logger session")
-    parser.add_argument("session_dir", type=Path, help="Path to session directory")
+    parser = argparse.ArgumentParser(
+        description="Replay a VLM logger session",
+    )
     parser.add_argument(
-        "--images",
-        action="store_true",
+        "session_dir", type=Path, help="Path to session directory",
+    )
+    parser.add_argument(
+        "--images", action="store_true",
         help="Open JPEG images for each tick",
     )
     args = parser.parse_args()
 
-    session, ticks = load_session(args.session_dir)
+    session, questions = load_session(args.session_dir)
 
     print_session_summary(session)
 
-    print("TICK TABLE")
-    print("-" * 72)
-    print_tick_table(ticks)
+    if not questions:
+        print("No questions recorded in this session.")
+        return
+
+    total_ticks = sum(len(ticks) for _, ticks in questions)
+    print(f"QUESTIONS: {len(questions)}  |  TOTAL TICKS: {total_ticks}")
+    print("=" * 72)
+
+    for q_name, ticks in questions:
+        print()
+        print(f"--- {q_name} ---")
+        print_question_ticks(
+            q_name, ticks, args.session_dir, show_images=args.images,
+        )
 
     print()
-    print("GROUPED BY QUESTION")
-    print("-" * 72)
-    print_grouped_by_question(ticks)
-    print()
-
-    if args.images:
-        show_images(args.session_dir, ticks)
 
 
 if __name__ == "__main__":
