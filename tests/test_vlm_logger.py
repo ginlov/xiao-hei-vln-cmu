@@ -114,6 +114,7 @@ def test_tick_appended_to_question_jsonl(logger: VLMLogger) -> None:
     assert record["inference_ms"] == 42.5
     assert record["evidence"] == ["prev"]
     assert record["image_path"] is None
+    assert record["pointclouds"] == {}
 
 
 def test_image_saved_in_question_dir(logger: VLMLogger) -> None:

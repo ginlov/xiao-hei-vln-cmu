@@ -149,6 +149,11 @@ vlm_logs/
       ticks.jsonl                 # One JSON line per tick
       images/
         tick_000003.jpg
+      pointclouds/                # Lidar/terrain .npy arrays per tick
+        tick_000003_registered.npy
+        tick_000003_terrain_local.npy
+        tick_000003_terrain_ext.npy
+      report.html                 # Self-contained HTML report (generated)
     q_002_find_the_red_cup/
       ticks.jsonl
       images/
@@ -158,13 +163,23 @@ vlm_logs/
 The `compose_gpu.yml` bind-mounts `../vlm_logs` into the container, so
 logs appear on the host automatically.
 
-To inspect a session after a run:
+### Inspecting logs
 
 ```bash
+# Text summary
 python scripts/replay_session.py vlm_logs/session_20260530_143022
 
-# Or with image viewer:
-python scripts/replay_session.py vlm_logs/session_20260530_143022 --images
+# Filter by question
+python scripts/replay_session.py vlm_logs/session_20260530_143022 -q chairs
+
+# Generate HTML reports (camera playback, pose trajectory, sensor BEV,
+# per-tick I/O, latency charts)
+pip install xiao-hei-vln[replay]  # adds matplotlib
+python scripts/generate_report.py vlm_logs/session_20260530_143022/
+open vlm_logs/session_20260530_143022/q_001_*/report.html
+
+# Single question report
+python scripts/generate_report.py vlm_logs/session_*/ -q chairs
 ```
 
 To disable logging, unset the env var:

@@ -61,6 +61,7 @@ This task adds a file-based logger that records every VLM tick to disk so runs c
 - Full `VLMOutput` JSON (including rationale)
 - Evidence log snapshot (for multi-tick numerical reasoning)
 - Camera frame saved as JPEG
+- Lidar and terrain point clouds saved as `.npy` files
 
 ### File layout
 
@@ -74,6 +75,10 @@ vlm_logs/
       ticks.jsonl                   # One JSON line per tick for this question
       images/
         tick_000003.jpg
+      pointclouds/
+        tick_000003_registered.npy
+        tick_000003_terrain_local.npy
+      report.html                   # Generated HTML report
     q_002_find_the_red_cup/
       ticks.jsonl
       images/
@@ -82,6 +87,6 @@ vlm_logs/
 
 ### Phases
 
-- **Phase 1 — VLMLogger core**: implement `VLMLogger` class that writes `session.json` on init, appends to `ticks.jsonl` per tick, and saves JPEG images. Toggled by `XIAO_HEI_VLM_LOG_DIR` env var.
+- **Phase 1 — VLMLogger core**: implement `VLMLogger` class that writes `session.json` on init, appends to `ticks.jsonl` per tick, saves JPEG images, and saves lidar/terrain point clouds as `.npy` files. Toggled by `XIAO_HEI_VLM_LOG_DIR` env var.
 - **Phase 2 — Integration**: wire the logger into `QwenResponder` so it captures prompts, input metadata, output, and latency. Add `log_dir` passthrough from `compose_gpu.yml` with a bind-mount volume.
-- **Phase 3 — Replay viewer**: a standalone script that loads a session directory and prints a human-readable summary (tick table, question timeline, answer history). Optionally opens images.
+- **Phase 3 — HTML report generator**: `scripts/generate_report.py` produces a self-contained HTML report per question with camera playback (JS slider), pose trajectory + waypoints (matplotlib), sensor BEV scatter plot, expandable per-tick I/O table, and latency chart. Works per-question or all questions in a session. Text-only replay via `scripts/replay_session.py` also available.

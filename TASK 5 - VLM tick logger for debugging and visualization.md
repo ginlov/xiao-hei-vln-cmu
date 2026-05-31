@@ -30,7 +30,12 @@ whatever was in `docker logs`. There is no way to:
 | `inference_ms`      | wall-clock around `engine.infer`| JSONL                    |
 | `evidence`          | responder evidence log snapshot | JSONL                    |
 | `image_path`        | camera JPEG filename            | JSONL (relative path)    |
+| `pointclouds`       | lidar/terrain sensor paths      | JSONL (dict of rel paths)|
 | camera frame        | `VLMInput.image`                | JPEG file in `images/`   |
+| registered_scan     | `VLMInput.registered_scan`      | `.npy` in `pointclouds/` |
+| sensor_scan         | `VLMInput.sensor_scan`          | `.npy` in `pointclouds/` |
+| terrain_local       | `VLMInput.terrain_local`        | `.npy` in `pointclouds/` |
+| terrain_ext         | `VLMInput.terrain_ext`          | `.npy` in `pointclouds/` |
 
 ### File layout
 
@@ -44,6 +49,11 @@ vlm_logs/
       ticks.jsonl                   # One JSON line per tick for this question
       images/
         tick_000003.jpg
+      pointclouds/                  # Lidar/terrain arrays per tick
+        tick_000003_registered.npy
+        tick_000003_terrain_local.npy
+        tick_000003_terrain_ext.npy
+      report.html                   # Generated HTML report
     q_002_find_the_red_cup/
       ticks.jsonl
       images/
@@ -52,8 +62,7 @@ vlm_logs/
 
 - **Per-question directories** — named `q_{NNN}_{slug}` where NNN is
   sequential and slug is derived from the question text. Each question
-  gets its own `ticks.jsonl` and `images/` directory, making it easy
-  to inspect a single question's reasoning chain.
+  gets its own `ticks.jsonl`, `images/`, and `pointclouds/` directory.
 - **JSONL** — one line per tick, cheap to append, easy to load into
   pandas (`pd.read_json("ticks.jsonl", lines=True)`).
 - **Session JSON** — written once at startup, contains the full
@@ -63,6 +72,9 @@ vlm_logs/
   BGR8 → RGB → JPEG quality 90, using `image_frame_to_pil` from
   `image_utils.py`. Zero-padded tick IDs in filename so `ls` sorts
   correctly.
+- **Point clouds** — lidar (registered_scan, sensor_scan) and terrain
+  (terrain_local, terrain_ext) arrays saved as `.npy` files (N,4
+  float32). Only saved when the corresponding sensor is not `None`.
 
 ### Toggle
 
@@ -113,13 +125,14 @@ New files:
     `images/` directory.
   - `VLMLogger.log_tick(snapshot, system_prompt, user_text, output,
     inference_ms, evidence)` — appends one JSON line to the current
-    question's `ticks.jsonl`, saves JPEG if image present.
+    question's `ticks.jsonl`, saves JPEG if image present, saves
+    lidar/terrain point clouds as `.npy` files if present.
   - `VLMLogger.close()` — flushes and closes the current file handle.
   - Helper `_slugify(text)` — converts question text to a filesystem-
     safe slug for directory naming.
-- Tests with `tmp_path` fixture — 13 tests covering session init,
-  per-question dirs, JSONL records, image saving, multiple questions,
-  slug special characters, edge cases.
+- Tests with `tmp_path` fixture — 13 logger tests + 5 point cloud
+  tests covering session init, per-question dirs, JSONL records,
+  image saving, `.npy` saving, multiple questions, edge cases.
 
 ### Phase 2 — Integration
 
@@ -133,29 +146,42 @@ New files:
   bind-mount `../vlm_logs:/vlm_logs` on `ai_module`.
 - `.gitignore`: added `vlm_logs/`.
 
-### Phase 3 — Replay viewer
+### Phase 3 — Replay and HTML report
 
-Standalone script `scripts/replay_session.py`:
-
+**Text replay** — `scripts/replay_session.py`:
 - Loads `session.json` and per-question `ticks.jsonl` files.
 - Prints a summary table per question: tick_id, time, output kind,
   inference_ms, rationale.
 - Shows latency stats (min/max/avg) per question.
-- With `--images`: opens JPEG for each tick using PIL.
+- `-q` flag to filter by question substring.
+
+**HTML report generator** — `scripts/generate_report.py`:
+- Produces a self-contained HTML file per question with:
+  - Camera playback (JS slider with play/pause/prev/next)
+  - Pose trajectory + waypoint overlay (matplotlib)
+  - Sensor bird's-eye-view scatter plot (terrain cost, lidar, robot)
+  - Expandable per-tick I/O table (prompts, output JSON, evidence)
+  - Latency bar chart
+- Works on a single question dir, or all questions in a session.
+- `-q` flag to filter by question substring.
+- Requires `pip install xiao-hei-vln[replay]` (matplotlib + pillow).
 
 ## Files to add / change
 
 ```
 src/xiao_hei_vln/qwen/image_utils.py    new — shared image_frame_to_pil + resize_pil
-src/xiao_hei_vln/qwen/logger.py         new — VLMLogger class (per-question dirs)
+src/xiao_hei_vln/qwen/logger.py         new — VLMLogger (per-question dirs, images, pointclouds)
 src/xiao_hei_vln/qwen/engine.py         refactored to use image_utils
 src/xiao_hei_vln/qwen/__init__.py       + export VLMLogger
 src/xiao_hei_vln/qwen/responder.py      + optional logger kwarg + timing
 src/xiao_hei_vln/app/main.py            + logger init from env
 docker/compose_gpu.yml                   + log dir env + bind mount
 .gitignore                               + vlm_logs/
+pyproject.toml                           + [replay] optional dep group
 tests/test_vlm_logger.py                 new — 13 logger unit tests
-scripts/replay_session.py                new — session replay CLI
+tests/test_logger_pointclouds.py         new — 5 point cloud tests
+scripts/replay_session.py                new — text session replay CLI
+scripts/generate_report.py               new — HTML report generator
 docker/README.md                         + VLM tick logging section + env var docs
 ```
 
@@ -163,15 +189,15 @@ docker/README.md                         + VLM tick logging section + env var do
 
 ```
 $ uv run pytest -q
-........................................................................ [ 61%]
-.............................................                            [100%]
-117 passed in 0.25s
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 0.24s
 
 $ uv run ruff check src tests scripts
 All checks passed!
 ```
 
-(94 from Tasks 1–4, +13 new logger tests, +10 others.)
+(94 from Tasks 1–4, +13 logger tests, +5 point cloud tests, +10 others.)
 
 ## How to use
 
@@ -185,13 +211,19 @@ ls vlm_logs/session_*/
 
 # Each question dir contains:
 ls vlm_logs/session_*/q_001_*/
-# → ticks.jsonl  images/
+# → ticks.jsonl  images/  pointclouds/
 
-# Replay a session:
+# Text replay:
 python scripts/replay_session.py vlm_logs/session_20260530_143022
+python scripts/replay_session.py vlm_logs/session_20260530_143022 -q chairs
 
-# Replay with images:
-python scripts/replay_session.py vlm_logs/session_20260530_143022 --images
+# HTML report (requires matplotlib):
+pip install xiao-hei-vln[replay]
+python scripts/generate_report.py vlm_logs/session_20260530_143022/
+open vlm_logs/session_20260530_143022/q_001_*/report.html
+
+# Single question report:
+python scripts/generate_report.py vlm_logs/session_*/ -q chairs
 
 # Disable logging:
 XIAO_HEI_VLM_LOG_DIR="" docker compose -f docker/compose_gpu.yml up -d

@@ -24,6 +24,11 @@ qwen-local = [
     "pillow>=10",
     "huggingface-hub>=0.24",
 ]
+# HTML report generation from VLM tick logs (scripts/generate_report.py).
+replay = [
+    "matplotlib>=3.8",
+    "pillow>=10",
+]
 
 [project.scripts]
 # `xiao-hei-vlm` is the canonical entry; pick the responder via the

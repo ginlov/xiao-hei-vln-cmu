@@ -144,10 +144,18 @@ def _show_images(q_dir: Path, ticks: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Replay a VLM logger session",
+        description=(
+            "Replay a VLM logger session (text output). "
+            "For HTML reports with video and charts, use: "
+            "python scripts/generate_report.py <session_dir>"
+        ),
     )
     parser.add_argument(
         "session_dir", type=Path, help="Path to session directory",
+    )
+    parser.add_argument(
+        "-q", "--question", type=str, default=None,
+        help="Show only questions matching this substring (e.g. '001' or 'chairs')",
     )
     parser.add_argument(
         "--images", action="store_true",
@@ -162,6 +170,15 @@ def main() -> None:
     if not questions:
         print("No questions recorded in this session.")
         return
+
+    if args.question:
+        questions = [
+            (name, ticks) for name, ticks in questions
+            if args.question in name
+        ]
+        if not questions:
+            print(f"No questions matching {args.question!r}.")
+            return
 
     total_ticks = sum(len(ticks) for _, ticks in questions)
     print(f"QUESTIONS: {len(questions)}  |  TOTAL TICKS: {total_ticks}")

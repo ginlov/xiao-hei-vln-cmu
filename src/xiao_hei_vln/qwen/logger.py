@@ -1,8 +1,9 @@
 """File-based VLM tick logger for post-run debugging and visualization.
 
 Activated by setting ``XIAO_HEI_VLM_LOG_DIR``. When active, every tick
-writes one JSON line to a per-question ``ticks.jsonl`` and saves the
-camera frame as a JPEG. A ``session.json`` is written once at startup.
+writes one JSON line to a per-question ``ticks.jsonl``, saves the
+camera frame as a JPEG, and saves any available point-cloud arrays as
+``.npy`` files. A ``session.json`` is written once at startup.
 
 Typical on-disk layout::
 
@@ -13,6 +14,9 @@ Typical on-disk layout::
           ticks.jsonl
           images/
             tick_000003.jpg
+          pointclouds/
+            tick_000003_registered.npy
+            tick_000003_terrain_local.npy
         q_002_find_the_red_cup/
           ticks.jsonl
           images/
@@ -64,6 +68,7 @@ class VLMLogger:
         self._question_count = 0
         self._question_dir: Path | None = None
         self._images_dir: Path | None = None
+        self._pointclouds_dir: Path | None = None
         self._jsonl_fh: IO[str] | None = None
 
         log.info("VLMLogger session started: %s", self._session_dir)
@@ -80,7 +85,9 @@ class VLMLogger:
         dir_name = f"q_{self._question_count:03d}_{slug}"
         self._question_dir = self._session_dir / dir_name
         self._images_dir = self._question_dir / "images"
+        self._pointclouds_dir = self._question_dir / "pointclouds"
         self._images_dir.mkdir(parents=True, exist_ok=True)
+        self._pointclouds_dir.mkdir(parents=True, exist_ok=True)
         self._jsonl_fh = (self._question_dir / "ticks.jsonl").open(
             "a",
             buffering=1,
@@ -104,6 +111,8 @@ class VLMLogger:
             image_path = f"images/tick_{snapshot.tick_id:06d}.jpg"
             self._save_image(snapshot, self._question_dir / image_path)
 
+        pc_paths = self._save_pointclouds(snapshot)
+
         record: dict[str, Any] = {
             "tick_id": snapshot.tick_id,
             "tick_time": snapshot.tick_time.to_seconds(),
@@ -120,6 +129,7 @@ class VLMLogger:
             "inference_ms": round(inference_ms, 2),
             "evidence": list(evidence),
             "image_path": image_path,
+            "pointclouds": pc_paths,
         }
         self._jsonl_fh.write(
             json.dumps(record, separators=(",", ":")) + "\n",
@@ -137,6 +147,7 @@ class VLMLogger:
         self._jsonl_fh = None
         self._question_dir = None
         self._images_dir = None
+        self._pointclouds_dir = None
 
     @staticmethod
     def _save_image(snapshot: VLMInput, path: Path) -> None:
@@ -145,6 +156,34 @@ class VLMLogger:
         assert snapshot.image is not None
         img = image_frame_to_pil(snapshot.image)
         img.save(os.fspath(path), format="JPEG", quality=90)
+
+    def _save_pointclouds(self, snapshot: VLMInput) -> dict[str, str]:
+        import numpy as np
+
+        if self._pointclouds_dir is None:
+            return {}
+
+        pc_paths: dict[str, str] = {}
+        tid = snapshot.tick_id
+
+        sensors: list[tuple[str, Any]] = [
+            ("registered", snapshot.registered_scan),
+            ("sensor", snapshot.sensor_scan),
+            ("terrain_local", snapshot.terrain_local),
+            ("terrain_ext", snapshot.terrain_ext),
+        ]
+        for name, sensor in sensors:
+            if sensor is None:
+                continue
+            rel = f"pointclouds/tick_{tid:06d}_{name}.npy"
+            np.save(
+                self._question_dir / rel,  # type: ignore[arg-type]
+                sensor.points,
+                allow_pickle=False,
+            )
+            pc_paths[name] = rel
+
+        return pc_paths
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
