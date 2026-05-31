@@ -77,8 +77,10 @@ src/xiao_hei_vln/
 ├── sync/          # LatestCache — thread-safe sensor buffer
 ├── adapters/      # ROS 2 subscribers + publishers
 ├── app/           # rclpy entry point, tick loop, responder factory
+├── logger.py      # VLM tick logger (model-agnostic)
+├── image_utils.py # Shared image conversion helpers
 ├── dummy/         # Reference responder (no GPU)
-├── qwen/          # Qwen3.5 responder, engine, logger, prompts
+├── qwen/          # Qwen3.5 responder, engine, prompts
 ├── evaluator/     # Offline metrics (numerical, object reference)
 ├── eval_sampler/  # Ground-truth ↔ prediction pairing
 └── eval_pipeline/ # End-to-end evaluation CLI

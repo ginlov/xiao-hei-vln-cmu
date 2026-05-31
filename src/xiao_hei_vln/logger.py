@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import IO, Any
 
 from xiao_hei_vln.messages import VLMInput, VLMOutput
-from xiao_hei_vln.qwen.config import QwenConfig
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ class VLMLogger:
         self,
         log_dir: str | Path,
         *,
-        config: QwenConfig,
+        config: dict[str, Any],
         responder_name: str,
         tick_hz: float,
     ) -> None:
@@ -59,11 +58,17 @@ class VLMLogger:
             "start_time": start.isoformat(),
             "responder": responder_name,
             "tick_hz": tick_hz,
-            "config": _config_to_dict(config),
+            "config": config,
         }
-        (self._session_dir / "session.json").write_text(
-            json.dumps(session_meta, indent=2) + "\n",
-        )
+        try:
+            (self._session_dir / "session.json").write_text(
+                json.dumps(session_meta, indent=2) + "\n",
+            )
+        except (TypeError, ValueError):
+            log.warning(
+                "session.json: config is not JSON-serializable; "
+                "callers must pass a plain-dict config (e.g. dataclasses.asdict())",
+            )
 
         self._question_count = 0
         self._question_dir: Path | None = None
@@ -160,7 +165,7 @@ class VLMLogger:
 
     @staticmethod
     def _save_image(snapshot: VLMInput, path: Path) -> None:
-        from xiao_hei_vln.qwen.image_utils import image_frame_to_pil
+        from xiao_hei_vln.image_utils import image_frame_to_pil
 
         assert snapshot.image is not None
         img = image_frame_to_pil(snapshot.image)
@@ -201,12 +206,6 @@ def _slugify(text: str, max_len: int = 40) -> str:
     slug = slug.strip("_")
     slug = slug[:max_len].rstrip("_")
     return slug or "untitled"
-
-
-def _config_to_dict(config: QwenConfig) -> dict[str, Any]:
-    from dataclasses import asdict
-
-    return asdict(config)
 
 
 def _serialize_pose(snapshot: VLMInput) -> dict[str, Any] | None:

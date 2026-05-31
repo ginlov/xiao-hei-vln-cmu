@@ -26,8 +26,10 @@ def _build_responder(name: str):
 
         return DummyResponder(), None
     if name == "qwen":
+        from dataclasses import asdict
+
+        from xiao_hei_vln.logger import VLMLogger
         from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
-        from xiao_hei_vln.qwen.logger import VLMLogger
 
         config = QwenConfig.from_env()
         engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
@@ -38,7 +40,7 @@ def _build_responder(name: str):
         if log_dir:
             logger = VLMLogger(
                 log_dir,
-                config=config,
+                config=asdict(config),
                 responder_name="qwen",
                 tick_hz=TICK_HZ,
             )

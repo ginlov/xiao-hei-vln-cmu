@@ -79,7 +79,7 @@ Before sending to the engine, camera frames are:
 2. Downscaled if the long edge exceeds `image_long_edge` (default 1280px)
 3. Encoded as JPEG and base64 for the HTTP API
 
-This is handled by shared utilities in `xiao_hei_vln.qwen.image_utils`.
+This is handled by shared utilities in `xiao_hei_vln.image_utils`.
 
 ## Warmup
 

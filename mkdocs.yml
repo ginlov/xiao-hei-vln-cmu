@@ -78,6 +78,8 @@ nav:
       - VLM Logging & Replay: guides/vlm-logging.md
   - API Reference:
       - messages: api/messages.md
+      - logger: api/logger.md
+      - image_utils: api/image_utils.md
       - qwen: api/qwen.md
       - evaluator: api/evaluator.md
       - sync: api/sync.md

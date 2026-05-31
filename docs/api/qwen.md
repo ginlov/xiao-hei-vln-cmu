@@ -19,9 +19,3 @@
       show_root_heading: true
       members_order: source
 
-## Logger
-
-::: xiao_hei_vln.qwen.logger
-    options:
-      show_root_heading: true
-      members_order: source

@@ -115,10 +115,10 @@ interface.
 
 New files:
 
-- `src/xiao_hei_vln/qwen/image_utils.py` — shared `image_frame_to_pil`
+- `src/xiao_hei_vln/image_utils.py` — shared `image_frame_to_pil`
   and `resize_pil` helpers, extracted from `engine.py` to avoid
   duplication between engine and logger.
-- `src/xiao_hei_vln/qwen/logger.py`:
+- `src/xiao_hei_vln/logger.py`:
   - `VLMLogger.__init__(log_dir, config, responder_name, tick_hz)` —
     creates session directory, writes `session.json`.
   - `VLMLogger.new_question(question_text)` — opens a new per-question
@@ -170,10 +170,9 @@ New files:
 ## Files to add / change
 
 ```
-src/xiao_hei_vln/qwen/image_utils.py    new — shared image_frame_to_pil + resize_pil
-src/xiao_hei_vln/qwen/logger.py         new — VLMLogger (per-question dirs, images, pointclouds)
+src/xiao_hei_vln/image_utils.py          new — shared image_frame_to_pil + resize_pil
+src/xiao_hei_vln/logger.py              new — VLMLogger (per-question dirs, images, pointclouds)
 src/xiao_hei_vln/qwen/engine.py         refactored to use image_utils
-src/xiao_hei_vln/qwen/__init__.py       + export VLMLogger
 src/xiao_hei_vln/qwen/responder.py      + optional logger kwarg + timing
 src/xiao_hei_vln/app/main.py            + logger init from env
 docker/compose_gpu.yml                   + log dir env + bind mount
