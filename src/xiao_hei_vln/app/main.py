@@ -27,11 +27,22 @@ def _build_responder(name: str):
         return DummyResponder()
     if name == "qwen":
         from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
+        from xiao_hei_vln.qwen.logger import VLMLogger
 
         config = QwenConfig.from_env()
         engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
         engine.warmup()
-        return QwenResponder(engine, config)
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config=config,
+                responder_name="qwen",
+                tick_hz=TICK_HZ,
+            )
+        return QwenResponder(engine, config, logger=logger)
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
     )
@@ -92,6 +103,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if hasattr(responder, "_logger") and responder._logger is not None:
+            responder._logger.close()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -77,6 +77,7 @@ pip/apt conflicts in the Dockerfile and is not recommended.
 | `XIAO_HEI_QWEN_DTYPE` | `bfloat16` | Model dtype (vLLM server arg) |
 | `XIAO_HEI_QWEN_MAX_MODEL_LEN` | `4096` | Max context length |
 | `XIAO_HEI_QWEN_GPU_MEM_UTIL` | `0.85` | GPU memory fraction for vLLM |
+| `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` (GPU compose) / (unset, CPU) | Directory for VLM tick logs. When set, every tick is logged to JSONL + JPEG. |
 | `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz |
 | `HUGGING_FACE_HUB_TOKEN` | (unset) | HF token if model weights are gated |
 | `XIAO_HEI_EXTRA` | `qwen` (GPU compose) / (empty, CPU compose) | pip extra to install at build time |
@@ -134,3 +135,35 @@ discriminated union — no new code paths required.
 | vLLM OOM on model load | Model too large for GPU | Set `XIAO_HEI_QWEN_MODEL=Qwen/Qwen3.5-2B-Instruct` or lower `XIAO_HEI_QWEN_GPU_MEM_UTIL`. |
 | ai_module ready but `ros2 topic info /challenge_question` shows `Subscription count: 0` | DDS mismatch | Confirm both have `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` (`docker exec <c> env \| grep RMW`). |
 | Publisher sends a response but `ros2 topic echo --once` returns nothing | Late-subscriber + VOLATILE QoS | Run `ros2 topic echo /<topic>` *before* publishing the question. |
+
+## VLM tick logging
+
+When `XIAO_HEI_VLM_LOG_DIR` is set (default `/vlm_logs` in the GPU
+compose), every VLM tick is recorded for post-run debugging:
+
+```
+vlm_logs/
+  session_20260530_143022/
+    session.json      # Config snapshot (model, tick_hz, etc.)
+    ticks.jsonl       # One JSON line per tick (prompts, output, latency)
+    images/           # Camera frame JPEGs
+      tick_000001.jpg
+```
+
+The `compose_gpu.yml` bind-mounts `../vlm_logs` into the container, so
+logs appear on the host automatically.
+
+To inspect a session after a run:
+
+```bash
+python scripts/replay_session.py vlm_logs/session_20260530_143022
+
+# Or with image viewer:
+python scripts/replay_session.py vlm_logs/session_20260530_143022 --images
+```
+
+To disable logging, unset the env var:
+
+```bash
+XIAO_HEI_VLM_LOG_DIR="" docker compose -f docker/compose_gpu.yml up -d
+```

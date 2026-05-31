@@ -75,8 +75,10 @@ services:
       - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
       - XIAO_HEI_QWEN_MODEL
       - XIAO_HEI_VLM_TICK_HZ
+      - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
+      - ../vlm_logs:/vlm_logs
     stdin_open: true
     tty: true
     depends_on:

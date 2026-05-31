@@ -29,6 +29,7 @@ Loop semantics:
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from xiao_hei_vln.messages import (
@@ -49,6 +50,7 @@ from xiao_hei_vln.qwen.prompts import (
 
 if TYPE_CHECKING:
     from xiao_hei_vln.qwen.engine import EngineProtocol
+    from xiao_hei_vln.qwen.logger import VLMLogger
 
 log = logging.getLogger(__name__)
 
@@ -58,9 +60,12 @@ class QwenResponder:
         self,
         engine: EngineProtocol,
         config: QwenConfig | None = None,
+        *,
+        logger: VLMLogger | None = None,
     ) -> None:
         self._engine = engine
         self._config = config or QwenConfig()
+        self._logger = logger
         self._generic_system_prompt = build_system_prompt()
         self._numerical_system_prompt = build_numerical_system_prompt()
 
@@ -80,6 +85,8 @@ class QwenResponder:
         self._tick_count += 1
         system_prompt, user_text = self._build_prompts(snapshot, snapshot.question)
 
+        output: VLMOutput | None = None
+        t0 = time.perf_counter()
         try:
             output = self._engine.infer(
                 system=system_prompt,
@@ -88,6 +95,22 @@ class QwenResponder:
             )
         except Exception:
             log.exception("Qwen engine inference failed; skipping tick")
+        finally:
+            inference_ms = (time.perf_counter() - t0) * 1000.0
+            if self._logger is not None:
+                try:
+                    self._logger.log_tick(
+                        snapshot,
+                        system_prompt,
+                        user_text,
+                        output,
+                        inference_ms,
+                        list(self._evidence),
+                    )
+                except Exception:
+                    log.exception("VLMLogger.log_tick failed; continuing")
+
+        if output is None:
             return None
 
         self._record_evidence(snapshot.question.type, output)

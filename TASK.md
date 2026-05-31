@@ -45,3 +45,36 @@ This task includes three phases:
 It seems like the dependencies of vllm are too different from the ROS system. Setting up a separate container for vllm only is better approach. For this task.
 - Let set up a new container for Qwen3.5 VL only.
 - Integrate the system so that we just need to start all in one.
+
+## Task 5 — VLM tick logger for debugging and visualization
+
+During live runs the VLM tick loop processes camera frames, constructs prompts, and produces outputs at 2 Hz — but none of this is persisted. When something goes wrong (bad answer, missed object, waypoint loop) there is no way to replay what the model saw, what it was asked, or what it responded.
+
+This task adds a file-based logger that records every VLM tick to disk so runs can be inspected, visualized, and compared after the fact.
+
+### What to log per tick
+
+- `tick_id`, `tick_time`, inference latency (ms)
+- Question text and classified type
+- Robot pose (position + orientation)
+- System prompt and user text sent to the engine
+- Full `VLMOutput` JSON (including rationale)
+- Evidence log snapshot (for multi-tick numerical reasoning)
+- Camera frame saved as JPEG
+
+### File layout
+
+```
+vlm_logs/
+  session_20260530_143022/
+    session.json          # Config snapshot, model, responder, tick_hz
+    ticks.jsonl           # One JSON line per tick — all metadata above
+    images/
+      tick_000001.jpg     # Camera frame at that tick (only when present)
+```
+
+### Phases
+
+- **Phase 1 — VLMLogger core**: implement `VLMLogger` class that writes `session.json` on init, appends to `ticks.jsonl` per tick, and saves JPEG images. Toggled by `XIAO_HEI_VLM_LOG_DIR` env var.
+- **Phase 2 — Integration**: wire the logger into `QwenResponder` so it captures prompts, input metadata, output, and latency. Add `log_dir` passthrough from `compose_gpu.yml` with a bind-mount volume.
+- **Phase 3 — Replay viewer**: a standalone script that loads a session directory and prints a human-readable summary (tick table, question timeline, answer history). Optionally opens images.

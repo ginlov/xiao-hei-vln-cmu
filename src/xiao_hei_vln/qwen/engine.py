@@ -24,6 +24,7 @@ from pydantic import TypeAdapter
 from xiao_hei_vln.messages import VLMOutput, parse_vlm_output
 from xiao_hei_vln.messages.sensors import ImageFrame
 from xiao_hei_vln.qwen.config import QwenConfig
+from xiao_hei_vln.qwen.image_utils import image_frame_to_pil, resize_pil
 
 if TYPE_CHECKING:
     from PIL.Image import Image as PILImage
@@ -83,7 +84,7 @@ class QwenEngine:
         )
 
     def infer(self, system: str, user_text: str, image: ImageFrame | None) -> VLMOutput:
-        pil_image = _image_frame_to_pil(image, long_edge=self._config.image_long_edge)
+        pil_image = _prepare_image(image, long_edge=self._config.image_long_edge)
         prompt = self._render_chat_prompt(system, user_text, has_image=pil_image is not None)
 
         engine_input: dict[str, Any] = {"prompt": prompt}
@@ -226,32 +227,14 @@ def _image_frame_to_data_url(frame: ImageFrame, *, long_edge: int) -> str:
     import base64
     import io
 
-    pil_image = _image_frame_to_pil(frame, long_edge=long_edge)
+    pil_image = _prepare_image(frame, long_edge=long_edge)
     buf = io.BytesIO()
     pil_image.save(buf, format="JPEG", quality=90)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
 
 
-def _image_frame_to_pil(frame: ImageFrame | None, *, long_edge: int) -> PILImage | None:
+def _prepare_image(frame: ImageFrame | None, *, long_edge: int) -> PILImage | None:
     if frame is None:
         return None
-
-    import numpy as np
-    from PIL import Image  # type: ignore[import-not-found]
-
-    if frame.encoding != "bgr8":
-        raise ValueError(f"unsupported image encoding {frame.encoding!r}; expected 'bgr8'")
-
-    arr = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.width, 3)
-    rgb = arr[:, :, ::-1]
-    img = Image.fromarray(rgb, mode="RGB")
-
-    longest = max(img.width, img.height)
-    if longest > long_edge:
-        scale = long_edge / longest
-        img = img.resize(
-            (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
-            Image.Resampling.BILINEAR,
-        )
-    return img
+    return resize_pil(image_frame_to_pil(frame), long_edge=long_edge)
