@@ -60,9 +60,15 @@ class VLMLogger:
             "tick_hz": tick_hz,
             "config": config,
         }
-        (self._session_dir / "session.json").write_text(
-            json.dumps(session_meta, indent=2) + "\n",
-        )
+        try:
+            (self._session_dir / "session.json").write_text(
+                json.dumps(session_meta, indent=2) + "\n",
+            )
+        except (TypeError, ValueError):
+            log.warning(
+                "session.json: config is not JSON-serializable; "
+                "callers must pass a plain-dict config (e.g. dataclasses.asdict())",
+            )
 
         self._question_count = 0
         self._question_dir: Path | None = None
