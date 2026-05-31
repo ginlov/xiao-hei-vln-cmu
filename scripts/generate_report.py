@@ -341,6 +341,8 @@ def generate_html(
     avg_ms = sum(latencies) / len(latencies) if latencies else 0
 
     cfg = session_meta.get("config", {})
+    tick_hz = session_meta.get("tick_hz", 2.0)
+    frame_interval_ms = int(1000.0 / tick_hz) if tick_hz > 0 else 500
 
     # Camera frames
     frames = load_camera_frames(q_dir, ticks)
@@ -419,7 +421,7 @@ def generate_html(
                 return;
               }}
               nextFrame();
-            }}, 500);
+            }}, {frame_interval_ms});
             document.getElementById('play-btn').innerHTML = '&#9724; Pause';
           }}
         }}

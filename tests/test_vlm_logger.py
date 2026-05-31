@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -23,6 +24,9 @@ from xiao_hei_vln.messages import (
 from xiao_hei_vln.messages.sensors import ImageFrame
 from xiao_hei_vln.qwen.config import QwenConfig
 from xiao_hei_vln.qwen.logger import VLMLogger
+
+_has_pillow = importlib.util.find_spec("PIL") is not None
+_needs_pillow = pytest.mark.skipif(not _has_pillow, reason="pillow not installed")
 
 
 def _stamp(t: float = 0.0) -> Stamp:
@@ -117,6 +121,7 @@ def test_tick_appended_to_question_jsonl(logger: VLMLogger) -> None:
     assert record["pointclouds"] == {}
 
 
+@_needs_pillow
 def test_image_saved_in_question_dir(logger: VLMLogger) -> None:
     logger.new_question("How many cups")
     snap = _snapshot(tick_id=5, with_image=True, question_text="How many cups")
@@ -253,3 +258,9 @@ def test_slugify_special_characters(logger: VLMLogger) -> None:
     logger.new_question("How many red chairs & tables?!")
     dirs = sorted(d.name for d in logger.session_dir.iterdir() if d.is_dir())
     assert "q_001_how_many_red_chairs_tables" in dirs
+
+
+def test_slugify_empty_falls_back_to_untitled(logger: VLMLogger) -> None:
+    logger.new_question("?!@#$%")
+    dirs = sorted(d.name for d in logger.session_dir.iterdir() if d.is_dir())
+    assert "q_001_untitled" in dirs

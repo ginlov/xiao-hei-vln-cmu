@@ -73,7 +73,7 @@ pip/apt conflicts in the Dockerfile and is not recommended.
 |---|---|---|
 | `XIAO_HEI_RESPONDER` | `qwen` (GPU compose) / `dummy` (CPU compose) | Which responder to use |
 | `XIAO_HEI_QWEN_VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM server URL. Unset for in-process mode |
-| `XIAO_HEI_QWEN_MODEL` | `Qwen/Qwen3.5-4B-Instruct` | HuggingFace model ID |
+| `XIAO_HEI_QWEN_MODEL` | `/models/Qwen3.5-4B` | Model path (local) or HuggingFace ID |
 | `XIAO_HEI_QWEN_DTYPE` | `bfloat16` | Model dtype (vLLM server arg) |
 | `XIAO_HEI_QWEN_MAX_MODEL_LEN` | `4096` | Max context length |
 | `XIAO_HEI_QWEN_GPU_MEM_UTIL` | `0.85` | GPU memory fraction for vLLM |
@@ -132,7 +132,7 @@ discriminated union — no new code paths required.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `docker logs xiao_hei_ai_module` shows "Waiting for vLLM server…" indefinitely | vLLM container not started, or model download stalled | Check `docker logs xiao_hei_vllm` for download progress or OOM errors. |
-| vLLM OOM on model load | Model too large for GPU | Set `XIAO_HEI_QWEN_MODEL=Qwen/Qwen3.5-2B-Instruct` or lower `XIAO_HEI_QWEN_GPU_MEM_UTIL`. |
+| vLLM OOM on model load | Model too large for GPU | Use a smaller model (e.g. `XIAO_HEI_QWEN_MODEL=/models/Qwen3.5-2B`) or lower `XIAO_HEI_QWEN_GPU_MEM_UTIL`. |
 | ai_module ready but `ros2 topic info /challenge_question` shows `Subscription count: 0` | DDS mismatch | Confirm both have `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` (`docker exec <c> env \| grep RMW`). |
 | Publisher sends a response but `ros2 topic echo --once` returns nothing | Late-subscriber + VOLATILE QoS | Run `ros2 topic echo /<topic>` *before* publishing the question. |
 

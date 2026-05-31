@@ -15,7 +15,7 @@ by the tick cadence and synchronization strategy defined in Task 1
 | Inputs available per tick | `VLMInput` | one 1920×640 BGR image, two `(N, 4)` lidar scans, two terrain maps, an `OdomPose`, a `ChallengeQuestion` |
 | Output schema | `VLMOutput` (discriminated union) | `numerical | object_reference | waypoint_path` |
 | Eval host | User confirmed | single NVIDIA GPU (24 GB-class, e.g. RTX 4090), Ubuntu 24.04 + ROS Jazzy container |
-| Process model | User confirmed | **in-process** engine inside `xiao_hei_ai_module` (no HTTP sidecar) |
+| Process model | Task 4.1 sidecar refactor | **HTTP sidecar** (default): vLLM runs in a separate container (`vllm/vllm-openai`), ai_module calls it via OpenAI-compatible HTTP. In-process `QwenEngine` remains as a legacy fallback. |
 
 The hard budget for the VLM body is therefore **~400 ms per tick**
 after subtracting overhead for the rclpy spin, `LatestCache.snapshot()`,
@@ -45,33 +45,45 @@ the 3.5 native-multimodal training; cheap to bring up; trivially
 swappable for `Qwen3.5-9B-Instruct-AWQ` if the eval shows quality is
 short.
 
-## Serving runtime: vLLM in-process
+## Serving runtime: vLLM
 
-Three runtimes were considered for an in-process integration:
+### Current default: HTTP sidecar (`HTTPQwenEngine`)
+
+The production path runs vLLM in a separate container using the
+official `vllm/vllm-openai` image, exposing an OpenAI-compatible API.
+The ai_module calls it via `HTTPQwenEngine` using the lightweight
+`openai` Python SDK — no CUDA deps needed in the ai_module image.
+
+This was adopted in Task 4.1 because installing vLLM directly inside
+the ROS base image caused unresolvable pip/apt package conflicts
+(dozens of apt-installed Python packages lack `RECORD` files, blocking
+pip from upgrading them when vLLM's transitive deps require it).
+
+Advantages of the sidecar:
+1. **Zero dependency conflicts** — ai_module only needs `openai` +
+   `pillow`.
+2. **Guided JSON decoding** still works via vLLM's
+   `response_format={"type": "json_schema", ...}` parameter.
+3. **Independent scaling** — vLLM container can be restarted or
+   swapped without rebuilding the ai_module.
+4. Camera frames are sent as base64 JPEG data URLs in the chat
+   messages (~2 ms encode overhead per tick).
+
+### Legacy fallback: in-process (`QwenEngine`)
+
+The original Phase 1 design used vLLM's `LLM` Python object directly
+inside the ai_module process. This path is still available via
+`XIAO_HEI_QWEN_VLLM_BASE_URL=""` and `pip install .[qwen-local]`, but
+is not recommended due to the dependency conflicts described above.
+
+### Runtimes considered
 
 | Option | Why we'd pick it | Why we ruled it out (or didn't) |
 |---|---|---|
 | `transformers` `AutoModelForVision2Seq` | Simplest API; no extra deps | Eager decode is 3–5× slower than vLLM at our context length; no native guided JSON; we'd pay every tick |
-| **vLLM `LLM` engine** | PagedAttention → low-latency single-stream decode at 2 Hz; native Qwen3.5 + multimodal image support; built-in `guided_json` / `guided_choice` for structured `VLMOutput` emission; same Python process so no HTTP cost | Heavy deps (CUDA + torch); not yet built for ARM eval hosts (not in scope here) |
-| SGLang | Best-in-class prefix-caching and structured outputs | Same dep weight as vLLM; smaller community for Qwen3.5; we already chose in-process so its server story is moot |
-
-Picked **vLLM `LLM` engine**, used as a Python object (not the
-`vllm.entrypoints.openai.api_server` HTTP shim), because:
-
-1. Single-stream decode latency at our context length sits in the
-   ~200–300 ms range on a 4090 for a ~50-token JSON answer with a
-   Qwen3.5-4B prefill of ~1.5k tokens (image + system + question +
-   evidence log). That fits the 400 ms body budget.
-2. **Guided JSON decoding** (`vllm.SamplingParams(guided_decoding=
-   GuidedDecodingParams(json=<pydantic schema>))`) lets us emit a
-   well-formed `VLMOutput` directly — no post-hoc parsing, no
-   regex-cleanup of model preambles.
-3. vLLM has first-class support for Qwen3.5 multimodal (per
-   `docs.vllm.ai/projects/recipes/.../Qwen3.5.html`), including the
-   pre/post-processor for the vision tokens.
-4. Pure-Python embedding: import, construct one `LLM`, call
-   `.chat(messages, sampling_params=...)` inside `respond()`. No
-   subprocess, no port allocation, no health check, no compose service.
+| **vLLM (sidecar)** | PagedAttention, native Qwen3.5 multimodal, guided JSON via `response_format`, clean separation from ROS deps | Adds ~5 ms HTTP round-trip per tick; requires docker-compose |
+| vLLM (in-process) | No HTTP cost; single container | Unresolvable pip/apt conflicts with ROS base image |
+| SGLang | Best-in-class prefix-caching and structured outputs | Same dep weight as vLLM; smaller community for Qwen3.5 |
 
 ### Latency budget (single tick, Qwen3.5-4B bf16, 4090)
 
@@ -132,27 +144,23 @@ This guarantees the model's emission is parseable by the existing
 
 ## Packaging
 
-vLLM and its CUDA dependencies are too heavy to ship as a hard
-requirement of the package (it would break dev installs on the dev
-laptop, CI, and any tester without a GPU). They live behind an
-**optional dependency group** `qwen`:
+Two optional dependency groups support the different engine modes:
 
 ```toml
 [project.optional-dependencies]
-qwen = [
-    "vllm>=0.7,<0.10",        # Qwen3.5 multimodal + guided_json
-    "pillow>=10",             # image handoff to vLLM
-    "huggingface-hub>=0.24",  # checkpoint fetch
-]
+qwen = ["openai>=1.30", "pillow>=10"]                      # HTTP sidecar (default)
+qwen-local = ["vllm>=0.7,<0.10", "pillow>=10", "huggingface-hub>=0.24"]  # in-process (legacy)
 ```
 
+- **`qwen`** (default): lightweight — only the `openai` SDK + `pillow`.
+  Used with the HTTP sidecar (`HTTPQwenEngine`). No CUDA deps in the
+  ai_module image.
+- **`qwen-local`** (legacy): heavy — pulls in vLLM, torch, and CUDA.
+  Used with the in-process `QwenEngine`. Requires resolving pip/apt
+  conflicts in the ROS base image.
 - Dev / CI / tests stay on the lean base install (`pydantic`, `numpy`).
-- The docker image installs the `[qwen]` extra; weights are mounted
-  via an `HF_HOME` cache volume in compose so a `compose down/up`
-  doesn't redownload.
 - The dummy responder still ships and remains the default when the
-  `XIAO_HEI_RESPONDER` env var isn't `qwen` — useful for compose-only
-  smoke tests and for environments without CUDA.
+  `XIAO_HEI_RESPONDER` env var isn't `qwen`.
 
 ## Open risks / follow-ups
 

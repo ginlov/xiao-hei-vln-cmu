@@ -1,4 +1,4 @@
-# TASK 3 — Integrate Qwen3.5 VL for testing
+# TASK 4 — Integrate Qwen3.5 VL for testing
 
 ## Goal
 
@@ -19,16 +19,17 @@ compose-smoke / CI paths keep working unchanged.
   multimodal** — text+image+video trained jointly, no separate `-VL`
   checkpoint. The HF collection ships 0.8B/2B/4B/9B/27B dense and
   35B-A3B/122B-A10B/397B-A17 MoE variants.
-- Picked **`Qwen/Qwen3.5-4B-Instruct` at bf16** as the initial target
-  for a single 24 GB GPU (~8 GB weights → ~14 GB headroom for KV +
-  vision tokens). Documented swap paths to `Qwen3.5-9B-Instruct-AWQ`
-  and `Qwen3.5-2B-Instruct` as quality/latency fallbacks.
-- Chose **vLLM `LLM` engine in-process** (per user direction) over
-  transformers eager decode or sidecar HTTP. PagedAttention gets us
-  into the 250–430 ms per-tick range estimated for our prompt shape;
-  no HTTP round-trip; native `guided_decoding=GuidedDecodingParams(
-  json=<schema>)` means the model emits a valid `VLMOutput` directly
-  into `parse_vlm_output()`.
+- Picked **`Qwen3.5-4B` at bf16** as the initial target for a single
+  24 GB GPU (~8 GB weights → ~14 GB headroom for KV + vision tokens).
+  Documented swap paths to `Qwen3.5-9B-Instruct-AWQ` and
+  `Qwen3.5-2B` as quality/latency fallbacks.
+- Initially chose vLLM in-process, later refactored to **HTTP sidecar**
+  (Task 4.1) — vLLM runs in a separate container (`vllm/vllm-openai`)
+  and the ai_module calls it via `HTTPQwenEngine` using the OpenAI-
+  compatible API. This avoids pip/apt dependency conflicts with the
+  ROS base image. In-process `QwenEngine` remains as a legacy
+  fallback. Guided JSON decoding works via `response_format` on the
+  HTTP API.
 - Recorded the full decision and latency budget breakdown in
   **`docs/task3_phase1_framework.md`**.
 
@@ -37,18 +38,18 @@ compose-smoke / CI paths keep working unchanged.
 - New package **`src/xiao_hei_vln/qwen/`**:
   - `config.QwenConfig` — env-overridable dataclass (model, dtype,
     `max_model_len`, GPU util, sampling temperature / max tokens /
-    seed, image long-edge, per-question tick cap). All knobs land via
-    `XIAO_HEI_QWEN_*`.
-  - `engine.QwenEngine` — lazy-imports `vllm`, `transformers`, `PIL`
-    in `__init__`. `infer(system, user_text, image)` renders the HF
-    chat template with `add_generation_prompt=True`, hands the PIL
-    image to vLLM via `multi_modal_data={"image": img}`, decodes
-    under `GuidedDecodingParams(json=TypeAdapter(VLMOutput).
-    json_schema())`, returns a parsed `VLMOutput`. Includes
-    `warmup()` for CUDA-graph capture. `_image_frame_to_pil` handles
-    BGR→RGB and long-edge downscale.
+    seed, image long-edge, per-question tick cap, `vllm_base_url`).
+    All knobs land via `XIAO_HEI_QWEN_*`.
+  - `engine.HTTPQwenEngine` (default) — calls a vLLM
+    OpenAI-compatible HTTP sidecar. Sends images as base64 JPEG data
+    URLs. Uses `response_format` for guided JSON decoding. `warmup()`
+    polls the sidecar until ready (up to 300 s).
+  - `engine.QwenEngine` (legacy) — loads vLLM in-process. Requires
+    `pip install .[qwen-local]` and a CUDA GPU in the same container.
   - `engine.EngineProtocol` — minimal Protocol so tests can inject a
     fake without importing vLLM / PIL.
+  - `image_utils.py` — shared `image_frame_to_pil` and `resize_pil`
+    helpers for BGR→RGB conversion and downscaling.
   - `prompts.build_system_prompt` + `build_user_message` — generic
     builders that cover all three question types (used by object-
     reference and instruction-following).
@@ -61,24 +62,23 @@ compose-smoke / CI paths keep working unchanged.
     than crash the rclpy node; numerical timeout falls back to
     `NumericalResponse(value=0)`.
 - **`src/xiao_hei_vln/app/main.py`** — `_build_responder(name)` picks
-  `dummy` vs `qwen` from `XIAO_HEI_RESPONDER`. Logs the responder
-  name in the ready line. Renames the node when `qwen` so logs are
-  unambiguous.
-- **`pyproject.toml`** — `[project.optional-dependencies] qwen =
-  ["vllm>=0.7,<0.10", "pillow>=10", "huggingface-hub>=0.24"]`. New
-  `xiao-hei-vlm` console script (alias of the existing dummy entry).
+  `dummy` vs `qwen` from `XIAO_HEI_RESPONDER`. When `qwen`:
+  selects `HTTPQwenEngine` if `vllm_base_url` is set, else falls back
+  to `QwenEngine`. Logs the responder name in the ready line.
+- **`pyproject.toml`** — two optional dep groups:
+  `qwen = ["openai>=1.30", "pillow>=10"]` (lightweight HTTP client,
+  default) and `qwen-local = ["vllm>=0.7,<0.10", "pillow>=10",
+  "huggingface-hub>=0.24"]` (heavy in-process, legacy).
 - **Docker:**
-  - `docker/Dockerfile` — `ARG XIAO_HEI_EXTRA` controls whether the
-    `[qwen]` extra is installed (default empty → dummy-only, fast
-    build). Sets `HF_HOME=/root/.cache/huggingface`. Default CMD is
-    `xiao-hei-vlm`.
-  - `docker/compose_gpu.yml` — forwards `XIAO_HEI_EXTRA`,
-    `XIAO_HEI_RESPONDER`, `HUGGING_FACE_HUB_TOKEN`, and the full
-    `XIAO_HEI_QWEN_*` env set. New named volume `hf_cache` mounted at
-    `HF_HOME` persists Qwen weights across rebuilds.
-  - `docker/compose.yml` — same `XIAO_HEI_EXTRA` / `XIAO_HEI_RESPONDER`
-    forwarding for the CPU compose path.
-  - `docker/README.md` — new "Switching responders (Qwen3.5)" section.
+  - `docker/Dockerfile` — `ARG XIAO_HEI_EXTRA` controls which extra
+    is installed (default `qwen` → openai + pillow only).
+  - `docker/compose_gpu.yml` — three services: `system` (challenge
+    sim), `vllm` (sidecar using `vllm/vllm-openai` image with local
+    model weights bind-mounted), `ai_module` (our code). Default env:
+    `XIAO_HEI_QWEN_VLLM_BASE_URL=http://localhost:8000/v1`.
+  - `docker/compose.yml` — two services for CPU/dummy mode (no GPU).
+  - `docker/README.md` — documents sidecar architecture, env vars,
+    and troubleshooting.
 - **Tests (no GPU required):**
   - `tests/test_qwen_config.py` — defaults match Phase-1 plan;
     `from_env()` overrides every knob.
@@ -158,7 +158,7 @@ docker/
   compose.yml                          + build args, responder env
   README.md                            + Qwen3.5 switching section
 pyproject.toml                          + [qwen] extra, xiao-hei-vlm script alias
-TASK 3 - Integrate Qwen3.5 VL for testing.md   this report
+TASK 4 - Integrate Qwen3.5 VL for testing.md   this report
 ```
 
 ## How to run
@@ -169,13 +169,16 @@ uv sync
 uv run pytest -q
 uv run ruff check src tests
 
-# Build a Qwen3.5-capable container (heavy: ~5 GB of CUDA + torch + vLLM)
-XIAO_HEI_EXTRA=qwen docker compose -f docker/compose_gpu.yml build ai_module
+# Build the ai_module (lightweight: only openai + pillow)
+docker compose -f docker/compose_gpu.yml build ai_module
 
-# Bring up sim + ai_module with Qwen as the responder
-XIAO_HEI_RESPONDER=qwen docker compose -f docker/compose_gpu.yml up -d
+# Bring up all three services (system + vllm sidecar + ai_module)
+docker compose -f docker/compose_gpu.yml up -d
 
-# Logs (first tick pays the model-download + CUDA-graph cost)
+# Watch vLLM startup (wait for "Uvicorn running on ...")
+docker logs -f xiao_hei_vllm
+
+# Watch ai_module logs
 docker logs -f xiao_hei_ai_module
 
 # Ask a numerical question
@@ -184,8 +187,8 @@ docker exec iros2026_system bash -lc \
    ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many cups\"}"'
 ```
 
-Weights persist in the named `hf_cache` volume across rebuilds; pass
-`HUGGING_FACE_HUB_TOKEN` if Qwen3.5 weights become gated.
+Model weights are bind-mounted from `../models/` into the vLLM
+container. Download weights to that directory before starting.
 
 ## Open follow-ups
 
@@ -199,7 +202,7 @@ Weights persist in the named `hf_cache` volume across rebuilds; pass
   instruction-following currently use the Phase-2 generic prompt.
   Specialising them is the natural next task once we have numerical
   scores from the eval node.
-- **Submission-grade image**: the current ai_module image inherits
-  the ~9.4 GB challenge base + ~5 GB of vLLM/torch on top. A
-  multi-stage `ros:jazzy-ros-base` build is the obvious shrink path
-  before the official submission.
+- **Submission-grade image**: the sidecar architecture keeps the
+  ai_module image lightweight (~9.4 GB challenge base + openai/pillow).
+  For submission, the vLLM sidecar can be replaced with a smaller
+  serving image or the model can be quantized.

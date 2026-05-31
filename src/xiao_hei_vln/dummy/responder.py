@@ -92,6 +92,9 @@ class DummyResponder:
         self._wp_idx = 0
         self._done = False
 
+    def close(self) -> None:
+        pass
+
     # --- internals ---------------------------------------------------------------
 
     def _within_reach(self, snapshot: VLMInput, wp: Waypoint) -> bool:

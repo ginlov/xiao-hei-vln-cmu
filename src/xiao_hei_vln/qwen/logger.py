@@ -190,7 +190,8 @@ def _slugify(text: str, max_len: int = 40) -> str:
     slug = text.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "_", slug)
     slug = slug.strip("_")
-    return slug[:max_len].rstrip("_")
+    slug = slug[:max_len].rstrip("_")
+    return slug or "untitled"
 
 
 def _config_to_dict(config: QwenConfig) -> dict[str, Any]:

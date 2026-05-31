@@ -7,6 +7,7 @@ injected via the `client=` kwarg.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -19,6 +20,9 @@ from xiao_hei_vln.messages.common import Header, Stamp
 from xiao_hei_vln.messages.sensors import ImageFrame
 from xiao_hei_vln.qwen import QwenConfig
 from xiao_hei_vln.qwen.engine import HTTPQwenEngine, _image_frame_to_data_url
+
+_has_pillow = importlib.util.find_spec("PIL") is not None
+_needs_pillow = pytest.mark.skipif(not _has_pillow, reason="pillow not installed")
 
 
 def _config(**overrides) -> QwenConfig:
@@ -99,6 +103,7 @@ class TestTextOnlyInfer:
 # --- infer (with image) --------------------------------------------------
 
 
+@_needs_pillow
 class TestImageInfer:
     def test_messages_include_base64_image_url(self) -> None:
         client = _mock_client(
@@ -202,6 +207,7 @@ class TestWarmup:
 # --- _image_frame_to_data_url -------------------------------------------
 
 
+@_needs_pillow
 class TestImageFrameToDataUrl:
     def test_small_image_roundtrips(self) -> None:
         frame = _image(width=10, height=8)

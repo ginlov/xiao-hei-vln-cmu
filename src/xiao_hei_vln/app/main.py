@@ -103,8 +103,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        if hasattr(responder, "_logger") and responder._logger is not None:
-            responder._logger.close()
+        responder.close()
         node.destroy_node()
         rclpy.shutdown()
 

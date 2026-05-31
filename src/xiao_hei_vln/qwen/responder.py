@@ -131,6 +131,10 @@ class QwenResponder:
         self._tick_count = 0
         self._evidence = []
 
+    def close(self) -> None:
+        if self._logger is not None:
+            self._logger.close()
+
     # --- internals ---------------------------------------------------------------
 
     def _build_prompts(
