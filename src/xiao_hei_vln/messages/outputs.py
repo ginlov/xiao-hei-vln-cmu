@@ -16,6 +16,10 @@ class NumericalResponse(BaseModel):
 
     kind: Literal["numerical"] = "numerical"
     value: int
+    # Free-text "why this answer" / running tally. Optional, not published
+    # to ROS — used by the responder to thread context across ticks (see
+    # `docs/task3_phase3_prompt.md`).
+    rationale: str | None = None
 
 
 class ObjectReferenceResponse(BaseModel):
@@ -33,6 +37,7 @@ class ObjectReferenceResponse(BaseModel):
     center: Vector3
     size: Vector3
     heading: float = 0.0
+    rationale: str | None = None
 
 
 class Waypoint(BaseModel):
@@ -52,6 +57,7 @@ class WaypointPathResponse(BaseModel):
 
     kind: Literal["waypoint_path"] = "waypoint_path"
     waypoints: list[Waypoint] = Field(min_length=1)
+    rationale: str | None = None
 
 
 VLMOutput = Annotated[

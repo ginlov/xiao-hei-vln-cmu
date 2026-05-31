@@ -11,7 +11,30 @@ dependencies = [
     "pydantic>=2.7",
 ]
 
+[project.optional-dependencies]
+# Lightweight HTTP client for the vLLM sidecar (default Qwen path).
+qwen = [
+    "openai>=1.30",
+    "pillow>=10",
+]
+# Heavy in-process vLLM engine. Requires CUDA GPU in the same process.
+# Use this only for single-process local development without docker-compose.
+qwen-local = [
+    "vllm>=0.7,<0.10",
+    "pillow>=10",
+    "huggingface-hub>=0.24",
+]
+# HTML report generation from VLM tick logs (scripts/generate_report.py).
+replay = [
+    "matplotlib>=3.8",
+    "pillow>=10",
+]
+
 [project.scripts]
+# `xiao-hei-vlm` is the canonical entry; pick the responder via the
+# `XIAO_HEI_RESPONDER=dummy|qwen` env var. `xiao-hei-dummy-vlm` is kept
+# as an alias so the Task-2 docker image / docs keep working.
+xiao-hei-vlm = "xiao_hei_vln.app.main:main"
 xiao-hei-dummy-vlm = "xiao_hei_vln.app.main:main"
 
 [build-system]

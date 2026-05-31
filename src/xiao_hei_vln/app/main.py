@@ -1,18 +1,51 @@
-"""rclpy entry point: dummy VLM driving the Task-1 stack at 2 Hz.
+"""rclpy entry point: drives the Task-1 stack at 2 Hz with the configured responder.
 
-Replace `DummyResponder` with the real model when it's ready — every
-other moving part stays put.
+Pick the responder with `XIAO_HEI_RESPONDER`:
+
+  - `dummy` (default) — the deterministic port of `dummyVLM.cpp`. No GPU.
+  - `qwen`            — Qwen3.5 via vLLM. By default talks to a vLLM
+                        HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
+                        Falls back to in-process vLLM when the URL is
+                        unset (`pip install .[qwen-local]` + CUDA GPU).
 """
 
 from __future__ import annotations
 
 import os
 
-from xiao_hei_vln.dummy import DummyResponder
 from xiao_hei_vln.messages.common import Stamp
 from xiao_hei_vln.sync import LatestCache
 
 TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
+RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
+
+
+def _build_responder(name: str):
+    if name == "dummy":
+        from xiao_hei_vln.dummy import DummyResponder
+
+        return DummyResponder()
+    if name == "qwen":
+        from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
+        from xiao_hei_vln.qwen.logger import VLMLogger
+
+        config = QwenConfig.from_env()
+        engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
+        engine.warmup()
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config=config,
+                responder_name="qwen",
+                tick_hz=TICK_HZ,
+            )
+        return QwenResponder(engine, config, logger=logger)
+    raise ValueError(
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
+    )
 
 
 def main() -> None:
@@ -24,12 +57,13 @@ def main() -> None:
     from xiao_hei_vln.adapters.ros.subscribers import bind_subscribers
 
     rclpy.init()
-    node: Node = rclpy.create_node("xiao_hei_dummy_vlm")
+    node_name = "xiao_hei_qwen_vlm" if RESPONDER_NAME == "qwen" else "xiao_hei_dummy_vlm"
+    node: Node = rclpy.create_node(node_name)
 
     cache = LatestCache()
     subs = bind_subscribers(node, cache)
     publisher = VLMOutputPublisher(node)
-    responder = DummyResponder()
+    responder = _build_responder(RESPONDER_NAME)
 
     state = {"tick_id": 0, "last_question_text": None}
 
@@ -60,7 +94,8 @@ def main() -> None:
     period_s = 1.0 / TICK_HZ
     node.create_timer(period_s, tick)
     node.get_logger().info(
-        f"xiao_hei_dummy_vlm ready (tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers)",
+        f"{node_name} ready (responder={RESPONDER_NAME}, "
+        f"tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers)",
     )
 
     try:
@@ -68,6 +103,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        responder.close()
         node.destroy_node()
         rclpy.shutdown()
 

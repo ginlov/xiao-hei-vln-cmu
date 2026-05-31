@@ -1,4 +1,5 @@
 services:
+  # Challenge simulator (unmodified official image).
   system:
     image: zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation
     container_name: iros2026_system
@@ -24,24 +25,65 @@ services:
               count: all
               capabilities: [gpu]
 
+  # vLLM OpenAI-compatible inference server (sidecar).
+  # Uses the official image — no pip conflicts with the ROS base image.
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: xiao_hei_vllm
+    network_mode: host
+    environment:
+      - HUGGING_FACE_HUB_TOKEN
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ../models:/models
+    command:
+      - "${XIAO_HEI_QWEN_MODEL:-/models/Qwen3.5-4B}"
+      - "--dtype"
+      - "${XIAO_HEI_QWEN_DTYPE:-bfloat16}"
+      - "--max-model-len"
+      - "${XIAO_HEI_QWEN_MAX_MODEL_LEN:-4096}"
+      - "--gpu-memory-utilization"
+      - "${XIAO_HEI_QWEN_GPU_MEM_UTIL:-0.85}"
+      - "--trust-remote-code"
+      - "--limit-mm-per-prompt"
+      - '{"image": 4}'
+      - "--port"
+      - "8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Our AI module — replaces the challenge's iros2026_ai_module.
   ai_module:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-qwen}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
     environment:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - PYTHONUNBUFFERED=1
-    # Bind-mount source for fast iteration (editable install picks up changes).
-    # Comment out for submission-style runs that should use only the baked image.
+      - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-qwen}
+      - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
+      - XIAO_HEI_QWEN_MODEL
+      - XIAO_HEI_VLM_TICK_HZ
+      - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
+      - ../vlm_logs:/vlm_logs
     stdin_open: true
     tty: true
     depends_on:
       - system
+      - vllm
     restart: unless-stopped
     deploy:
       resources:
@@ -50,3 +92,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+volumes:
+  hf_cache: {}

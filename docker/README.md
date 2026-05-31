@@ -2,9 +2,7 @@
 
 This directory builds the container that hosts our Python VLM stack
 (`xiao_hei_vln`) and connects it to the official CMU VLN Challenge
-ROS 2 simulator. Today it runs a **dummy responder** ported from the
-challenge reference `dummyVLM.cpp`; replacing the dummy with a real
-VLM is a one-file change documented at the bottom.
+ROS 2 simulator.
 
 ## What's here
 
@@ -12,64 +10,77 @@ VLM is a one-file change documented at the bottom.
 |---|---|
 | `Dockerfile` | Builds `xiao-hei/ai_module:latest` by extending `zhangjicmu/ubuntu24_ros:ai_module`, installing `python3-pip`, then editable-installing this repo into the system Python 3.12 (same interpreter as `rclpy`). |
 | `entrypoint.sh` | Sources ROS Jazzy and sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` before `exec`-ing the container CMD. |
-| `compose.yml` / `compose_gpu.yml` | Bring up two services: `iros2026_system` (the unmodified challenge sim) and `xiao_hei_ai_module` (our image). Both share `network_mode: host` and cyclonedds. The GPU file adds NVIDIA reservations to both. |
+| `compose.yml` | CPU-only / dummy-responder stack: `iros2026_system` + `xiao_hei_ai_module`. No GPU, no vLLM. |
+| `compose_gpu.yml` | Full GPU stack: `iros2026_system` + `xiao_hei_vllm` (vLLM sidecar) + `xiao_hei_ai_module`. |
 
 ## Build
 
 ```bash
-cd docker
-docker compose -f compose_gpu.yml build ai_module    # or compose.yml on CPU-only hosts
+# Build the ai_module image (installs openai + pillow for the HTTP sidecar)
+docker compose -f docker/compose_gpu.yml build ai_module
 ```
 
-First build takes ~30 s on a warm cache (the heavy `ros-jazzy-desktop`
-layer comes from the parent image). Subsequent builds skip everything
-above the `COPY src` layer if only Python sources changed.
-
-## Run the full stack end-to-end
+## Run the full stack with Qwen3.5 (sidecar mode)
 
 ```bash
-xhost +local:                                                              # let containers reach your X server
-docker compose -f docker/compose_gpu.yml up -d                             # bring up both containers
+xhost +local:
+docker compose -f docker/compose_gpu.yml up -d
+
+# The vLLM sidecar downloads Qwen3.5-4B weights on first boot (~8 GB).
+# Watch its logs to see when it's ready:
+docker logs -f xiao_hei_vllm
+# Wait for: "Uvicorn running on http://0.0.0.0:8000"
 
 # Start the simulator (RViz opens on your host display)
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
 
-# Our VLM is already running. Tail its logs in a second terminal:
+# Our VLM auto-starts once vLLM is reachable. Tail its logs:
 docker logs -f xiao_hei_ai_module
 
 # Fire test questions from any container with ROS sourced:
 docker exec iros2026_system bash -lc \
   'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
    ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many cups\"}"'
-# → publishes std_msgs/Int32 on /numerical_response
-
-docker exec iros2026_system bash -lc \
-  'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
-   ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"Find the red cup\"}"'
-# → publishes visualization_msgs/Marker on /selected_object_marker
-
-docker exec iros2026_system bash -lc \
-  'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
-   ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"Take the path near the window\"}"'
-# → publishes geometry_msgs/Pose2D on /way_point_with_heading; vehicle advances through waypoints.ply
 
 # Tear down
 docker compose -f docker/compose_gpu.yml down
 ```
 
-## How code lands inside the container
+## Run dummy-only (no GPU)
 
-- **Baked**: `COPY src ./src` + `pip install -e .` puts our package at
-  `/opt/xiao_hei_vln/src/xiao_hei_vln/`. The console script
-  `xiao-hei-dummy-vlm` is installed into `/usr/local/bin/`.
-- **Bind-mounted** (dev): the compose files mount `../src` over
-  `/opt/xiao_hei_vln/src:ro`. Because the install is editable, code
-  changes on your host are visible the next time the container starts
-  (`docker compose restart ai_module`). Comment that volume out for
-  "what the submission will see" runs.
-- **Env knobs**: `XIAO_HEI_VLM_TICK_HZ` overrides the 2 Hz default;
-  `RMW_IMPLEMENTATION` defaults to `rmw_cyclonedds_cpp` to match the
-  challenge stack.
+```bash
+XIAO_HEI_RESPONDER=dummy docker compose -f docker/compose.yml up -d
+```
+
+## Architecture: sidecar vs in-process
+
+**Sidecar (default, recommended)**: the `compose_gpu.yml` stack runs
+three containers. The `vllm` service uses the official
+`vllm/vllm-openai` image and exposes an OpenAI-compatible API at
+`localhost:8000`. The `ai_module` calls it via HTTP using the
+lightweight `openai` Python SDK. No CUDA deps are installed in the
+ai_module image — this completely avoids the pip/apt package conflicts
+with the ROS base image.
+
+**In-process (legacy)**: set `XIAO_HEI_QWEN_VLLM_BASE_URL=""` and
+build with `XIAO_HEI_EXTRA=qwen-local` to load vLLM directly inside
+the ai_module container. This path requires manually resolving
+pip/apt conflicts in the Dockerfile and is not recommended.
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `XIAO_HEI_RESPONDER` | `qwen` (GPU compose) / `dummy` (CPU compose) | Which responder to use |
+| `XIAO_HEI_QWEN_VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM server URL. Unset for in-process mode |
+| `XIAO_HEI_QWEN_MODEL` | `/models/Qwen3.5-4B` | Model path (local) or HuggingFace ID |
+| `XIAO_HEI_QWEN_DTYPE` | `bfloat16` | Model dtype (vLLM server arg) |
+| `XIAO_HEI_QWEN_MAX_MODEL_LEN` | `4096` | Max context length |
+| `XIAO_HEI_QWEN_GPU_MEM_UTIL` | `0.85` | GPU memory fraction for vLLM |
+| `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` (GPU compose) / (unset, CPU) | Directory for VLM tick logs. When set, every tick is logged to JSONL + JPEG. |
+| `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz |
+| `HUGGING_FACE_HUB_TOKEN` | (unset) | HF token if model weights are gated |
+| `XIAO_HEI_EXTRA` | `qwen` (GPU compose) / (empty, CPU compose) | pip extra to install at build time |
 
 ## Publish to Docker Hub (for the challenge submission)
 
@@ -101,10 +112,11 @@ The container will auto-start the VLM on `docker compose up` — no
 need to `docker exec` and `ros2 launch` like the reference C++ dummy
 required.
 
-## Replacing the dummy with the real VLM later
+## Replacing with another VLM later
 
-Only **`src/xiao_hei_vln/app/main.py`** needs to change: swap
-`DummyResponder()` for the real model. Everything else stays put:
+Only **`src/xiao_hei_vln/app/main.py`** needs to change: add a new
+branch to `_build_responder()` returning anything that implements
+`respond / is_done / reset`. Everything else stays put:
 
 - The topic contract (`bind_subscribers`, `VLMOutputPublisher`)
 - `LatestCache` and the 2 Hz tick
@@ -119,6 +131,59 @@ discriminated union — no new code paths required.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `docker logs xiao_hei_ai_module` shows the "ready" line but `ros2 topic info /challenge_question` reports `Subscription count: 0` | Containers using different DDS implementations | Confirm both have `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` set (visible via `docker exec <c> env | grep RMW`). |
-| Publisher sends a response but `ros2 topic echo --once` returns nothing | Late-subscriber + VOLATILE QoS — `echo --once` started after our publish | Run `ros2 topic echo /<topic>` *before* publishing the question. |
-| `pip install -e .` fails complaining about NumPy uninstall | NumPy from apt has no RECORD file | Keep `numpy>=1.26` in `pyproject.toml` (already done) so the apt-installed version satisfies the requirement. |
+| `docker logs xiao_hei_ai_module` shows "Waiting for vLLM server…" indefinitely | vLLM container not started, or model download stalled | Check `docker logs xiao_hei_vllm` for download progress or OOM errors. |
+| vLLM OOM on model load | Model too large for GPU | Use a smaller model (e.g. `XIAO_HEI_QWEN_MODEL=/models/Qwen3.5-2B`) or lower `XIAO_HEI_QWEN_GPU_MEM_UTIL`. |
+| ai_module ready but `ros2 topic info /challenge_question` shows `Subscription count: 0` | DDS mismatch | Confirm both have `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` (`docker exec <c> env \| grep RMW`). |
+| Publisher sends a response but `ros2 topic echo --once` returns nothing | Late-subscriber + VOLATILE QoS | Run `ros2 topic echo /<topic>` *before* publishing the question. |
+
+## VLM tick logging
+
+When `XIAO_HEI_VLM_LOG_DIR` is set (default `/vlm_logs` in the GPU
+compose), every VLM tick is recorded for post-run debugging:
+
+```
+vlm_logs/
+  session_20260530_143022/
+    session.json                  # Config snapshot (model, tick_hz, etc.)
+    q_001_how_many_chairs/
+      ticks.jsonl                 # One JSON line per tick
+      images/
+        tick_000003.jpg
+      pointclouds/                # Lidar/terrain .npy arrays per tick
+        tick_000003_registered.npy
+        tick_000003_terrain_local.npy
+        tick_000003_terrain_ext.npy
+      report.html                 # Self-contained HTML report (generated)
+    q_002_find_the_red_cup/
+      ticks.jsonl
+      images/
+        tick_000007.jpg
+```
+
+The `compose_gpu.yml` bind-mounts `../vlm_logs` into the container, so
+logs appear on the host automatically.
+
+### Inspecting logs
+
+```bash
+# Text summary
+python scripts/replay_session.py vlm_logs/session_20260530_143022
+
+# Filter by question
+python scripts/replay_session.py vlm_logs/session_20260530_143022 -q chairs
+
+# Generate HTML reports (camera playback, pose trajectory, sensor BEV,
+# per-tick I/O, latency charts)
+pip install xiao-hei-vln[replay]  # adds matplotlib
+python scripts/generate_report.py vlm_logs/session_20260530_143022/
+open vlm_logs/session_20260530_143022/q_001_*/report.html
+
+# Single question report
+python scripts/generate_report.py vlm_logs/session_*/ -q chairs
+```
+
+To disable logging, unset the env var:
+
+```bash
+XIAO_HEI_VLM_LOG_DIR="" docker compose -f docker/compose_gpu.yml up -d
+```

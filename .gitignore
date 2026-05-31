@@ -1,3 +1,9 @@
+# Model weights (downloaded locally, not committed)
+models/
+
+# VLM tick logs (generated at runtime, not committed)
+vlm_logs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

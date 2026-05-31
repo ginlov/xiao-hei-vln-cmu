@@ -31,3 +31,62 @@ This task includes three phases:
 - Investigate how dummy container in the challenge repo was built.
 - Plan of building a dummy system for this repo so that I get use it from now.
 - Implement it and write report on how to use, how to build, how to integrate VLM later and how to replace the ai module container in challenge repo by that container.
+
+## Task 4 - Integrate Qwen3.5VL for testing
+This task is to integrate Qwen3.5VL into the model to get initial results.
+
+This task includes three phases:
+
+- Research the proper library, framework to run Qwen3.5 VL for this challenge since we are gonna receive data frequently depends on the frequency we set.
+- Implement that serving service.
+- Design the prompt for the type one question which is numerical question, when we receive the question, Qwen model need to return the waypoint for the robot to navigate and also at the end, answer that numerical questions.
+
+### Task 4.1
+It seems like the dependencies of vllm are too different from the ROS system. Setting up a separate container for vllm only is better approach. For this task.
+- Let set up a new container for Qwen3.5 VL only.
+- Integrate the system so that we just need to start all in one.
+
+## Task 5 — VLM tick logger for debugging and visualization
+
+During live runs the VLM tick loop processes camera frames, constructs prompts, and produces outputs at 2 Hz — but none of this is persisted. When something goes wrong (bad answer, missed object, waypoint loop) there is no way to replay what the model saw, what it was asked, or what it responded.
+
+This task adds a file-based logger that records every VLM tick to disk so runs can be inspected, visualized, and compared after the fact.
+
+### What to log per tick
+
+- `tick_id`, `tick_time`, inference latency (ms)
+- Question text and classified type
+- Robot pose (position + orientation)
+- System prompt and user text sent to the engine
+- Full `VLMOutput` JSON (including rationale)
+- Evidence log snapshot (for multi-tick numerical reasoning)
+- Camera frame saved as JPEG
+- Lidar and terrain point clouds saved as `.npy` files
+
+### File layout
+
+Logs are organized per question within each session:
+
+```
+vlm_logs/
+  session_20260530_143022/
+    session.json                    # Config snapshot, model, responder, tick_hz
+    q_001_how_many_chairs/
+      ticks.jsonl                   # One JSON line per tick for this question
+      images/
+        tick_000003.jpg
+      pointclouds/
+        tick_000003_registered.npy
+        tick_000003_terrain_local.npy
+      report.html                   # Generated HTML report
+    q_002_find_the_red_cup/
+      ticks.jsonl
+      images/
+        tick_000007.jpg
+```
+
+### Phases
+
+- **Phase 1 — VLMLogger core**: implement `VLMLogger` class that writes `session.json` on init, appends to `ticks.jsonl` per tick, saves JPEG images, and saves lidar/terrain point clouds as `.npy` files. Toggled by `XIAO_HEI_VLM_LOG_DIR` env var.
+- **Phase 2 — Integration**: wire the logger into `QwenResponder` so it captures prompts, input metadata, output, and latency. Add `log_dir` passthrough from `compose_gpu.yml` with a bind-mount volume.
+- **Phase 3 — HTML report generator**: `scripts/generate_report.py` produces a self-contained HTML report per question with camera playback (JS slider), pose trajectory + waypoints (matplotlib), sensor BEV scatter plot, expandable per-tick I/O table, and latency chart. Works per-question or all questions in a session. Text-only replay via `scripts/replay_session.py` also available.

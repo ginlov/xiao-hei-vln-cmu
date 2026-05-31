@@ -17,7 +17,19 @@ COPY src ./src
 # marks the system Python as externally-managed; --break-system-packages is the
 # accepted escape hatch inside an isolated container image. Editable mode lets a
 # bind mount over /opt/xiao_hei_vln/src take effect without reinstalling.
-RUN python3 -m pip install --no-cache-dir --break-system-packages -e .
+#
+# Build arg `XIAO_HEI_EXTRA` controls which optional dep group is installed:
+#   - "" (default): no extras → dummy responder only. Fast build.
+#   - "qwen":       installs `openai` + `pillow` for the HTTP sidecar engine
+#                   (lightweight, no CUDA conflicts).
+#   - "qwen-local": installs vLLM + torch + CUDA wheels in-process (heavy,
+#                   may conflict with apt packages — not recommended).
+ARG XIAO_HEI_EXTRA=""
+RUN if [ -n "$XIAO_HEI_EXTRA" ]; then \
+        python3 -m pip install --no-cache-dir --break-system-packages -e ".[${XIAO_HEI_EXTRA}]"; \
+    else \
+        python3 -m pip install --no-cache-dir --break-system-packages -e .; \
+    fi
 
 # --- ROS env ---------------------------------------------------------------
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -28,4 +40,4 @@ RUN echo "source /opt/ros/jazzy/setup.bash" >> /home/docker/.bashrc \
 COPY docker/entrypoint.sh /usr/local/bin/xiao_hei_entrypoint.sh
 RUN chmod +x /usr/local/bin/xiao_hei_entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/xiao_hei_entrypoint.sh"]
-CMD ["xiao-hei-dummy-vlm"]
+CMD ["xiao-hei-vlm"]
