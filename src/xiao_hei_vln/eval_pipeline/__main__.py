@@ -67,14 +67,14 @@ def main() -> None:
                     "prediction": s.prediction.model_dump(),
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        print(f"Samples written to {args.samples_out}")
+        print(f"Samples written to {args.samples_out}", file=sys.stderr)
 
-    print("\n--- Evaluation ---")
+    print("\n--- Evaluation ---", file=sys.stderr)
     report = Evaluator().evaluate(samples)
 
     if args.out:
         args.out.write_text(report.to_json())
-        print(f"Results written to {args.out}")
+        print(f"Results written to {args.out}", file=sys.stderr)
         report.print_summary()
     elif args.json:
         print(report.to_json())

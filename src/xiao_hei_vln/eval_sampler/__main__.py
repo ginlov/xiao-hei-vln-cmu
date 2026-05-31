@@ -71,17 +71,17 @@ def assemble_samples(
         gt = gt_from_entry(entry)
         if gt is None:
             print(
-                f"  [skip GT] {question!r:.60}: unsupported type {entry.get('type')!r}",
+                f"  [skip GT] {question!r:.60}: could not convert GT (type={entry.get('type')!r})",
                 file=sys.stderr,
             )
             gt_skipped += 1
             continue
         gt_lookup[question] = gt
 
-    print(f"GT loaded: {len(gt_lookup)} entries  (skipped {gt_skipped})")
+    print(f"GT loaded: {len(gt_lookup)} entries  (skipped {gt_skipped})", file=sys.stderr)
 
     pred_entries = _load_jsonl(pred_path)
-    print(f"Predictions loaded: {len(pred_entries)} entries")
+    print(f"Predictions loaded: {len(pred_entries)} entries", file=sys.stderr)
 
     samples: list[EvalSample] = []
     unmatched = parse_errors = 0
@@ -103,7 +103,7 @@ def assemble_samples(
 
         samples.append(EvalSample(question=question, ground_truth=gt, prediction=pred))
 
-    print(f"\nAssembled {len(samples)} samples  (unmatched={unmatched}  parse_errors={parse_errors})")
+    print(f"\nAssembled {len(samples)} samples  (unmatched={unmatched}  parse_errors={parse_errors})", file=sys.stderr)
     return samples
 
 
@@ -119,7 +119,7 @@ def run(gt_path: Path, pred_path: Path, out_path: Path, limit: int | None) -> No
             }
             out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"Output: {out_path}  ({len(samples)} samples)")
+    print(f"Output: {out_path}  ({len(samples)} samples)", file=sys.stderr)
 
 
 def main() -> None:
