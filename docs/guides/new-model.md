@@ -69,13 +69,13 @@ Edit `src/xiao_hei_vln/app/main.py`:
 def _build_responder(name: str):
     if name == "dummy":
         from xiao_hei_vln.dummy import DummyResponder
-        return DummyResponder()
+        return DummyResponder(), None
     if name == "qwen":
         # ... existing Qwen setup ...
-        return QwenResponder(engine, config, logger=logger)
+        return QwenResponder(engine, config, logger=logger), logger
     if name == "my_model":
         from xiao_hei_vln.my_model.responder import MyModelResponder
-        return MyModelResponder()
+        return MyModelResponder(), None
     raise ValueError(f"Unknown XIAO_HEI_RESPONDER={name!r}")
 ```
 

@@ -50,7 +50,7 @@ from xiao_hei_vln.qwen.prompts import (
 
 if TYPE_CHECKING:
     from xiao_hei_vln.qwen.engine import EngineProtocol
-    from xiao_hei_vln.qwen.logger import VLMLogger
+    from xiao_hei_vln.logger import VLMLogger
 
 log = logging.getLogger(__name__)
 

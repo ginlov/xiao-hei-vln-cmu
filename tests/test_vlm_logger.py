@@ -22,8 +22,8 @@ from xiao_hei_vln.messages import (
     WaypointPathResponse,
 )
 from xiao_hei_vln.messages.sensors import ImageFrame
+from xiao_hei_vln.logger import VLMLogger
 from xiao_hei_vln.qwen.config import QwenConfig
-from xiao_hei_vln.qwen.logger import VLMLogger
 
 _has_pillow = importlib.util.find_spec("PIL") is not None
 _needs_pillow = pytest.mark.skipif(not _has_pillow, reason="pillow not installed")
@@ -70,8 +70,10 @@ def _snapshot(
 
 @pytest.fixture()
 def logger(tmp_path: Path) -> VLMLogger:
+    from dataclasses import asdict
+
     cfg = QwenConfig()
-    lg = VLMLogger(tmp_path, config=cfg, responder_name="qwen", tick_hz=2.0)
+    lg = VLMLogger(tmp_path, config=asdict(cfg), responder_name="qwen", tick_hz=2.0)
     yield lg
     lg.close()
 

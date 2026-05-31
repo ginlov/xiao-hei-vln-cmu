@@ -14,7 +14,6 @@ dummy-only environments. Select via ``XIAO_HEI_RESPONDER=qwen`` in
 
 from xiao_hei_vln.qwen.config import QwenConfig
 from xiao_hei_vln.qwen.engine import EngineProtocol, HTTPQwenEngine, QwenEngine
-from xiao_hei_vln.qwen.logger import VLMLogger
 from xiao_hei_vln.qwen.responder import QwenResponder
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "QwenConfig",
     "QwenEngine",
     "QwenResponder",
-    "VLMLogger",
 ]

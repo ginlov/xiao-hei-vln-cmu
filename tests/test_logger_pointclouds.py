@@ -19,8 +19,8 @@ from xiao_hei_vln.messages import (
     VLMInput,
 )
 from xiao_hei_vln.messages.sensors import LidarScan, TerrainMap
+from xiao_hei_vln.logger import VLMLogger
 from xiao_hei_vln.qwen.config import QwenConfig
-from xiao_hei_vln.qwen.logger import VLMLogger
 
 
 def _stamp(t: float = 0.0) -> Stamp:
@@ -55,8 +55,10 @@ def _terrain(n: int = 50, range_: str = "local_5m") -> TerrainMap:
 
 @pytest.fixture()
 def logger(tmp_path: Path) -> VLMLogger:
+    from dataclasses import asdict
+
     lg = VLMLogger(
-        tmp_path, config=QwenConfig(), responder_name="qwen", tick_hz=2.0,
+        tmp_path, config=asdict(QwenConfig()), responder_name="qwen", tick_hz=2.0,
     )
     yield lg
     lg.close()

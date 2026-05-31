@@ -1,4 +1,4 @@
-"""Shared image helpers for the Qwen module (engine + logger)."""
+"""Shared image helpers (engine + logger)."""
 
 from __future__ import annotations
 

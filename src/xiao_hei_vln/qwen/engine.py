@@ -24,7 +24,7 @@ from pydantic import TypeAdapter
 from xiao_hei_vln.messages import VLMOutput, parse_vlm_output
 from xiao_hei_vln.messages.sensors import ImageFrame
 from xiao_hei_vln.qwen.config import QwenConfig
-from xiao_hei_vln.qwen.image_utils import image_frame_to_pil, resize_pil
+from xiao_hei_vln.image_utils import image_frame_to_pil, resize_pil
 
 if TYPE_CHECKING:
     from PIL.Image import Image as PILImage
