@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 xiao-hei-dummy-vlm = "xiao_hei_vln.app.main:main"
+xiao-hei-eval = "xiao_hei_vln.evaluator.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
