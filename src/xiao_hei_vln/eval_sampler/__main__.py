@@ -32,7 +32,7 @@ from pathlib import Path
 
 from xiao_hei_vln.eval_sampler.gt_converter import gt_from_entry
 from xiao_hei_vln.evaluator.types import EvalSample
-from xiao_hei_vln.messages.outputs import parse_vlm_output
+from xiao_hei_vln.messages.outputs import VLMOutput, parse_vlm_output
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -61,7 +61,8 @@ def assemble_samples(
     if limit is not None:
         gt_entries = gt_entries[:limit]
 
-    gt_lookup: dict[str, object] = {}
+    # Fix #6: correct type annotation (was dict[str, object])
+    gt_lookup: dict[str, VLMOutput] = {}
     gt_skipped = 0
     for entry in gt_entries:
         question = entry.get("question", "").strip()
@@ -76,9 +77,19 @@ def assemble_samples(
             )
             gt_skipped += 1
             continue
+        # Fix #4: warn on duplicate question keys instead of silently overwriting
+        if question in gt_lookup:
+            print(
+                f"  [dup GT] duplicate question key — keeping first: {question!r:.60}",
+                file=sys.stderr,
+            )
+            gt_skipped += 1
+            continue
         gt_lookup[question] = gt
 
     print(f"GT loaded: {len(gt_lookup)} entries  (skipped {gt_skipped})", file=sys.stderr)
+    if limit is not None:
+        print(f"  (note: --limit {limit} is active; predictions outside this window will show as unmatched)", file=sys.stderr)
 
     pred_entries = _load_jsonl(pred_path)
     print(f"Predictions loaded: {len(pred_entries)} entries", file=sys.stderr)
@@ -94,8 +105,14 @@ def assemble_samples(
             unmatched += 1
             continue
 
+        # Fix #5: handle missing "prediction" key explicitly before parse
+        raw_pred = pred_entry.get("prediction")
+        if raw_pred is None:
+            print(f"  [missing key] entry {i}: no 'prediction' field", file=sys.stderr)
+            parse_errors += 1
+            continue
         try:
-            pred = parse_vlm_output(pred_entry["prediction"])
+            pred = parse_vlm_output(raw_pred)
         except Exception as exc:
             print(f"  [parse error] entry {i}: {exc}", file=sys.stderr)
             parse_errors += 1
@@ -107,9 +124,8 @@ def assemble_samples(
     return samples
 
 
-def run(gt_path: Path, pred_path: Path, out_path: Path, limit: int | None) -> None:
-    samples = assemble_samples(gt_path, pred_path, limit)
-
+def write_samples_jsonl(samples: list[EvalSample], out_path: Path) -> None:
+    """Serialize EvalSamples to a JSONL file (shared by gen-samples and eval-pipeline CLIs)."""
     with out_path.open("w") as out_f:
         for sample in samples:
             record = {
@@ -119,6 +135,10 @@ def run(gt_path: Path, pred_path: Path, out_path: Path, limit: int | None) -> No
             }
             out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+
+def run(gt_path: Path, pred_path: Path, out_path: Path, limit: int | None) -> None:
+    samples = assemble_samples(gt_path, pred_path, limit)
+    write_samples_jsonl(samples, out_path)
     print(f"Output: {out_path}  ({len(samples)} samples)", file=sys.stderr)
 
 

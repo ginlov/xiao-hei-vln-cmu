@@ -17,7 +17,7 @@ def gt_from_entry(entry: dict) -> VLMOutput | None:
 
     if qtype == "numerical":
         answer = entry.get("answer")
-        if not isinstance(answer, int):
+        if not isinstance(answer, int) or isinstance(answer, bool):
             return None
         return NumericalResponse(value=answer)
 

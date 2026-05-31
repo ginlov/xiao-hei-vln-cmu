@@ -24,11 +24,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
-from xiao_hei_vln.eval_sampler.__main__ import assemble_samples
+from xiao_hei_vln.eval_sampler.__main__ import assemble_samples, write_samples_jsonl
 from xiao_hei_vln.evaluator.runner import Evaluator
 
 
@@ -59,14 +58,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.samples_out:
-        with args.samples_out.open("w") as f:
-            for s in samples:
-                record = {
-                    "question": s.question,
-                    "ground_truth": s.ground_truth.model_dump(),
-                    "prediction": s.prediction.model_dump(),
-                }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        write_samples_jsonl(samples, args.samples_out)
         print(f"Samples written to {args.samples_out}", file=sys.stderr)
 
     print("\n--- Evaluation ---", file=sys.stderr)

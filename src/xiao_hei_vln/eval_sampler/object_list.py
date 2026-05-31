@@ -28,6 +28,8 @@ def parse_object_list(lines: list[str]) -> dict[int, ObjectEntry]:
     """Parse a list of object_list strings into a dict keyed by object_id."""
     result: dict[int, ObjectEntry] = {}
     for line in lines:
+        if not isinstance(line, str):
+            continue
         entry = _parse_line(line.strip())
         if entry is not None:
             result[entry.object_id] = entry
