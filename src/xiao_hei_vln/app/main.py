@@ -86,6 +86,8 @@ def main() -> None:
             publisher.publish(out)
 
         if responder.is_done():
+            # The responder must always produce a non-None final answer,
+            # even on timeout — the guard here is defensive, not expected.
             if logger is not None and out is not None and snapshot.question is not None:
                 logger.write_prediction(snapshot.question.text, out)
             node.get_logger().info("Response complete; awaiting next question.")
