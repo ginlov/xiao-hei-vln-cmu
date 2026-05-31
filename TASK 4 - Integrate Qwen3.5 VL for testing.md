@@ -202,6 +202,13 @@ container. Download weights to that directory before starting.
   instruction-following currently use the Phase-2 generic prompt.
   Specialising them is the natural next task once we have numerical
   scores from the eval node.
+- **VLM-based question classification**: the current classifier
+  (`classify_question()` in `messages/question.py`) is a keyword
+  heuristic ("How many" → numerical, "Find" → object_reference,
+  else → instruction_following). Explore whether the VLM itself can
+  classify the question type as part of its first-tick response,
+  removing the brittle heuristic and handling ambiguous or
+  unconventional phrasings that the keyword rules would misclassify.
 - **Submission-grade image**: the sidecar architecture keeps the
   ai_module image lightweight (~9.4 GB challenge base + openai/pillow).
   For submission, the vLLM sidecar can be replaced with a smaller
