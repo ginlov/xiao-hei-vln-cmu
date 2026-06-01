@@ -23,8 +23,8 @@ Scene-level splitting (a.k.a. Group K-Fold) forces the model to generalize to
 NEW scenes — which is what the CMU VLN Challenge actually evaluates.
 
 Inputs (any subset, present in this directory):
-  - vla3d_ref.jsonl
-  - vla3d_num.jsonl
+  - vla3d_ref.jsonl    (includes nested ref pairs after merge_nested.py)
+  - vla3d_num.jsonl    (includes nested num pairs after merge_nested.py)
   - phase1_raw.jsonl   (kept as fallback / style comparison)
 
 Output: each fold contains all source pairs partitioned by the pair's `scene`
@@ -42,7 +42,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
 
-DEFAULT_SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
+DEFAULT_SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 OPTIONAL_SOURCES = ("phase1_raw.jsonl", "vla3d_hard.jsonl")
 
 # For 15 scenes; only used in single-split mode

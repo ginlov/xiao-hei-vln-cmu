@@ -23,7 +23,10 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
-SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
+# After `merge_nested.py` runs, nested samples live inside vla3d_ref.jsonl
+# and vla3d_num.jsonl (identified via the `source` field), so we only check
+# the two type-aligned files here.
+SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 
 
 def runtime_classifier(text: str) -> str:
