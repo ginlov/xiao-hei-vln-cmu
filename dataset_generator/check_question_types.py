@@ -27,6 +27,7 @@ DATASET_DIR = HERE.parent / "dataset"
 # and vla3d_num.jsonl (identified via the `source` field), so we only check
 # the two type-aligned files here.
 SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
+NESTED_INTERMEDIATE = "vla3d_nested.jsonl"
 
 
 def runtime_classifier(text: str) -> str:
@@ -40,6 +41,14 @@ def runtime_classifier(text: str) -> str:
 
 
 def main() -> int:
+    nested_path = DATASET_DIR / NESTED_INTERMEDIATE
+    if nested_path.exists():
+        print(
+            f"[error] Found {NESTED_INTERMEDIATE} in {DATASET_DIR}. "
+            "Run merge_nested.py before check_question_types.py."
+        )
+        return 1
+
     total = 0
     mismatches = 0
     loaded = 0
