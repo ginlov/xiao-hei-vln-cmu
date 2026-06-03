@@ -75,17 +75,19 @@ Or step-by-step (equivalent):
 uv run python dataset_generator/vla3d_ref_to_qa.py     # → dataset/vla3d_ref.jsonl     (~67 MB)
 uv run python dataset_generator/vla3d_num_gen.py       # → dataset/vla3d_num.jsonl     (~3 MB)
 uv run python dataset_generator/vla3d_nested_gen.py    # → dataset/vla3d_nested.jsonl  (~14 MB, intermediate)
-uv run python dataset_generator/merge_nested.py        # folds nested → ref/num, drops nested.jsonl
-uv run python dataset_generator/check_question_types.py # sanity check
+uv run python dataset_generator/check_question_types.py # auto-merges nested + sanity-checks
 ```
 
-The pipeline order matters: the three generators must run first, then
-`merge_nested.py` reads `vla3d_nested.jsonl`, splits its rows by
-`type`, appends them to `vla3d_ref.jsonl` / `vla3d_num.jsonl`,
-deterministically shuffles each (so single-layer and nested pairs are
-interleaved rather than block-segregated), and deletes the nested
-file. The merge is idempotent — re-running it after nested.jsonl is
-gone is a no-op.
+Nested samples are not a separate runtime type (`classify_question()`
+only knows `numerical` / `object_reference` / `instruction_following`),
+so the nested generator's output is an *intermediate file* that gets
+folded back into the two type-aligned jsonl files. Both downstream
+consumers — `check_question_types.py` and `split_and_dump.py` —
+**auto-merge** `vla3d_nested.jsonl` into `vla3d_ref.jsonl` /
+`vla3d_num.jsonl` at startup if they find it still on disk, so the user
+never has to remember the merge step. `merge_nested.py` also exists as
+an explicit CLI entry point for CI / batch-style invocation; it is
+idempotent (no-op when nested.jsonl is already absent).
 
 All steps are deterministic — seed `42` is fixed, so the same VLA-3D
 source data + this code reproduces byte-identical jsonl. The
@@ -117,8 +119,8 @@ dataset_generator/          # generator code (committed)
 ├── vla3d_ref_to_qa.py      Rewrite VLA-3D ref statements → 6,730 "Find …" pairs
 ├── vla3d_num_gen.py        8 numerical templates (count, color-conditioned, refusal)
 ├── vla3d_nested_gen.py     Two-stage nested patterns: inner relation × outer closest/farthest
-├── merge_nested.py         Fold nested.jsonl into ref/num jsonl by type, then delete it
-├── regen.sh                One-shot driver: runs the four generators + merge + sanity check
+├── merge_nested.py         Fold nested.jsonl into ref/num jsonl by type (auto-called by consumers; CLI also)
+├── regen.sh                One-shot driver: runs the three generators + sanity check (merge is implicit)
 ├── noise_augment.py        Perception-noise library (drop/swap/jitter, target-protected)
 ├── split_and_dump.py       Scene-level single split + K-Fold
 ├── check_question_types.py CI sanity: jsonl `type` ↔ runtime classify_question()

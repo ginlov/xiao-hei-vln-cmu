@@ -52,8 +52,6 @@ REF_FILE = "vla3d_ref.jsonl"
 NUM_FILE = "vla3d_num.jsonl"
 NESTED_FILE = "vla3d_nested.jsonl"
 
-NESTED_SOURCE_TAG = "vla3d_nested"
-
 
 def _read_jsonl(path: Path) -> list[dict]:
     pairs: list[dict] = []
@@ -73,7 +71,7 @@ def _write_jsonl(path: Path, pairs: list[dict]) -> None:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
 
 
-def merge(dataset_dir: Path, seed: int = 42) -> dict[str, int]:
+def merge(dataset_dir: Path, seed: int = 42) -> dict[str, int | bool]:
     """Merge nested.jsonl into ref/num jsonl, shuffle, drop nested file.
 
     Returns a small summary dict for the caller / tests.
@@ -127,6 +125,25 @@ def merge(dataset_dir: Path, seed: int = 42) -> dict[str, int]:
         "num_total": len(full_num),
         "nested_present": True,
     }
+
+
+def maybe_merge(dataset_dir: Path, seed: int = 42) -> bool:
+    """Auto-merge entry point for downstream consumers.
+
+    Returns True if a merge happened, False if there was nothing to do.
+    Prints a one-line notice when triggered so the user understands why
+    nested.jsonl just disappeared. Consumers (``split_and_dump.py``,
+    ``check_question_types.py``) call this before reading the corpus so
+    a forgotten merge step does not silently under-count their inputs.
+    """
+    if not (dataset_dir / NESTED_FILE).exists():
+        return False
+    print(
+        f"  [auto-merge] {NESTED_FILE} found → folding into ref/num "
+        f"(seed={seed}) so this step sees the full corpus",
+    )
+    merge(dataset_dir, seed=seed)
+    return True
 
 
 def main() -> None:

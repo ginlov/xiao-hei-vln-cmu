@@ -13,6 +13,7 @@ from merge_nested import (
     NESTED_FILE,
     NUM_FILE,
     REF_FILE,
+    maybe_merge,
     merge,
 )
 
@@ -225,6 +226,133 @@ class TestMergeEdgeCases:
         assert "1 nested pairs have a type other than" in out
         assert summary["ref_added"] == 1
         assert summary["num_added"] == 0
+
+
+class TestMaybeMerge:
+    """``maybe_merge`` is the auto-merge entry point that downstream
+    consumers (``split_and_dump.py``, ``check_question_types.py``) call so
+    a forgotten merge step never silently under-counts their inputs."""
+
+    def test_returns_true_and_merges_when_nested_present(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _seed_files(tmp_path, n_ref=2, n_num=2, n_nested_ref=3, n_nested_num=2)
+
+        ran = maybe_merge(tmp_path, seed=42)
+
+        assert ran is True
+        assert not (tmp_path / NESTED_FILE).exists()
+        # ref now has its 2 + 3 nested; num has 2 + 2 nested
+        assert len(_read(tmp_path / REF_FILE)) == 5
+        assert len(_read(tmp_path / NUM_FILE)) == 4
+        # User-visible notice so the auto-merge is not silent
+        assert "auto-merge" in capsys.readouterr().out
+
+    def test_returns_false_and_noop_when_nested_absent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write(tmp_path / REF_FILE, [_ref("s", 1, "vla3d_ref")])
+        _write(tmp_path / NUM_FILE, [_num("s", 2, "vla3d_num")])
+        # NESTED_FILE absent
+
+        ref_before = (tmp_path / REF_FILE).read_bytes()
+        num_before = (tmp_path / NUM_FILE).read_bytes()
+
+        ran = maybe_merge(tmp_path, seed=42)
+
+        assert ran is False
+        # Silent when there is nothing to do — no notice spam on every check run
+        assert "auto-merge" not in capsys.readouterr().out
+        assert (tmp_path / REF_FILE).read_bytes() == ref_before
+        assert (tmp_path / NUM_FILE).read_bytes() == num_before
+
+    def test_seed_threaded_through_to_underlying_merge(self, tmp_path: Path) -> None:
+        """Caller-provided seed governs the shuffle order — same seed via
+        ``maybe_merge`` and via ``merge`` must produce identical output."""
+        a = tmp_path / "via_maybe"
+        b = tmp_path / "via_direct"
+        a.mkdir()
+        b.mkdir()
+        _seed_files(a, n_ref=4, n_num=4, n_nested_ref=4, n_nested_num=4)
+        _seed_files(b, n_ref=4, n_num=4, n_nested_ref=4, n_nested_num=4)
+
+        maybe_merge(a, seed=7)
+        merge(b, seed=7)
+
+        assert (a / REF_FILE).read_bytes() == (b / REF_FILE).read_bytes()
+        assert (a / NUM_FILE).read_bytes() == (b / NUM_FILE).read_bytes()
+
+
+class TestConsumersAutoMergeOnImport:
+    """End-to-end check: running ``check_question_types.main()`` or
+    ``split_and_dump.main()`` while ``vla3d_nested.jsonl`` is still on
+    disk must auto-fold it before reading the corpus."""
+
+    def _seed_real_shaped_files(
+        self, dataset_dir: Path, n_nested_ref: int = 2, n_nested_num: int = 2
+    ) -> None:
+        """Seed enough to exercise both consumer paths."""
+        _write(
+            dataset_dir / REF_FILE,
+            [_ref("scene_a", 1, "vla3d_ref")],
+        )
+        _write(
+            dataset_dir / NUM_FILE,
+            [_num("scene_a", 2, "vla3d_num")],
+        )
+        _write(
+            dataset_dir / NESTED_FILE,
+            [_ref(f"scene_n{i}", i + 10, "vla3d_nested") for i in range(n_nested_ref)]
+            + [_num(f"scene_n{i}", i + 20, "vla3d_nested") for i in range(n_nested_num)],
+        )
+
+    def test_check_question_types_auto_merges(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import check_question_types
+
+        self._seed_real_shaped_files(tmp_path)
+        monkeypatch.setattr(check_question_types, "DATASET_DIR", tmp_path)
+
+        rc = check_question_types.main()
+
+        assert rc == 0
+        assert not (tmp_path / NESTED_FILE).exists()
+        out = capsys.readouterr().out
+        assert "auto-merge" in out
+        # Confirm the full corpus (1 + 1 originals + 2+2 nested = 6) was checked
+        assert "Checked 6 pairs" in out
+
+    def test_split_and_dump_auto_merges(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import split_and_dump
+
+        self._seed_real_shaped_files(tmp_path, n_nested_ref=3, n_nested_num=3)
+        monkeypatch.setattr(split_and_dump, "DATASET_DIR", tmp_path)
+        # split_and_dump reads sys.argv, so neutralise it
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "split_and_dump.py",
+                "--seed", "42",
+                "--out", str(tmp_path / "splits"),
+            ],
+        )
+
+        split_and_dump.main()
+
+        assert not (tmp_path / NESTED_FILE).exists()
+        out = capsys.readouterr().out
+        assert "auto-merge" in out
+        # 1 + 1 + 3 + 3 = 8 pairs total now in the two files
+        assert "Total pairs loaded: 8" in out
 
 
 class TestMergeMatchesRealCounts:

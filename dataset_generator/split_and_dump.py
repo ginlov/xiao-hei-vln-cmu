@@ -172,6 +172,13 @@ def main() -> None:
                     help="Also include phase1_raw.jsonl (template-based fallback)")
     args = ap.parse_args()
 
+    # Fold any leftover intermediate nested.jsonl into ref/num first so the
+    # split sees the full corpus instead of silently under-counting by ~1.2k
+    # nested pairs. No-op when nested.jsonl is already gone.
+    from merge_nested import maybe_merge
+
+    maybe_merge(DATASET_DIR, seed=args.seed)
+
     sources = [DATASET_DIR / s for s in DEFAULT_SOURCES]
     if args.include_legacy:
         sources += [DATASET_DIR / s for s in OPTIONAL_SOURCES]
