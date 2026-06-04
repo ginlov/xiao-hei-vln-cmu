@@ -23,8 +23,8 @@ Scene-level splitting (a.k.a. Group K-Fold) forces the model to generalize to
 NEW scenes — which is what the CMU VLN Challenge actually evaluates.
 
 Inputs (any subset, present in this directory):
-  - vla3d_ref.jsonl
-  - vla3d_num.jsonl
+  - vla3d_ref.jsonl    (includes nested ref pairs after merge_nested.py)
+  - vla3d_num.jsonl    (includes nested num pairs after merge_nested.py)
   - phase1_raw.jsonl   (kept as fallback / style comparison)
 
 Output: each fold contains all source pairs partitioned by the pair's `scene`
@@ -42,7 +42,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
 
-DEFAULT_SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
+DEFAULT_SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 OPTIONAL_SOURCES = ("phase1_raw.jsonl", "vla3d_hard.jsonl")
 
 # For 15 scenes; only used in single-split mode
@@ -171,6 +171,13 @@ def main() -> None:
     ap.add_argument("--include-legacy", action="store_true",
                     help="Also include phase1_raw.jsonl (template-based fallback)")
     args = ap.parse_args()
+
+    # Fold any leftover intermediate nested.jsonl into ref/num first so the
+    # split sees the full corpus instead of silently under-counting by ~1.2k
+    # nested pairs. No-op when nested.jsonl is already gone.
+    from merge_nested import maybe_merge
+
+    maybe_merge(DATASET_DIR, seed=args.seed)
 
     sources = [DATASET_DIR / s for s in DEFAULT_SOURCES]
     if args.include_legacy:

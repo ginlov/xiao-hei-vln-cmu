@@ -8,14 +8,22 @@ directory (gitignored).
 The 15 Unity scenes covered by VLA-3D are the same scenes the CMU VLN
 Challenge uses for training, with object IDs aligned 1:1 to the
 challenge's `object_list.txt`. We exploit that alignment to derive
-8,299 grounded Q&A pairs across the challenge's three question types:
+8,299 grounded Q&A pairs across the challenge's two scoreable runtime
+types (the third type, `instruction_following`, requires the official
+forbidden-zone labels and is tracked separately):
 
-| Source file            | Pairs  | Type                                  |
-|------------------------|-------:|---------------------------------------|
-| `vla3d_ref.jsonl`      | 6,730  | object_reference                      |
-| `vla3d_num.jsonl`      |   386  | numerical                             |
-| `vla3d_nested.jsonl`   | 1,183  | mixed (978 object_reference, 205 numerical) — nested |
+| Source file            | Pairs  | Composition |
+|------------------------|-------:|---|
+| `vla3d_ref.jsonl`      | 7,708  | 6,730 single-layer `object_reference` rewrites + 978 nested-pattern ref pairs |
+| `vla3d_num.jsonl`      |   591  | 386 numerical templates (N1–N8) + 205 nested-pattern num pairs |
 | **Total**              | **8,299** | — |
+
+Nested patterns (inner relation × outer closest/farthest, plus
+`between`) are *not* a runtime type — the official challenge has only
+three categories, and runtime `classify_question()` routes by question
+prefix only. They live inside the two type-aligned files above and are
+identifiable via the `source` field (`source == "vla3d_nested"`), so
+nested-only metrics are still possible at evaluation time.
 
 All `object_list` lines and question routing match the runtime
 contract in `src/xiao_hei_vln/messages/`:
@@ -55,17 +63,36 @@ containing at minimum:
 
 ## Generate the corpus
 
+One shot:
+
+```bash
+./dataset_generator/regen.sh
+```
+
+Or step-by-step (equivalent):
+
 ```bash
 uv run python dataset_generator/vla3d_ref_to_qa.py     # → dataset/vla3d_ref.jsonl     (~67 MB)
 uv run python dataset_generator/vla3d_num_gen.py       # → dataset/vla3d_num.jsonl     (~3 MB)
-uv run python dataset_generator/vla3d_nested_gen.py    # → dataset/vla3d_nested.jsonl  (~14 MB)
-uv run python dataset_generator/check_question_types.py # sanity check
+uv run python dataset_generator/vla3d_nested_gen.py    # → dataset/vla3d_nested.jsonl  (~14 MB, intermediate)
+uv run python dataset_generator/check_question_types.py # auto-merges nested + sanity-checks
 ```
 
-Every generator writes into the sibling `dataset/` directory. All three
-are deterministic — seed `42` is fixed, so the same VLA-3D source data +
-this code reproduces byte-identical jsonl. The `dataset/` output is
-gitignored; regenerate or fetch it from a release artifact when training.
+Nested samples are not a separate runtime type (`classify_question()`
+only knows `numerical` / `object_reference` / `instruction_following`),
+so the nested generator's output is an *intermediate file* that gets
+folded back into the two type-aligned jsonl files. Both downstream
+consumers — `check_question_types.py` and `split_and_dump.py` —
+**auto-merge** `vla3d_nested.jsonl` into `vla3d_ref.jsonl` /
+`vla3d_num.jsonl` at startup if they find it still on disk, so the user
+never has to remember the merge step. `merge_nested.py` also exists as
+an explicit CLI entry point for CI / batch-style invocation; it is
+idempotent (no-op when nested.jsonl is already absent).
+
+All steps are deterministic — seed `42` is fixed, so the same VLA-3D
+source data + this code reproduces byte-identical jsonl. The
+`dataset/` output is gitignored; regenerate or fetch it from a release
+artifact when training.
 
 ## Build train/val/test splits
 
@@ -92,15 +119,16 @@ dataset_generator/          # generator code (committed)
 ├── vla3d_ref_to_qa.py      Rewrite VLA-3D ref statements → 6,730 "Find …" pairs
 ├── vla3d_num_gen.py        8 numerical templates (count, color-conditioned, refusal)
 ├── vla3d_nested_gen.py     Two-stage nested patterns: inner relation × outer closest/farthest
+├── merge_nested.py         Fold nested.jsonl into ref/num jsonl by type (auto-called by consumers; CLI also)
+├── regen.sh                One-shot driver: runs the three generators + sanity check (merge is implicit)
 ├── noise_augment.py        Perception-noise library (drop/swap/jitter, target-protected)
 ├── split_and_dump.py       Scene-level single split + K-Fold
 ├── check_question_types.py CI sanity: jsonl `type` ↔ runtime classify_question()
 └── vla-3d/Unity/           VLA-3D source data — INPUT (NOT committed; download per above)
 
 dataset/                    # generated output (NOT committed)
-├── vla3d_ref.jsonl
-├── vla3d_num.jsonl
-├── vla3d_nested.jsonl
+├── vla3d_ref.jsonl         single-layer ref + nested ref (identifiable via `source`)
+├── vla3d_num.jsonl         numerical templates + nested num (identifiable via `source`)
 └── splits/                 train/val/test (or fold_*/) + manifest.json
 ```
 

@@ -23,7 +23,10 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
-SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl", "vla3d_nested.jsonl")
+# After the nested merge step runs (either explicitly via merge_nested.py or
+# implicitly via maybe_merge() below), nested samples live inside the two
+# type-aligned files and are identifiable via the `source` field.
+SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 
 
 def runtime_classifier(text: str) -> str:
@@ -37,6 +40,13 @@ def runtime_classifier(text: str) -> str:
 
 
 def main() -> int:
+    # Fold any leftover intermediate nested.jsonl into ref/num first so this
+    # check is always against the full corpus, not partway through the
+    # pipeline. No-op when nested.jsonl is already gone.
+    from merge_nested import maybe_merge
+
+    maybe_merge(DATASET_DIR)
+
     total = 0
     mismatches = 0
     loaded = 0
