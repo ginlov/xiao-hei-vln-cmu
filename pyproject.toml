@@ -34,6 +34,13 @@ docs = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.25",
 ]
+# Sample visualization (dataset_generator/visualize_sample.py).
+# Heavy (~400 MB Open3D wheel); install only when inspecting jsonl rows
+# locally — not needed for training / docker / CI.
+viz = [
+    "open3d>=0.18",
+    "pillow>=10",
+]
 
 [project.scripts]
 # `xiao-hei-vlm` is the canonical entry; pick the responder via the
