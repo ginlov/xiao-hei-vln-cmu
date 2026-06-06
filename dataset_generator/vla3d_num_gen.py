@@ -25,7 +25,8 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from vla3d_loader import load_all_vla_scenes, render_object_list, VLAScene, VLAObject
+from phrasing import apply_count_phrasing
+from vla3d_loader import VLAObject, VLAScene, load_all_vla_scenes, render_object_list
 
 # Randomness is threaded explicitly through `rng = random.Random(seed)` in
 # `main()` → `generate_scene` → `emit_refusal`. We deliberately do NOT call
@@ -54,6 +55,7 @@ GOOD_ANCHOR_NYU40 = {
 
 MAX_PER_TEMPLATE_PER_SCENE = 20      # was 12; we have 8 templates now
 MAX_REFUSALS_PER_SCENE = 4
+COUNT_PHRASING_FRAC = 0.09           # ~1/15 official numericals use "Count …"
 
 # ── Pluralization (reused from template_generator) ────────────────────────────
 ALREADY_PLURAL = {
@@ -125,7 +127,12 @@ def group_by_label(objects: list[VLAObject]) -> dict[str, list[VLAObject]]:
 # ── Template emitters ─────────────────────────────────────────────────────────
 
 def make_pair(scene: str, template: str, question: str, answer: int,
-              anchors: list[int], object_list: list[str]) -> dict:
+              anchors: list[int], object_list: list[str],
+              region_id: int | None) -> dict:
+    """`region_id=None` marks the sample as scene-wide (N4 total count,
+    N5 refusal) — `object_list` is the full scene. For anchor-based
+    counts (N1/N2/N3/N6/N7/N8) the anchor's region is used and the
+    `object_list` is filtered to that region."""
     return {
         "scene": scene,
         "type": "numerical",
@@ -136,15 +143,18 @@ def make_pair(scene: str, template: str, question: str, answer: int,
         "answer": answer,
         "anchors": anchors,
         "target": None,
+        "region_id": region_id,
     }
 
 
 def emit_relation_count(sc: VLAScene, template_id: str, rel: str,
-                        preposition: str) -> list[dict]:
+                        preposition: str, min_count: int = 2) -> list[dict]:
     """N1 (on), N2 (near), N3 (above), N7 (below), N8 (hanging on).
 
     For each singleton anchor in the scene, count objects of each label related
-    via `rel`, emit a question if count >= 2.
+    via `rel`, emit a question if count >= `min_count`. The official set's
+    "on" counts include answer 1 ("How many red pillows are on the sofa?"),
+    so `on` is emitted with min_count=1; the others keep 2 to stay non-trivial.
     """
     out: list[dict] = []
     singletons = label_singletons_in_scene(sc)
@@ -157,16 +167,18 @@ def emit_relation_count(sc: VLAScene, template_id: str, rel: str,
             if not usable_target_label(tgt_label):
                 continue
             n = len(tgt_objs)
-            if n < 2:
-                continue       # not very interesting if 0 or 1
+            if n < min_count:
+                continue       # not interesting below the threshold
             q = f"How many {pluralize(tgt_label)} are {preposition} the {anchor_label}?"
-            ol = render_object_list(sc)
-            out.append(make_pair(sc.name, template_id, q, n, [anchor.id], ol))
+            ol = render_object_list(sc, region_ids={anchor.region_id})
+            out.append(make_pair(sc.name, template_id, q, n, [anchor.id], ol,
+                                 region_id=anchor.region_id))
     return out
 
 
 def emit_total_count(sc: VLAScene) -> list[dict]:
-    """N4: total count of each label in the scene."""
+    """N4: total count of each label in the scene. Scene-wide by design,
+    so object_list stays unfiltered and region_id is None."""
     out: list[dict] = []
     label_counts = Counter(o.raw_label for o in sc.objects
                            if usable_target_label(o.raw_label) and o.region_id >= 0)
@@ -175,7 +187,7 @@ def emit_total_count(sc: VLAScene) -> list[dict]:
         if n < 3 or n > 30:   # uninteresting at extremes
             continue
         q = f"How many {pluralize(label)} are there in the room?"
-        out.append(make_pair(sc.name, "N4", q, n, [], ol))
+        out.append(make_pair(sc.name, "N4", q, n, [], ol, region_id=None))
     return out
 
 
@@ -183,6 +195,7 @@ def emit_refusal(sc: VLAScene, rng: random.Random) -> list[dict]:
     """N5: ask for a category we KNOW is not in the scene → answer 0.
 
     We mine plausible-sounding nouns from OTHER scenes that DON'T appear here.
+    Scene-wide; object_list stays unfiltered and region_id is None.
     """
     present = {o.raw_label for o in sc.objects}
     candidates = [
@@ -197,7 +210,7 @@ def emit_refusal(sc: VLAScene, rng: random.Random) -> list[dict]:
     out = []
     for label in available[:MAX_REFUSALS_PER_SCENE]:
         q = f"How many {pluralize(label)} are there in the room?"
-        out.append(make_pair(sc.name, "N5", q, 0, [], ol))
+        out.append(make_pair(sc.name, "N5", q, 0, [], ol, region_id=None))
     return out
 
 
@@ -221,32 +234,47 @@ def emit_color_on(sc: VLAScene) -> list[dict]:
             if not good_color(c):
                 continue
             by_color_label[(c, o.raw_label)].append(o)
-        # Only emit when (color, label) is unique enough to be a useful Q
-        # AND the same label has at least 1 object of a different color
-        # (otherwise color is redundant)
-        labels_seen = Counter(o.raw_label for o in on_objs)
+        # Emit "How many <color> <X> are on the <anchor>?" — the official set
+        # uses these even when the colour is redundant ("How many red pillows
+        # are on the sofa?" with all pillows red), so we don't filter on
+        # colour-redundancy; that also keeps colour supply near the 13% target.
         for (color, label), objs in by_color_label.items():
             n = len(objs)
             if n < 1:
                 continue
-            if labels_seen[label] == n:
-                # all objects of this label share the same color → color is redundant
-                continue
             q = f"How many {color} {pluralize(label)} are on the {anchor_label}?"
-            ol = render_object_list(sc)
-            out.append(make_pair(sc.name, "N6", q, n, [anchor.id], ol))
+            ol = render_object_list(sc, region_ids={anchor.region_id})
+            out.append(make_pair(sc.name, "N6", q, n, [anchor.id], ol,
+                                 region_id=anchor.region_id))
     return out
 
 
 # ── Driver ────────────────────────────────────────────────────────────────────
 
+# Per-template per-scene caps, tuned to the official numerical distribution:
+# `on` dominates (11/15), color ~13% (all "on"), `near` rare (1/15). The
+# official set has NO pure totals ("How many X in the room?") — N4 is disabled
+# below as out-of-distribution. A token N5 (absent-category → 0) is kept for
+# refusal robustness even though the official examples have none.
+NUM_TEMPLATE_CAP = {
+    "N1": 9999,   # on — keep all (the priority relation)
+    "N6": 3,      # color-on — capped so colour ≈ 13% (these are also "on" Qs)
+    "N3": 10,     # above
+    "N2": 1,      # near (official: 1/15)
+    "N7": 5,      # below
+    "N8": 5,      # hanging on
+    "N5": 1,      # refusal (answer 0) — token retention for robustness
+}
+
+
 def generate_scene(sc: VLAScene, rng: random.Random) -> list[dict]:
     bucket: dict[str, list[dict]] = defaultdict(list)
 
-    bucket["N1"] = emit_relation_count(sc, "N1", "on", "on")
+    bucket["N1"] = emit_relation_count(sc, "N1", "on", "on", min_count=1)
     bucket["N2"] = emit_relation_count(sc, "N2", "near", "near")
     bucket["N3"] = emit_relation_count(sc, "N3", "above", "above")
-    bucket["N4"] = emit_total_count(sc)
+    # N4 (emit_total_count) disabled: pure "How many X in the room?" totals are
+    # absent from the official set. Emitter kept for reuse / ablations.
     bucket["N5"] = emit_refusal(sc, rng)
     bucket["N6"] = emit_color_on(sc)
     bucket["N7"] = emit_relation_count(sc, "N7", "below", "below")
@@ -255,8 +283,7 @@ def generate_scene(sc: VLAScene, rng: random.Random) -> list[dict]:
     out: list[dict] = []
     for tid, pairs in bucket.items():
         rng.shuffle(pairs)
-        cap = MAX_REFUSALS_PER_SCENE if tid == "N5" else MAX_PER_TEMPLATE_PER_SCENE
-        out.extend(pairs[:cap])
+        out.extend(pairs[: NUM_TEMPLATE_CAP.get(tid, MAX_PER_TEMPLATE_PER_SCENE)])
     return out
 
 
@@ -275,7 +302,11 @@ def main(out_path: Path, seed: int = 42) -> None:
         per_template_counts.update(p["template"] for p in sc_pairs)
         print(f"  {name:<25} {len(sc_pairs):>4} pairs")
 
-    print(f"\nTotal: {len(all_pairs)} numerical pairs")
+    # ~7% to "Count the number of …" phrasing (official has 1/15 such).
+    n_count = apply_count_phrasing(all_pairs, rng, COUNT_PHRASING_FRAC)
+
+    print(f"\nTotal: {len(all_pairs)} numerical pairs  "
+          f"(count-phrasing applied to {n_count})")
     print("\nPer-template counts:")
     for tid, c in sorted(per_template_counts.items()):
         print(f"  {tid:<3} {c:>5}")

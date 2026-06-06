@@ -32,9 +32,9 @@ SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 def runtime_classifier(text: str) -> str:
     """1:1 mirror of `xiao_hei_vln.messages.question.classify_question`."""
     head = text.lstrip().lower()
-    if head.startswith("how many"):
+    if head.startswith("how many") or head.startswith("count "):
         return "numerical"
-    if head.startswith("find"):
+    if head.startswith("find") or head.startswith("the "):
         return "object_reference"
     return "instruction_following"
 

@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from vla3d_loader import load_all_vla_scenes, render_object_list, VLAScene, VLAObject
-from vla3d_num_gen import pluralize, BAD_LABELS
+from phrasing import apply_omit_find
+from vla3d_loader import VLAObject, VLAScene, load_all_vla_scenes, render_object_list
+from vla3d_num_gen import BAD_LABELS, pluralize
 
 # No RNG is needed: this generator is deterministic by traversal — it walks
 # scenes / regions / relationships / labels in insertion order (dicts preserve
@@ -33,10 +35,38 @@ from vla3d_num_gen import pluralize, BAD_LABELS
 
 HERE = Path(__file__).parent
 
+# Target sizes after a deterministic, pattern-stratified downsample. The raw
+# pools are far larger now that `near` is also an inner relation, so we sample
+# down for per-pattern / per-anchor diversity and to hit the corpus's nested
+# target (~50% of the 12k object_reference goal).
+TARGET_NESTED_REF = 6000
+TARGET_NESTED_NUM = 40
+DOWNSAMPLE_SEED = 42
+# Fraction of nested ref questions rephrased to drop the leading "Find".
+OMIT_FIND_FRAC = 0.10
+
+# Architectural / structural labels that are fine as ANCHORS ("farthest from
+# the floor", "between a door frame and a window") but nonsensical as the
+# answer TARGET — "the ceiling above the spoon" is vacuous since the ceiling is
+# above everything. Excluded from target selection only (includes the VLA-3D
+# misspelling "celling" and plural variants the BAD_LABELS set misses).
+NON_TARGET_LABELS = {
+    "celling", "ceiling", "windows", "window", "wall", "walls",
+    "exterior walls", "interior wall", "floor", "stair", "stairs",
+    "column", "columns", "door", "door frame", "doorframe",
+    "curtain", "curtains", "ceiling beam",
+}
+
 # Anchor2 must be uniquely the closest/farthest by this much (meters)
 CLOSEST_MARGIN_M = 0.3
-# Cap per (pattern, anchor1) to avoid one anchor dominating
-MAX_PER_PATTERN_PER_ANCHOR = 3
+# 'near' outer: anchor1 is the ONLY mate within this radius (m) of anchor2.
+# Distinct geometry from 'closest' (not just reworded) — avoids duplicate
+# samples while matching the official set's frequent loose "near" phrasing.
+NEAR_RADIUS_M = 1.5
+# Cap per (pattern, anchor1) to avoid one anchor dominating. Raised from 3
+# to lift the nested share toward the official ~50% (the geometric ceiling
+# of the on/above/below × closest/farthest patterns is otherwise ~4.7k).
+MAX_PER_PATTERN_PER_ANCHOR = 12
 # Numerical answers in [2, 6] (matches official Q&A range)
 MIN_COUNT, MAX_COUNT = 2, 6
 
@@ -80,11 +110,20 @@ def farthest_of_label_to(label_instances: list[VLAObject], anchor: VLAObject
     return farthest, farthest_d, second_d
 
 
+def unique_near_of_label_to(label_instances: list[VLAObject], anchor: VLAObject,
+                            radius: float) -> VLAObject | None:
+    """The single mate within `radius` (xy) of anchor, or None if 0 or >1 are.
+    Used for the 'near' outer relation so "the X near the Y" is unambiguous."""
+    within = [o for o in label_instances
+              if o.id != anchor.id and xy_dist(o, anchor) <= radius]
+    return within[0] if len(within) == 1 else None
+
+
 # ── Pair constructors ────────────────────────────────────────────────────────
 
 def make_ref(scene: str, template: str, question: str,
              target_id: int, target_label: str, anchors: list[int],
-             object_list: list[str]) -> dict:
+             object_list: list[str], region_id: int) -> dict:
     return {
         "scene": scene,
         "type": "object_reference",
@@ -95,12 +134,13 @@ def make_ref(scene: str, template: str, question: str,
         "answer": {"object_id": target_id, "label": target_label},
         "target": target_id,
         "anchors": anchors,
+        "region_id": region_id,
     }
 
 
 def make_num(scene: str, template: str, question: str,
              count: int, anchors: list[int],
-             object_list: list[str]) -> dict:
+             object_list: list[str], region_id: int) -> dict:
     return {
         "scene": scene,
         "type": "numerical",
@@ -111,6 +151,7 @@ def make_num(scene: str, template: str, question: str,
         "answer": count,
         "target": None,
         "anchors": anchors,
+        "region_id": region_id,
     }
 
 
@@ -126,7 +167,8 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
     """
     pairs: list[dict] = []
     template_id = f"NEST_{inner_rel}_{outer}"
-    outer_word = "closest to" if outer == "closest" else "farthest from"
+    outer_word = {"closest": "closest to", "farthest": "farthest from",
+                  "near": "near"}[outer]
 
     for region_id, rel_dict in sc.relationships.items():
         if region_id < 0:
@@ -148,7 +190,9 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
             targets_by_label: dict[str, list[VLAObject]] = defaultdict(list)
             for tid in target_ids:
                 t = sc.by_id.get(tid)
-                if t and t.raw_label not in BAD_LABELS and t.region_id >= 0:
+                if (t and t.raw_label not in BAD_LABELS
+                        and t.raw_label not in NON_TARGET_LABELS
+                        and t.region_id >= 0):
                     targets_by_label[t.raw_label].append(t)
             if not targets_by_label:
                 continue
@@ -171,17 +215,29 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
                         continue
                     if second_d - sel_d < CLOSEST_MARGIN_M:
                         continue
-                else:
+                elif outer == "farthest":
                     selected, sel_d, second_d = farthest_of_label_to(anchor1_mates, anchor2)
                     if selected is None or selected.id != anchor1.id:
                         continue
                     if sel_d - second_d < CLOSEST_MARGIN_M:
                         continue
+                else:  # near — anchor1 is the only mate within NEAR_RADIUS_M
+                    selected = unique_near_of_label_to(anchor1_mates, anchor2, NEAR_RADIUS_M)
+                    if selected is None or selected.id != anchor1.id:
+                        continue
 
+                # Keep nested object_list scene-wide: anchor2 is a *scene*
+                # singleton and may live in a different region than the
+                # target. A region filter would drop it from object_list,
+                # making the question unanswerable.
                 ol = render_object_list(sc)
 
                 # Emit one pair per target_label
                 for tgt_label, tgt_objs in targets_by_label.items():
+                    # Target must not share a label with either anchor, or the
+                    # question reads "Find the X ... near the X" — ambiguous.
+                    if tgt_label in (anchor1.raw_label, anchor2.raw_label):
+                        continue
                     n = len(tgt_objs)
                     if n == 1:
                         t = tgt_objs[0]
@@ -189,13 +245,13 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
                              f"{anchor1.raw_label} {outer_word} the {anchor2.raw_label}.")
                         pairs.append(make_ref(sc.name, template_id, q,
                                               t.id, tgt_label,
-                                              [anchor1.id, anchor2.id], ol))
+                                              [anchor1.id, anchor2.id], ol, region_id))
                         emitted_for_anchor1 += 1
                     elif MIN_COUNT <= n <= MAX_COUNT:
                         q = (f"How many {pluralize(tgt_label)} are {inner_prep} the "
                              f"{anchor1.raw_label} {outer_word} the {anchor2.raw_label}?")
                         pairs.append(make_num(sc.name, template_id, q, n,
-                                              [anchor1.id, anchor2.id], ol))
+                                              [anchor1.id, anchor2.id], ol, region_id))
                         emitted_for_anchor1 += 1
 
                     if emitted_for_anchor1 >= MAX_PER_PATTERN_PER_ANCHOR:
@@ -244,21 +300,53 @@ def _emit_between(sc: VLAScene, by_label: dict[str, list[VLAObject]]) -> list[di
                     continue
                 q = (f"Find the {target.raw_label} between the "
                      f"{a1.raw_label} and the {a2.raw_label}.")
+                # Scene-wide: both anchors are scene singletons; one or both
+                # may live in a different region than target.
                 ol = render_object_list(sc)
                 pairs.append(make_ref(sc.name, "NEST_between", q,
                                       target.id, target.raw_label,
-                                      [a1.id, a2.id], ol))
+                                      [a1.id, a2.id], ol, region_id))
     return pairs
 
 
 # ── Driver ────────────────────────────────────────────────────────────────────
 
+def _stratified_downsample(pairs: list[dict], target: int,
+                           rng: random.Random) -> list[dict]:
+    """Sample `target` pairs spread as evenly as possible across templates, so
+    no single pattern (or anchor-heavy scene) dominates after downsampling."""
+    if len(pairs) <= target:
+        return pairs
+    by_tpl: dict[str, list[dict]] = defaultdict(list)
+    for p in pairs:
+        by_tpl[p["template"]].append(p)
+    for lst in by_tpl.values():
+        rng.shuffle(lst)
+    kept: list[dict] = []
+    tpls = sorted(by_tpl)
+    while len(kept) < target:
+        progressed = False
+        for t in tpls:
+            if by_tpl[t]:
+                kept.append(by_tpl[t].pop())
+                progressed = True
+                if len(kept) >= target:
+                    break
+        if not progressed:
+            break
+    return kept
+
+
 def generate_scene(sc: VLAScene) -> tuple[list[dict], dict]:
     by_label = build_by_label(sc)
     counter: Counter = Counter()
     out: list[dict] = []
-    for inner_rel, inner_prep in [("on", "on"), ("above", "above"), ("below", "below")]:
-        for outer in ("closest", "farthest"):
+    inner_rels = [("on", "on"), ("above", "above"), ("below", "below"),
+                  ("hanging_on", "hanging on"), ("in", "in"), ("near", "near")]
+    for inner_rel, inner_prep in inner_rels:
+        for outer in ("closest", "farthest", "near"):
+            if inner_rel == "near" and outer == "near":
+                continue  # avoid the awkward "X near the Y near the Z"
             ps = _emit_inner_outer(sc, by_label, inner_rel, inner_prep, outer)
             out.extend(ps)
             counter[f"{inner_rel}+{outer}"] = len(ps)
@@ -282,15 +370,31 @@ def main(out_path: Path = HERE.parent / "dataset" / "vla3d_nested.jsonl") -> Non
         per_pattern.update(c)
         print(f"  {name:<25} {len(pairs):>4} pairs   {c}")
 
-    print(f"\nTotal nested pairs: {len(all_pairs)}")
-    print("\nPer pattern:")
+    print(f"\nTotal raw nested pairs: {len(all_pairs)}")
+    print("\nPer pattern (raw):")
     for p, n in sorted(per_pattern.items()):
         print(f"  {p:<25} {n:>5}")
+
+    # Deterministic, pattern-stratified downsample to the target sizes.
+    rng = random.Random(DOWNSAMPLE_SEED)
+    ref_raw = [p for p in all_pairs if p["type"] == "object_reference"]
+    # Nested num is kept small and excludes any `near` (inner OR outer): the
+    # official numerical set is on-dominated and `near`-light, so near-bearing
+    # compositional counts would pull the merged num distribution off-target.
+    num_raw = [p for p in all_pairs
+               if p["type"] == "numerical" and "near" not in p["template"]]
+    ref_kept = _stratified_downsample(ref_raw, TARGET_NESTED_REF, rng)
+    num_kept = _stratified_downsample(num_raw, TARGET_NESTED_NUM, rng)
+    # Rephrase ~10% of ref to drop "Find" (official style); num is untouched.
+    n_omit = apply_omit_find(ref_kept, rng, OMIT_FIND_FRAC)
+    all_pairs = ref_kept + num_kept
+    print(f"\nDownsampled: ref {len(ref_raw)}→{len(ref_kept)}, "
+          f"num {len(num_raw)}→{len(num_kept)}  (omit-Find applied to {n_omit})")
 
     # Split type counts
     from collections import Counter as C
     type_counts = C(p["type"] for p in all_pairs)
-    print(f"\nBy type: {dict(type_counts)}")
+    print(f"By type: {dict(type_counts)}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
