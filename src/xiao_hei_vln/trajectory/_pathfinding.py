@@ -109,6 +109,54 @@ def find_collision_free_path(
     return np.array(full_path)
 
 
+def shortcut_path(
+    path: np.ndarray,
+    eroded_poly: Polygon | MultiPolygon,
+    protected: np.ndarray | None = None,
+) -> np.ndarray:
+    """Remove intermediate points where a direct segment is collision-free.
+
+    Points in *protected* (coverage viewpoints) are never removed — only
+    intermediate routing vertices inserted by the visibility graph are
+    candidates for shortcutting.
+    """
+    if len(path) <= 2:
+        return path.copy()
+
+    prepare(eroded_poly)
+
+    protected_set: set[tuple[float, float]] = set()
+    if protected is not None:
+        protected_set = {(round(p[0], 6), round(p[1], 6)) for p in protected}
+
+    def _is_protected(pt: tuple[float, float]) -> bool:
+        return (round(pt[0], 6), round(pt[1], 6)) in protected_set
+
+    pts = [tuple(p) for p in path]
+
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        new_pts: list[tuple[float, float]] = [pts[0]]
+        while i < len(pts) - 1:
+            best_j = i + 1
+            for j in range(i + 2, len(pts)):
+                # Never skip over a protected (coverage) waypoint
+                if _is_protected(pts[j - 1]) and j - 1 != i:
+                    break
+                line = LineString([pts[i], pts[j]])
+                if eroded_poly.covers(line):
+                    best_j = j
+            if best_j > i + 1:
+                changed = True
+            new_pts.append(pts[best_j])
+            i = best_j
+        pts = new_pts
+
+    return np.array(pts)
+
+
 def compute_geodesic_distances(
     adj: list[list[tuple[int, float]]],
     n_total: int,

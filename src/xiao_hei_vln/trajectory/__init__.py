@@ -23,6 +23,7 @@ from ._pathfinding import (
     build_visibility_graph,
     compute_geodesic_distances,
     find_collision_free_path,
+    shortcut_path,
 )
 from ._polygon import build_polygon, erode_polygon
 from ._tsp import compute_headings, path_length, solve_tsp
@@ -44,7 +45,7 @@ def plan_trajectory(
     *,
     hull_ratio: float = 0.1,
     robot_radius: float = 0.3,
-    grid_resolution: float = 0.5,
+    grid_resolution: float = 0.25,
     coverage_radius: float = 3.0,
     object_weight: float = 10.0,
     min_floor_coverage: float = 0.95,
@@ -105,6 +106,7 @@ def plan_trajectory(
     order = solve_tsp(sel, dist_matrix=geo_dist)
 
     routed = find_collision_free_path(all_nodes, adj, n_wp, order)
+    routed = shortcut_path(routed, eroded, protected=sel)
     headings = compute_headings(routed)
     total_length = path_length(routed)
 

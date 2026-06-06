@@ -126,9 +126,9 @@ Camera effective range: a 30cm object subtends ~32px at 3m (adequate), ~18px at 
 
 **Algorithm 3.1 + 3.2: Object-Weighted Set Cover + TSP**
 
-Simplification for 360° camera: visibility from any point is a circle of radius R, not a directional polygon. However, 2D raycasting against furniture holes is used to determine if objects are occluded. This means:
-- Candidate viewpoint coverage = objects within 3m with clear line-of-sight
-- Floor coverage = floor cells within 3m (no raycasting needed for floor)
+Simplification for 360° camera: visibility from any point is a circle of radius R, not a directional polygon. However, 2D raycasting against furniture holes is used to determine if objects and floor cells are occluded. This means:
+- Candidate viewpoint coverage = objects/floor within 3m with clear line-of-sight
+- Floor coverage also uses raycasting — cells behind furniture are not counted as visible
 
 The greedy set cover weights object coverage 10× higher than floor coverage, ensuring objects drive viewpoint selection. Floor fill handles the 3 zero-object scenes.
 
@@ -137,7 +137,7 @@ The greedy set cover weights object coverage 10× higher than floor coverage, en
 1. Parse traversable_area.ply → 2D points; object_list.txt → object positions
 2. Build polygon via `concave_hull(ratio=0.1, allow_holes=True)`
 3. Erode polygon inward by robot_radius (0.3m) for safe viewpoint placement
-4. Sample candidate viewpoints on a 0.5m grid inside the eroded polygon
+4. Sample candidate viewpoints on a 0.25m grid inside the eroded polygon
 5. For each candidate, compute visible objects AND floor cells: within 3m AND `LineString([viewpoint, target])` does not intersect any furniture hole (2D raycasting applied to both objects and floor)
 6. Greedy weighted set cover: score = `10 × new_objects_covered + new_floor_cells_covered`
 7. Build visibility graph (waypoints + eroded polygon vertices), compute geodesic distances via Dijkstra
@@ -146,34 +146,56 @@ The greedy set cover weights object coverage 10× higher than floor coverage, en
 10. Compute headings: atan2(dy, dx) toward next waypoint
 11. Output waypoints + metrics
 
+## 4.1 Potential Post-Processing Optimizations
+
+The current trajectories are functional but not fully optimized for path length. Several post-processing algorithms could reduce path length and waypoint count:
+
+### 4.1.1 Greedy Shortcutting
+
+For each consecutive triplet (A, B, C) in the path, check if the direct segment A→C is collision-free (stays inside the eroded polygon). If so, remove B. Repeat until no more removals are possible. This eliminates unnecessary polygon-corner detours inserted by the visibility graph routing.
+
+**Pros**: Simple to implement, provably correct (each removal is validated), directly targets the most visible inefficiency (zigzag corners). **Cons**: Greedy — the removal order may not be globally optimal.
+
+### 4.1.2 Funnel Algorithm (String-Pulling)
+
+Classic computational geometry technique for finding the shortest path through a channel (sequence of adjacent triangles or portals). After routing through the visibility graph, the path passes through a sequence of polygon "corridors." The funnel algorithm finds the tightest path through these corridors by maintaining a deque of tangent lines.
+
+**Pros**: Produces the true shortest path through the same corridor sequence — optimal, not just greedy. Standard in game/robotics navmesh pathfinding. **Cons**: Requires decomposing the polygon into a triangulation or portal sequence, more complex to implement.
+
+### 4.1.3 Or-opt / 3-opt (TSP Improvement)
+
+Extensions to the current 2-opt local search for TSP ordering. **Or-opt** moves subsequences of 1–3 consecutive waypoints to a better position in the tour. **3-opt** considers removing 3 edges and reconnecting the tour in all possible ways. These can escape local minima that 2-opt misses.
+
+**Pros**: Better tour ordering reduces total travel distance. **Cons**: Diminishing returns at our scale (5–73 coverage viewpoints). The routing step (visibility graph) dominates path length more than visit order at this scale.
+
 ## 5. Results
 
 ### 5.1 Coverage Summary (all 18 scenes)
 
 | Scene | Objects | Covered | ObjCov% | FloorCov% | Waypoints | Path (m) |
 |-------|---------|---------|---------|-----------|-----------|----------|
-| arabic_room | 85 | 79 | 92.9% | 88.1% | 14 | 17.1 |
-| chinese_room | 96 | 96 | 100.0% | 99.1% | 11 | 15.2 |
-| home_building_1 | 432 | 381 | 88.2% | 99.7% | 48 | 121.9 |
-| home_building_2 | 227 | 218 | 96.0% | 99.6% | 41 | 106.8 |
-| hotel_room_1 | 86 | 75 | 87.2% | 99.4% | 10 | 14.5 |
-| hotel_room_2 | 95 | 95 | 100.0% | 99.7% | 10 | 14.1 |
-| japanese_room | 63 | 63 | 100.0% | 99.2% | 5 | 8.7 |
-| livingroom_1 | 106 | 104 | 98.1% | 99.4% | 6 | 10.2 |
-| livingroom_2 | 88 | 88 | 100.0% | 99.8% | 12 | 25.3 |
-| livingroom_3 | 108 | 108 | 100.0% | 99.1% | 24 | 36.3 |
-| livingroom_4 | 120 | 119 | 99.2% | 94.3% | 16 | 16.4 |
-| loft | 115 | 107 | 93.0% | 97.9% | 8 | 9.8 |
-| office_1 | 112 | 112 | 100.0% | 97.7% | 10 | 16.2 |
-| office_2 | 161 | 150 | 93.2% | 100.0% | 10 | 20.4 |
-| office_building_1 | 0 | 0 | 100.0% | 95.0% | 40 | 175.6 |
-| office_building_2 | 0 | 0 | 100.0% | 95.3% | 73 | 347.2 |
-| office_building_2_no360 | 0 | 0 | 100.0% | 95.3% | 73 | 347.2 |
-| studio | 73 | 72 | 98.6% | 99.6% | 8 | 15.8 |
+| arabic_room | 85 | 83 | 97.7% | 97.8% | 12 | 18.3 |
+| chinese_room | 96 | 96 | 100.0% | 98.8% | 8 | 14.8 |
+| home_building_1 | 432 | 381 | 88.2% | 99.7% | 48 | 122.1 |
+| home_building_2 | 227 | 222 | 97.8% | 99.7% | 47 | 103.5 |
+| hotel_room_1 | 86 | 84 | 97.7% | 99.8% | 16 | 26.4 |
+| hotel_room_2 | 95 | 95 | 100.0% | 99.6% | 11 | 14.6 |
+| japanese_room | 63 | 63 | 100.0% | 99.2% | 6 | 9.0 |
+| livingroom_1 | 106 | 104 | 98.1% | 99.4% | 7 | 11.4 |
+| livingroom_2 | 88 | 88 | 100.0% | 99.7% | 13 | 25.4 |
+| livingroom_3 | 108 | 108 | 100.0% | 99.4% | 21 | 34.2 |
+| livingroom_4 | 120 | 120 | 100.0% | 97.7% | 7 | 10.2 |
+| loft | 115 | 109 | 94.8% | 98.9% | 9 | 11.5 |
+| office_1 | 112 | 112 | 100.0% | 97.9% | 12 | 17.2 |
+| office_2 | 161 | 161 | 100.0% | 100.0% | 12 | 22.0 |
+| office_building_1 | 0 | 0 | 100.0% | 95.5% | 41 | 184.0 |
+| office_building_2 | 0 | 0 | 100.0% | 95.1% | 74 | 330.8 |
+| office_building_2_no360 | 0 | 0 | 100.0% | 95.1% | 74 | 330.8 |
+| studio | 73 | 72 | 98.6% | 99.6% | 8 | 17.1 |
 
 ### 5.2 Analysis
 
-**8 of 15 object scenes achieve 100% or ≥98% object coverage.** 16 of 18 scenes achieve ≥95% floor coverage; arabic_room (88.1%) and livingroom_4 (94.3%) are lower due to large furniture holes occluding floor cells behind them.
+**11 of 15 object scenes achieve ≥97.7% object coverage** (7 at 100%). All 18 scenes achieve ≥95% floor coverage. The 0.25m candidate grid (vs initial 0.5m) significantly improved coverage by providing more viewpoint angles to see around furniture.
 
 Uncovered objects fall into two categories:
 
@@ -181,7 +203,43 @@ Uncovered objects fall into two categories:
 
 2. **Within 3m but occluded by non-host furniture** (6 objects total across all scenes): objects behind one piece of furniture when viewed from the nearest candidate, where 2D raycasting correctly identifies the occlusion. In 3D, the camera might see over low furniture — a limitation of the 2D raycasting model.
 
-### 5.3 Key Design Decisions
+### 5.3 Objects Outside the Polygon Boundary
+
+A large majority of objects in each scene have their 2D center **outside** the traversable polygon boundary. This is expected: the polygon represents the walkable floor surface, while objects sit on, against, or above furniture and walls that form the boundary itself.
+
+| Scene | Outside / Total | Near (<1m) | Mid (1–3m) | Far (>3m) |
+|-------|----------------|------------|------------|-----------|
+| arabic_room | 67 / 85 | 63 | 4 | 0 |
+| chinese_room | 85 / 96 | 84 | 1 | 0 |
+| home_building_1 | 385 / 432 | 280 | 54 | 51 |
+| home_building_2 | 182 / 227 | 149 | 31 | 2 |
+| hotel_room_1 | 76 / 86 | 63 | 12 | 1 |
+| hotel_room_2 | 86 / 95 | 79 | 7 | 0 |
+| japanese_room | 58 / 63 | 52 | 6 | 0 |
+| livingroom_1 | 95 / 106 | 84 | 10 | 1 |
+| livingroom_2 | 79 / 88 | 74 | 5 | 0 |
+| livingroom_3 | 102 / 108 | 92 | 10 | 0 |
+| livingroom_4 | 116 / 120 | 112 | 4 | 0 |
+| loft | 111 / 115 | 75 | 36 | 0 |
+| office_1 | 102 / 112 | 88 | 14 | 0 |
+| office_2 | 156 / 161 | 145 | 11 | 0 |
+| studio | 67 / 73 | 60 | 7 | 0 |
+
+Objects outside the polygon fall into five categories:
+
+1. **Wall-mounted items** (pictures, windows, TVs, wall lamps, posters, light switches): positioned on walls that form the polygon boundary, typically 0.3–1.5m outside at z=1.0–2.1m. Present in every scene.
+
+2. **Furniture against walls** (sofas, beds, nightstands, chairs, tables): large items whose center of mass is beyond the traversable boundary because the robot cannot drive under or through them. The walkable floor ends at the furniture edge, so the object center is 0.3–0.7m outside. Most common category across all scenes.
+
+3. **Items on furniture** (pillows, bottles, books, vases, bowls, glasses, keyboards): sit on top of wall-adjacent furniture. Their 2D projection falls outside the polygon because the host furniture extends past the walkable boundary. Typically 0.3–1.2m outside at z=0.2–1.7m.
+
+4. **Ceiling-mounted items** (ceiling lights, focus lights, spot lights): directly above rooms but their 2D center may be over a wall or furniture hole. Typically 0.0–1.6m outside at z=2.6–4.0m.
+
+5. **Truly outdoor items** (trees, gates, exterior doors, outside lamps): only found in home_building_1 (51 objects) and home_building_2 (2 objects). These are 5–12m from the polygon boundary and physically unreachable from inside the building.
+
+**Impact on coverage**: despite being outside the polygon, most objects in categories 1–4 are still **within the 3m observation radius** of nearby candidate viewpoints and are successfully covered. The coverage algorithm does not require objects to be inside the polygon — only that a viewpoint inside the polygon can see them within 3m with clear line-of-sight. The 55 truly unreachable objects (category 5, >3m from any candidate) account for the majority of uncovered objects in the results.
+
+### 5.4 Key Design Decisions
 
 - **2D raycasting for both objects and floor**: line-of-sight against furniture holes is checked for both object visibility and floor cell visibility, ensuring coverage metrics are consistent and realistic.
 - **Host-hole exclusion**: objects sitting ON furniture (within 0.5m of a hole boundary) skip raycasting against that hole. Without this, studio drops from 98.6% to ~87% because wall-mounted and tabletop objects are always "blocked" by their own furniture.
@@ -190,7 +248,7 @@ Uncovered objects fall into two categories:
 - **2-opt TSP improvement**: reduces path length ~10-20% over pure nearest-neighbor on larger scenes.
 - **Floor subsampling**: every 10th traversable point as floor cells — sufficient resolution without excessive computation.
 
-### 5.4 Verification
+### 5.5 Verification
 
 - 27 unit + integration tests pass (polygon, coverage, raycasting, floor occlusion, TSP, pathfinding, full pipeline)
 - All path segments validated via explicit raycasting against furniture holes — zero crossings across all 18 scenes

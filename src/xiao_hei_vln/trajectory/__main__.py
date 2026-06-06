@@ -31,39 +31,73 @@ def _visualize(
 
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
 
+    # Traversable area point cloud
     ax.scatter(
         traversable_points[::5, 0], traversable_points[::5, 1],
-        s=0.3, c="lightgray", alpha=0.5,
+        s=0.3, c="lightgray", alpha=0.5, label="Traversable area",
     )
 
+    # Polygon boundary and furniture holes
     geoms = list(poly.geoms) if poly.geom_type == "MultiPolygon" else [poly]
+    boundary_plotted = False
+    hole_plotted = False
     for g in geoms:
         xs, ys = g.exterior.xy
-        ax.plot(xs, ys, "b-", linewidth=0.8)
+        lbl = "Polygon boundary" if not boundary_plotted else None
+        ax.plot(xs, ys, "b-", linewidth=0.8, label=lbl)
+        boundary_plotted = True
         for interior in g.interiors:
             hx, hy = interior.xy
-            ax.fill(hx, hy, color="salmon", alpha=0.3)
+            lbl_h = "Furniture hole" if not hole_plotted else None
+            ax.fill(hx, hy, color="salmon", alpha=0.3, label=lbl_h)
             ax.plot(hx, hy, "r-", linewidth=0.5)
+            hole_plotted = True
 
+    # Objects (covered vs uncovered)
+    cov_plotted = False
+    uncov_plotted = False
     for oid, o in objects.items():
         covered = oid not in result.coverage.uncovered_object_ids
-        color = "green" if covered else "red"
-        marker = "o" if covered else "x"
-        ax.plot(o.center.x, o.center.y, marker, color=color, markersize=3, alpha=0.7)
+        if covered:
+            lbl = "Object (covered)" if not cov_plotted else None
+            ax.plot(
+                o.center.x, o.center.y, "o",
+                color="green", markersize=3, alpha=0.7, label=lbl,
+            )
+            cov_plotted = True
+        else:
+            lbl = "Object (uncovered)" if not uncov_plotted else None
+            ax.plot(
+                o.center.x, o.center.y, "x",
+                color="red", markersize=5, alpha=0.9, label=lbl,
+            )
+            uncov_plotted = True
 
+    # Trajectory path and waypoints
     wps = result.waypoints
     if wps:
         wx = [w.x for w in wps]
         wy = [w.y for w in wps]
-        ax.plot(wx, wy, "b-", linewidth=1.5, alpha=0.7, zorder=5)
-        ax.scatter(wx, wy, c="blue", s=20, zorder=6)
-        ax.plot(wx[0], wy[0], "s", color="lime", markersize=10, zorder=7, label="start")
+        ax.plot(wx, wy, "-", color="royalblue", linewidth=1.5, alpha=0.7,
+                zorder=5, label="Trajectory path")
+        ax.scatter(wx, wy, c="royalblue", s=20, zorder=6, label="Waypoint")
+        ax.plot(wx[0], wy[0], "s", color="lime", markersize=10,
+                zorder=7, label="Start")
+        ax.plot(wx[-1], wy[-1], "D", color="orangered", markersize=8,
+                zorder=7, label="End")
 
-        for w in wps:
-            circle = Circle((w.x, w.y), 3.0, fill=False, edgecolor="blue", linewidth=0.3, alpha=0.3)
+        # Coverage radius circles
+        for i, w in enumerate(wps):
+            circle = Circle(
+                (w.x, w.y), 3.0, fill=False,
+                edgecolor="deepskyblue", linewidth=0.3, alpha=0.25,
+                label="Coverage radius (3m)" if i == 0 else None,
+            )
             ax.add_patch(circle)
 
     ax.set_aspect("equal")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
     ax.set_title(
         f"{title}\n"
         f"ObjCov={result.coverage.object_coverage*100:.1f}% "
@@ -71,7 +105,7 @@ def _visualize(
         f"Waypoints={len(wps)} "
         f"Path={result.path_length_m:.1f}m"
     )
-    ax.legend(loc="upper right")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -115,7 +149,7 @@ def main() -> None:
     parser.add_argument("--out", default="trajectories", help="Output directory")
     parser.add_argument("--coverage-radius", type=float, default=3.0)
     parser.add_argument("--robot-radius", type=float, default=0.3)
-    parser.add_argument("--grid-resolution", type=float, default=0.5)
+    parser.add_argument("--grid-resolution", type=float, default=0.25)
     parser.add_argument("--hull-ratio", type=float, default=0.1)
     args = parser.parse_args()
 
