@@ -22,7 +22,8 @@ Color code:
                       pass --show-other to draw these context boxes)
 
 OBB wireframes (heading-aware), so bbox-rotation bugs are visible at a glance.
-Point cloud overlay is OFF by default; pass --pointcloud to enable (heavier).
+Defaults: point cloud overlay ON (--no-pointcloud to disable), dark background
+ON (--no-dark-bg for white), 0.02 m voxel downsample, 2 cm tube OBB edges.
 
 Install once:   uv sync --extra viz
 """
@@ -540,24 +541,26 @@ def main() -> int:
     )
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
-        "--pointcloud", action="store_true",
-        help="overlay the scene point cloud (heavier, slower)",
+        "--pointcloud", action=argparse.BooleanOptionalAction, default=True,
+        help="overlay the scene point cloud (default on; --no-pointcloud to "
+             "disable for a lighter boxes-only view)",
     )
     ap.add_argument(
         "--point-size", type=float, default=2.5,
         help="point cloud point size in pixels (default 2.5; bump to 4-5 for chunky)",
     )
     ap.add_argument(
-        "--voxel-size", type=float, default=0.05,
-        help="voxel downsample size in meters (default 0.05; 0 disables)",
+        "--voxel-size", type=float, default=0.02,
+        help="voxel downsample size in meters (default 0.02; 0 disables)",
     )
     ap.add_argument(
         "--gray-points", action="store_true",
         help="force uniform gray (else use VLA-3D native per-point RGB)",
     )
     ap.add_argument(
-        "--dark-bg", action="store_true",
-        help="dark background — point colors and OBBs pop more",
+        "--dark-bg", action=argparse.BooleanOptionalAction, default=True,
+        help="dark background — point colors and OBBs pop more (default on; "
+             "--no-dark-bg for a white background)",
     )
     ap.add_argument(
         "--ceiling-cut", type=float, default=0.5,
@@ -565,9 +568,9 @@ def main() -> int:
              "(default 0.5; 0 to disable)",
     )
     ap.add_argument(
-        "--line-radius", type=float, default=0.0,
-        help="OBB edge thickness in meters, drawn as solid tubes (e.g. 0.015 "
-             "= 1.5 cm). 0 = thin 1px wireframe. Use this instead of a line "
+        "--line-radius", type=float, default=0.02,
+        help="OBB edge thickness in meters, drawn as solid tubes (default 0.02 "
+             "= 2 cm; 0 = thin 1px wireframe). Use this instead of a line "
              "width: Open3D's legacy renderer ignores line_width on macOS.",
     )
     ap.add_argument(

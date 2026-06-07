@@ -24,13 +24,14 @@ Both halves are shaped to the official question set
 (`../CMU-VLN-Challenge-2026/questions/questions.json`, 30 object_reference
 + 15 numerical graded items). `object_reference` (measured vs target):
 
-| Feature                         | Official | Ours (12k) |
-|---------------------------------|---------:|-----------:|
-| compositional (≥2 relations)    |   57%    |   56%      |
-| color modifier ("the red X")    |    7%    |    7%      |
-| indefinite "a X" anchor         |   13%    |   13%      |
-| omit-"Find" ("The X …")         |   10%    |   10%      |
-| ordinal ("second closest")      |    0%    |    0%      |
+| Feature                          | Official | Ours (12k) |
+|----------------------------------|---------:|-----------:|
+| compositional (≥2 relations)     |   57%    |   50%      |
+| color modifier ("the red X")     |    7%    |    7%      |
+| indefinite "a X" anchor          |   13%    |   ~5%      |
+| omit-"Find" ("The X …")          |   10%    |   10%      |
+| ordinal ("second closest")       |    0%    |    0%      |
+| redundant constraint (see below) |   ~3%    |    0%      |
 
 `numerical` (measured vs target):
 
@@ -66,6 +67,28 @@ the target stays geometrically unique, and the indefinite article no
 longer wrongly presupposes a unique keyboard. This is the official set's
 own style ("closest to a window"). Anchors with a disambiguator ("the
 BLUE book") keep the definite article.
+
+**Redundant-constraint gate.** A spatial/attribute constraint only earns
+its place when the target class is *non-unique* in what the robot sees —
+otherwise "Find the dvd beside the chair" is over-specified when there is
+just one dvd. In the official set **29/30** object_reference targets are
+non-unique (pillow×12, bowl×7, blue chair×11, …); only 1 is unique. Our
+old corpus was the opposite: ~37% of pairs had a target class that was
+already unique in view, so the relation did no disambiguation work. Both
+generators now drop these: a ref pair is emitted only if **≥2 instances of
+the target class** sit in the object_list it carries (scene-wide for
+nested, which ships a scene-wide list; region-wide for single-layer, whose
+list is region-filtered). Result: **0%** redundant (down from 37%).
+Counting (`numerical`) questions are exempt — a count is meaningful no
+matter how many same-class objects exist.
+
+This gate is what pushed the indefinite "a X" anchor share down to ~5%
+(from the 13% target): most single-anchor "a X" statements happen to have
+a region-unique target and are now dropped. We kept the gate — matching
+the official "constraints disambiguate" semantics matters more than the
+secondary "a X" stylistic share. The gate also naturally concentrates
+single-layer ref on `closest`/`farthest`/`near`/`between` (relations that
+*require* multiple same-class instances), which is itself on-distribution.
 
 **Ordinal-ranked phrasings** ("second closest", "third farthest", …) are
 dropped: the official set uses only superlatives and contains zero
@@ -168,11 +191,16 @@ real geometry — i.e. target is on the right object, anchors actually
 match the `closest to X` relation, heading isn't flipped — render any
 row as a 3D OBB wireframe scene:
 
+By default the viewer overlays the scene **point cloud** on a **dark
+background** with **2 cm tube** OBB edges and a **0.02 m** voxel
+downsample — the most readable setup out of the box. Opt out with
+`--no-pointcloud` / `--no-dark-bg` or override the numeric knobs.
+
 ```bash
 # One-time install (heavy ~400 MB Open3D wheel; opt-in only)
 uv sync --extra viz
 
-# Interactive (drag to rotate, scroll to zoom):
+# Interactive (drag to rotate, scroll to zoom) — point cloud + dark bg by default:
 uv run python dataset_generator/visualize_sample.py \
     --jsonl dataset/vla3d_ref.jsonl --idx 42
 
@@ -188,10 +216,32 @@ uv run python dataset_generator/visualize_sample.py \
 uv run python dataset_generator/visualize_sample.py \
     --jsonl dataset/vla3d_ref.jsonl --sample-per-scene 20 --save out/
 
-# Overlay the full scene point cloud (heavier, slower):
+# Lighter boxes-only view (no point cloud, white background):
 uv run python dataset_generator/visualize_sample.py \
-    --jsonl dataset/vla3d_ref.jsonl --idx 42 --pointcloud
+    --jsonl dataset/vla3d_ref.jsonl --idx 42 --no-pointcloud --no-dark-bg
 ```
+
+Options:
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--jsonl PATH` | (required) | jsonl file to read rows from |
+| `--idx N` / `--random` | — | pick a specific 0-based row / a random one |
+| `--sample-per-scene N` | — | batch: up to N rows per scene (needs `--save`) |
+| `--seed N` | 42 | RNG seed for `--random` / batch sampling |
+| `--pointcloud` / `--no-pointcloud` | **on** | overlay the scene point cloud |
+| `--point-size F` | 2.5 | point size in px (bump to 4–5 for chunky) |
+| `--voxel-size F` | **0.02** | voxel downsample in m (0 disables) |
+| `--gray-points` | off | force uniform gray instead of native RGB |
+| `--dark-bg` / `--no-dark-bg` | **on** | dark background so colors/OBBs pop |
+| `--ceiling-cut F` | 0.5 | crop top F m of cloud so the ceiling stops occluding |
+| `--line-radius F` | **0.02** | OBB edge thickness in m, drawn as tubes (0 = 1px wire) |
+| `--show-other` | off | also draw gray context OBBs for every other object |
+| `--save PATH` | — | write PNG (dir → auto-named); omit for an interactive window |
+| `--scene-root PATH` | bundled | where the VLA-3D Unity scenes live |
+
+In an interactive window: `+` / `-` resize points, `Q` / `Esc` / `Ctrl+C`
+close it.
 
 Color code:
 
