@@ -75,6 +75,7 @@ nav:
       - New Model Integration: guides/new-model.md
       - Evaluation: guides/evaluation.md
       - Data Generation: guides/data-generation.md
+      - Dataset EDA: eda_report.md
       - VLM Logging & Replay: guides/vlm-logging.md
   - API Reference:
       - messages: api/messages.md

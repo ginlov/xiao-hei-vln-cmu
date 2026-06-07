@@ -41,25 +41,37 @@ For object references:
 }
 ```
 
-## Generating questions
+## Generating the corpus
 
-The `dataset_generator/` directory contains utilities for:
-
-- Extracting object inventories from VLA-3D scenes
-- Generating numerical questions ("How many X?")
-- Generating object-reference questions ("Find the X")
-- Converting scene annotations to ground-truth format
-
-## Object list extraction
+Regenerate the full Q&A corpus end-to-end (single-layer ref → numerical →
+nested compositional → type-consistency check):
 
 ```bash
-uv run python -m xiao_hei_vln.eval_sampler.object_list \
-  --scene dataset_generator/output/scene_001.json \
-  --output data/objects.json
+bash dataset_generator/regen.sh      # writes dataset/*.jsonl (gitignored)
 ```
+
+The generators live in `dataset_generator/`. Every row bakes the per-scene
+`object_list` (each object as `id x y z lx ly lz heading "label"`) via
+`vla3d_loader.render_object_list`; the answer's `object_id` indexes into that
+list. The full pipeline — phrasing-distribution alignment to the official set
+and the data-quality gates (redundant-constraint, tied-superlative,
+wall-between, colour) — is documented in the generator reference
+**`dataset_generator/README.md`**.
+
+!!! note
+    `object_list` is produced **inside** the generator, not by a standalone
+    CLI. `xiao_hei_vln.eval_sampler.object_list` is a parsing *library*
+    (`parse_object_list`), not a runnable command.
+
+## Exploring the result
+
+See **[Dataset EDA](../eda_report.md)** for distributions (relation words,
+object sizes, colours, per-scene counts) and the data-quality audit
+(before/after each gate). Charts regenerate with
+`uv run python dataset_generator/eda_report.py`.
 
 ## Current status
 
-- Numerical questions: ground truth available from VLA-3D object counts
-- Object reference: ground truth derived from VLA-3D bounding boxes
+- Numerical questions: ground truth from VLA-3D object counts
+- Object reference: ground truth from VLA-3D bounding boxes
 - Instruction following: requires official evaluator (no offline ground truth)
