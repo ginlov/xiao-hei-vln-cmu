@@ -1,65 +1,122 @@
 # Data Generation
 
-The project uses VLA-3D generated datasets for offline evaluation and
-prompt development.
+The project generates three ground-truth datasets from VLA-3D scene data.
+All scripts live in `dataset_generator/` and write output to `dataset/`.
 
-## Dataset pipeline
+## Dataset overview
+
+| File | Questions | Type | Script |
+|---|---|---|---|
+| `dataset/challenge_gt.jsonl` | 45 | official challenge questions | `challenge_gt_gen.py` |
+| `dataset/vla3d_ref.jsonl` | 7 708 | VLA-3D object-reference | `vla3d_ref_to_qa.py` |
+| `dataset/vla3d_num.jsonl` | 591 | VLA-3D numerical | `vla3d_num_gen.py` |
+
+Use `challenge_gt.jsonl` when scoring real challenge runs.  Use the VLA-3D
+files for training, ablations, and development evaluation.
+
+## Pipeline diagram
 
 ```mermaid
-graph LR
-    VLA3D[VLA-3D Scenes] --> GEN[dataset_generator]
-    GEN --> GT[Ground Truth JSONL]
-    GT --> SAMPLER[eval_sampler]
-    SAMPLER --> EVAL[Evaluator]
+graph TD
+    VLA3D[VLA-3D scene graphs] --> REF[vla3d_ref_to_qa.py]
+    VLA3D --> NUM[vla3d_num_gen.py]
+    VLA3D --> NEST[vla3d_nested_gen.py]
+    QJSON[questions/questions.json] --> CGT[challenge_gt_gen.py]
+    VLA3D --> CGT
+    REF --> REF_OUT[dataset/vla3d_ref.jsonl]
+    NUM --> NUM_OUT[dataset/vla3d_num.jsonl]
+    NEST -->|auto-merged| REF_OUT
+    NEST -->|auto-merged| NUM_OUT
+    CGT --> GT_OUT[dataset/challenge_gt.jsonl]
+    GT_OUT --> EVAL[eval_pipeline]
 ```
 
-## Ground truth format
+## Regenerating VLA-3D datasets
 
-Each line in the ground-truth JSONL contains:
-
-```json
-{
-  "question": "How many chairs are in the room?",
-  "question_type": "numerical",
-  "answer": {"kind": "numerical", "value": 4}
-}
-```
-
-For object references:
-
-```json
-{
-  "question": "Find the red cup",
-  "question_type": "object_reference",
-  "answer": {
-    "kind": "object_reference",
-    "label": "red_cup",
-    "object_id": 7,
-    "center": {"x": 2.1, "y": -0.5, "z": 0.8},
-    "size": {"x": 0.1, "y": 0.1, "z": 0.15}
-  }
-}
-```
-
-## Generating questions
-
-The `dataset_generator/` directory contains utilities for:
-
-- Extracting object inventories from VLA-3D scenes
-- Generating numerical questions ("How many X?")
-- Generating object-reference questions ("Find the X")
-- Converting scene annotations to ground-truth format
-
-## Object list extraction
+Use the one-shot driver:
 
 ```bash
-uv run python -m xiao_hei_vln.eval_sampler.object_list \
-  --scene dataset_generator/output/scene_001.json \
-  --output data/objects.json
+bash dataset_generator/regen.sh
 ```
+
+This runs all four steps (ref → num → nested → type-check) and prints a
+summary.  Individual scripts can also be run directly:
+
+```bash
+# Object-reference Q&A
+uv run python dataset_generator/vla3d_ref_to_qa.py
+
+# Numerical Q&A
+uv run python dataset_generator/vla3d_num_gen.py
+
+# Nested (compound spatial) Q&A — auto-merged into ref/num on load
+uv run python dataset_generator/vla3d_nested_gen.py
+```
+
+## Generating `challenge_gt.jsonl`
+
+```bash
+uv run python dataset_generator/challenge_gt_gen.py
+```
+
+Pass `--verify` to preview answers without writing the file:
+
+```bash
+uv run python dataset_generator/challenge_gt_gen.py --verify
+```
+
+Expected output: `Resolved 45 questions  (errors/warnings: 0)`.
+
+### How it works
+
+For each of the 45 scoreable questions in `questions/questions.json`
+(numerical + object_reference across 15 training scenes):
+
+1. Load the VLA-3D scene graph for the scene.
+2. Resolve the answer using scene-graph spatial relations
+   (`on`, `above`, `below`, `near`, `between`, `closest`, `farthest`).
+3. Fall back to geometry (Euclidean distance / surface proximity) when the
+   scene graph relation is missing.
+4. Read the authoritative `object_list.txt` from the scene zip and embed it
+   in the GT entry.
+
+Color queries (`"red pillow"`, `"black pillow"`) use a built-in alias map
+because VLA-3D's automated color classification uses names like `"maroon"`
+for visually red objects.
+
+## Ground-truth format
+
+Every line in any of the three files is a JSON object:
+
+```jsonc
+// object_reference
+{
+  "scene": "arabic_room",
+  "type": "object_reference",
+  "question": "Find the pillow closest to the book on the stool.",
+  "answer": {"object_id": 73, "label": "pillow"},
+  "object_list": [
+    "0 -3.77 2.05 0.61 0.67 0.64 1.23 0.008 \"potted plant\"",
+    // …
+  ]
+}
+
+// numerical
+{
+  "scene": "arabic_room",
+  "type": "numerical",
+  "question": "How many sofas are below a window?",
+  "answer": 3,
+  "object_list": [ /* same scene object list */ ]
+}
+```
+
+`object_list` line format: `id cx cy cz lx ly lz heading "label"`
 
 ## Current status
 
-- Numerical questions: ground truth available from VLA-3D object counts
-- Object reference: ground truth derived from VLA-3D bounding boxes
-- Instruction following: requires official evaluator (no offline ground truth)
+| Type | Status |
+|---|---|
+| `object_reference` | ✅ Full coverage (challenge + VLA-3D) |
+| `numerical` | ✅ Full coverage (challenge + VLA-3D) |
+| `instruction_following` | ⛔ No offline ground truth — requires official evaluator |

@@ -110,3 +110,7 @@ MkDocs + Material theme with mkdocstrings for API reference. Deploys to GitHub P
 - **Phase 1 — Scaffolding + core content**: `mkdocs.yml`, landing page, architecture diagram, quickstart, docker, configuration reference.
 - **Phase 2 — Concepts + guides**: messages, responder protocol, tick loop, Qwen engine, new-model tutorial, evaluation guide, data generation, VLM logging guide, auto-generated API docs.
 - **Phase 3 — GitHub Pages integration**: CI workflow (`.github/workflows/docs.yml`), verify live deployment.
+
+## Task 7 - Evaluation pipeline integration
+
+The ground-truth data is ready, outptu format of system is ready, evaluation pipeline is ready, you need to find the gap among those 3 components and close them to enable end-2-end pipeline from inference to metrics.
