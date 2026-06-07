@@ -177,14 +177,20 @@ def emit_relation_count(sc: VLAScene, template_id: str, rel: str,
 
 
 def emit_total_count(sc: VLAScene) -> list[dict]:
-    """N4: total count of each label in the scene. Scene-wide by design,
-    so object_list stays unfiltered and region_id is None."""
+    """N4: total count of each label in the scene. Scene-wide by design, so
+    object_list stays unfiltered and region_id is None.
+
+    Re-enabled (capped) to *balance* N5: N4 and N5 share the exact "...are there
+    in the room?" phrasing, but N4 answers are >=1 and N5 answers are 0. Without
+    N4 that phrasing only ever maps to 0, so the model could learn the shortcut
+    "in the room => 0" instead of actually counting. Answers are kept in [2, 8]
+    to stay near the official small-count range (no "15 books" outliers)."""
     out: list[dict] = []
     label_counts = Counter(o.raw_label for o in sc.objects
                            if usable_target_label(o.raw_label) and o.region_id >= 0)
     ol = render_object_list(sc)
     for label, n in label_counts.items():
-        if n < 3 or n > 30:   # uninteresting at extremes
+        if n < 2 or n > 8:   # non-trivial, but within the official answer range
             continue
         q = f"How many {pluralize(label)} are there in the room?"
         out.append(make_pair(sc.name, "N4", q, n, [], ol, region_id=None))
@@ -253,9 +259,12 @@ def emit_color_on(sc: VLAScene) -> list[dict]:
 
 # Per-template per-scene caps, tuned to the official numerical distribution:
 # `on` dominates (11/15), color ~13% (all "on"), `near` rare (1/15). The
-# official set has NO pure totals ("How many X in the room?") — N4 is disabled
-# below as out-of-distribution. A token N5 (absent-category → 0) is kept for
-# refusal robustness even though the official examples have none.
+# The official set has NO pure totals ("How many X in the room?") and NO
+# refusals — both N4 and N5 are out-of-distribution. We keep a small, BALANCED
+# slice of each: N5 (answer 0) gives refusal robustness, and N4 (answer >=1)
+# exists only to counterweight it so the shared "...in the room?" phrasing
+# doesn't collapse to a "=> 0" shortcut. N4 is capped slightly above N5 so 0 is
+# a minority answer within that phrasing.
 NUM_TEMPLATE_CAP = {
     "N1": 9999,   # on — keep all (the priority relation)
     "N6": 3,      # color-on — capped so colour ≈ 13% (these are also "on" Qs)
@@ -263,6 +272,7 @@ NUM_TEMPLATE_CAP = {
     "N2": 1,      # near (official: 1/15)
     "N7": 5,      # below
     "N8": 5,      # hanging on
+    "N4": 2,      # total-in-room (answer >=1) — balances N5's zeros
     "N5": 1,      # refusal (answer 0) — token retention for robustness
 }
 
@@ -273,8 +283,10 @@ def generate_scene(sc: VLAScene, rng: random.Random) -> list[dict]:
     bucket["N1"] = emit_relation_count(sc, "N1", "on", "on", min_count=1)
     bucket["N2"] = emit_relation_count(sc, "N2", "near", "near")
     bucket["N3"] = emit_relation_count(sc, "N3", "above", "above")
-    # N4 (emit_total_count) disabled: pure "How many X in the room?" totals are
-    # absent from the official set. Emitter kept for reuse / ablations.
+    # N4 re-enabled (capped) purely to balance N5 — see NUM_TEMPLATE_CAP. Both
+    # share the "...in the room?" phrasing; N4 answers >=1, N5 answers 0, so the
+    # phrasing no longer predicts 0 and the model must actually count.
+    bucket["N4"] = emit_total_count(sc)
     bucket["N5"] = emit_refusal(sc, rng)
     bucket["N6"] = emit_color_on(sc)
     bucket["N7"] = emit_relation_count(sc, "N7", "below", "below")

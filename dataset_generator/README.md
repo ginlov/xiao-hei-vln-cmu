@@ -8,15 +8,15 @@ directory (gitignored).
 The 15 Unity scenes covered by VLA-3D are the same scenes the CMU VLN
 Challenge uses for training, with object IDs aligned 1:1 to the
 challenge's `object_list.txt`. We exploit that alignment to derive
-5,055 grounded Q&A pairs across the challenge's two scoreable runtime
+5,085 grounded Q&A pairs across the challenge's two scoreable runtime
 types (the third type, `instruction_following`, requires the official
 forbidden-zone labels and is tracked separately):
 
 | Source file            | Pairs  | Composition |
 |------------------------|-------:|---|
 | `vla3d_ref.jsonl`      | 4,865  | 3,500 single-layer `object_reference` rewrites + 1,365 nested-pattern ref pairs |
-| `vla3d_num.jsonl`      |   190  | 150 numerical templates (N1–N8) + 40 nested-pattern num pairs |
-| **Total**              | **5,055** | — |
+| `vla3d_num.jsonl`      |   220  | 180 numerical templates (N1–N8) + 40 nested-pattern num pairs |
+| **Total**              | **5,085** | — |
 
 The corpus shrank from an earlier 12,190 when relation-word frequencies
 were aligned to the official shape (see *Relation-word usage* below): a
@@ -57,14 +57,22 @@ cannot both be hit from VLA-3D, whose compositional supply *is* the
 | color modifier                  |   13%    |  14% |
 | compositional (≥2 relations)    |   20%    |  22% |
 | "Count the number of …" phrasing|    7%    |   7% |
-| pure totals / refusals          |    0%    |   8% |
+| totals + refusals ("in the room")|   0%    |  20% |
 
 The `on` share is capped by VLA-3D supply: only ~84 scene-unique "on"
-anchors exist, so num is intentionally small (190) and faithful rather
+anchors exist, so num is intentionally small (220) and faithful rather
 than padded with abundant `near` counts (the old 591 was 36% pure totals
-+ refusals and `near`-heavy). The official set has no pure totals
-("How many X in the room?"), so the `N4` emitter is disabled; a token
-`N5` refusal slice (answer 0) is kept for robustness.
++ refusals and `near`-heavy).
+
+The official set has no "…in the room?" questions of either kind, but we
+keep a **balanced** slice: **N5** refusals (a category absent from the
+scene → answer 0, 15 pairs) for robustness, and **N4** totals (a present
+category → answer ≥1, ~30 pairs, capped to counts in [2, 8]). N4 exists
+*only* to counterweight N5: both share the exact "How many X are there in
+the room?" phrasing, so without N4 that phrasing would map to 0 every time
+and the model could learn the shortcut "in the room ⇒ 0" instead of
+counting. With both, 0 is just 33% of that phrasing — the model must
+ground. N4 is capped slightly above N5 (`NUM_TEMPLATE_CAP`).
 
 #### Relation-word usage (ref + num)
 
