@@ -39,11 +39,41 @@ HERE = Path(__file__).parent
 # pools are far larger now that `near` is also an inner relation, so we sample
 # down for per-pattern / per-anchor diversity and to hit the corpus's nested
 # target (~50% of the 12k object_reference goal).
-TARGET_NESTED_REF = 6000
+TARGET_NESTED_REF = 4000
 TARGET_NESTED_NUM = 40
 DOWNSAMPLE_SEED = 42
 # Fraction of nested ref questions rephrased to drop the leading "Find".
 OMIT_FIND_FRAC = 0.10
+
+# Relation-word reweight (moderate, not an exact fit to the 66-occurrence
+# official sample). The official ref+num set is `on`/`closest`-dominated with
+# `near` ~8% and `farthest` ~5%; our supply-driven default was ~29% near and
+# ~29% farthest (the `near`-as-inner supply unlock + farthest being the free
+# symmetric twin of closest). We make `closest` the primary outer by taking the
+# full supply of every `*_closest` template (and `between`), while hard-capping
+# the over-supplied minority relations so they stay minority regardless of how
+# much geometric supply exists:
+#   - `*_farthest` templates  -> FARTHEST_TEMPLATE_CAP each
+#   - `*_near` (near as outer) -> NEAR_OUTER_TEMPLATE_CAP each
+#   - `near_closest` / `near_farthest` (near as inner, ~10k combined supply)
+#     -> NEAR_INNER_CAP each (near_farthest falls under the farthest cap first)
+# `near`-as-inner is still used (capped) to clear the non-near geometric ceiling.
+NEAR_INNER_CAP = 320
+FARTHEST_TEMPLATE_CAP = 45
+NEAR_OUTER_TEMPLATE_CAP = 30
+
+
+def _template_cap(tpl: str, supply: int) -> int:
+    """Per-template sample cap implementing the relation reweight above."""
+    if tpl == "NEST_between":
+        return supply
+    if tpl.endswith("_farthest"):          # incl. near_farthest
+        return min(supply, FARTHEST_TEMPLATE_CAP)
+    if tpl.endswith("_near"):              # near as the OUTER relation
+        return min(supply, NEAR_OUTER_TEMPLATE_CAP)
+    if tpl.startswith("NEST_near_"):       # near_closest (near as inner)
+        return min(supply, NEAR_INNER_CAP)
+    return supply                          # every *_closest with a non-near inner
 
 # Architectural / structural labels that are fine as ANCHORS ("farthest from
 # the floor", "between a door frame and a window") but nonsensical as the
@@ -324,28 +354,40 @@ def _emit_between(sc: VLAScene, by_label: dict[str, list[VLAObject]]) -> list[di
 
 def _stratified_downsample(pairs: list[dict], target: int,
                            rng: random.Random) -> list[dict]:
-    """Sample `target` pairs spread as evenly as possible across templates, so
-    no single pattern (or anchor-heavy scene) dominates after downsampling."""
-    if len(pairs) <= target:
-        return pairs
+    """Cap each template to `_template_cap` (the relation reweight) and keep all
+    survivors. `target` is an upper bound: if the capped pool still exceeds it,
+    trim with a round-robin across templates so no pattern dominates the trim.
+    In practice the caps bind well below `target`, so this returns the capped
+    pool — `farthest`/`near` stay minority by construction, `closest` leads."""
     by_tpl: dict[str, list[dict]] = defaultdict(list)
     for p in pairs:
         by_tpl[p["template"]].append(p)
     for lst in by_tpl.values():
         rng.shuffle(lst)
-    kept: list[dict] = []
-    tpls = sorted(by_tpl)
-    while len(kept) < target:
+
+    capped: dict[str, list[dict]] = {
+        t: lst[:_template_cap(t, len(lst))] for t, lst in by_tpl.items()
+    }
+    kept: list[dict] = [p for lst in capped.values() for p in lst]
+    if len(kept) <= target:
+        rng.shuffle(kept)
+        return kept
+
+    # Over target even after caps: round-robin trim down to `target`.
+    out: list[dict] = []
+    tpls = sorted(capped)
+    while len(out) < target:
         progressed = False
         for t in tpls:
-            if by_tpl[t]:
-                kept.append(by_tpl[t].pop())
+            if capped[t]:
+                out.append(capped[t].pop())
                 progressed = True
-                if len(kept) >= target:
+                if len(out) >= target:
                     break
         if not progressed:
             break
-    return kept
+    rng.shuffle(out)
+    return out
 
 
 def generate_scene(sc: VLAScene) -> tuple[list[dict], dict]:

@@ -8,15 +8,22 @@ directory (gitignored).
 The 15 Unity scenes covered by VLA-3D are the same scenes the CMU VLN
 Challenge uses for training, with object IDs aligned 1:1 to the
 challenge's `object_list.txt`. We exploit that alignment to derive
-12,190 grounded Q&A pairs across the challenge's two scoreable runtime
+5,055 grounded Q&A pairs across the challenge's two scoreable runtime
 types (the third type, `instruction_following`, requires the official
 forbidden-zone labels and is tracked separately):
 
 | Source file            | Pairs  | Composition |
 |------------------------|-------:|---|
-| `vla3d_ref.jsonl`      | 12,000 | 6,000 single-layer `object_reference` rewrites + 6,000 nested-pattern ref pairs |
+| `vla3d_ref.jsonl`      | 4,865  | 3,500 single-layer `object_reference` rewrites + 1,365 nested-pattern ref pairs |
 | `vla3d_num.jsonl`      |   190  | 150 numerical templates (N1–N8) + 40 nested-pattern num pairs |
-| **Total**              | **12,190** | — |
+| **Total**              | **5,055** | — |
+
+The corpus shrank from an earlier 12,190 when relation-word frequencies
+were aligned to the official shape (see *Relation-word usage* below): a
+`closest`-led, `near`/`farthest`-minority corpus is supply-capped at ~5k,
+whereas the old 12k was only that large because it was `near`/`farthest`-
+heavy — the relations VLA-3D supplies in bulk but the official set barely
+uses.
 
 ### Matching the official phrasing distribution
 
@@ -24,14 +31,22 @@ Both halves are shaped to the official question set
 (`../CMU-VLN-Challenge-2026/questions/questions.json`, 30 object_reference
 + 15 numerical graded items). `object_reference` (measured vs target):
 
-| Feature                          | Official | Ours (12k) |
+| Feature                          | Official | Ours (~5k) |
 |----------------------------------|---------:|-----------:|
-| compositional (≥2 relations)     |   57%    |   50%      |
+| compositional (≥2 relations)     |   57%    |   28%      |
 | color modifier ("the red X")     |    7%    |    7%      |
-| indefinite "a X" anchor          |   13%    |   ~5%      |
+| indefinite "a X" anchor          |   13%    |   ~11%     |
 | omit-"Find" ("The X …")          |   10%    |   10%      |
 | ordinal ("second closest")       |    0%    |    0%      |
 | redundant constraint (see below) |   ~3%    |    0%      |
+
+The **compositional** share fell from 50% to 28% as a direct trade-off of
+the relation-word reweight: compositional questions are almost all nested,
+and nested supply is overwhelmingly `near`/`farthest`, so capping those to
+match the official relation mix also caps the nested (compositional) count.
+The two official targets — 57% compositional *and* `on`/`closest`-heavy —
+cannot both be hit from VLA-3D, whose compositional supply *is* the
+`near`/`farthest` geometry. We prioritized the relation shape.
 
 `numerical` (measured vs target):
 
@@ -50,6 +65,34 @@ than padded with abundant `near` counts (the old 591 was 36% pure totals
 + refusals and `near`-heavy). The official set has no pure totals
 ("How many X in the room?"), so the `N4` emitter is disabled; a token
 `N5` refusal slice (answer 0) is kept for robustness.
+
+#### Relation-word usage (ref + num)
+
+Occurrences of each spatial-relation word across all question strings (one
+nested question contributes ≥2). The default corpus was supply-driven and
+~29% `near` / ~29% `farthest`; the reweight makes `closest` the primary
+outer and pushes `near`/`farthest` down to minority shares:
+
+| Relation word       | Official % | Ours (default) | Ours (reweighted) |
+|---------------------|-----------:|---------------:|------------------:|
+| on                  | 42.4%      |  5.2%          | 11.6%             |
+| closest             | 28.8%      | 23.8%          | 40.0%             |
+| near                |  7.6%      | 29.2%          |  9.9%             |
+| between             |  6.1%      |  3.5%          | 11.1%             |
+| above               |  6.1%      |  2.3%          |  5.6%             |
+| farthest / furthest |  4.5%      | 29.3%          | 10.4%             |
+| below               |  3.0%      |  1.5%          |  4.0%             |
+| under / in / hanging on | 1.5%   |  1.1%          |  3.4%             |
+| beside / next to / adjacent to | 0% | 4.0%        |  3.9%             |
+
+`on` cannot reach its 42% official share — same ~84-anchor supply ceiling
+as numerical — so `closest` (abundant, clean) absorbs the primary-relation
+role at 40%. The reweight is **moderate by design**: it fixes the gross
+`near`/`farthest` over-representation (a real artefact of using `near`-as-
+inner to lift nested supply) and matches the official *ranking*, not the
+exact percentages of a 66-occurrence sample. Knobs: `REL_CAP`
+(`vla3d_ref_to_qa.py`) and `NEAR_INNER_CAP` / `FARTHEST_TEMPLATE_CAP` /
+`NEAR_OUTER_TEMPLATE_CAP` (`vla3d_nested_gen.py`).
 
 The knobs live in `vla3d_ref_to_qa.py` (`TARGET_SINGLE`, `COLOR_QUOTA`,
 `A_ANCHOR_QUOTA`, `OMIT_FIND_FRAC`), `vla3d_num_gen.py`
@@ -82,13 +125,39 @@ list is region-filtered). Result: **0%** redundant (down from 37%).
 Counting (`numerical`) questions are exempt — a count is meaningful no
 matter how many same-class objects exist.
 
-This gate is what pushed the indefinite "a X" anchor share down to ~5%
+This gate is what pushed the indefinite "a X" anchor share down to ~11%
 (from the 13% target): most single-anchor "a X" statements happen to have
 a region-unique target and are now dropped. We kept the gate — matching
 the official "constraints disambiguate" semantics matters more than the
 secondary "a X" stylistic share. The gate also naturally concentrates
 single-layer ref on `closest`/`farthest`/`near`/`between` (relations that
 *require* multiple same-class instances), which is itself on-distribution.
+
+**Superlative margin gate** (`superlative_margin_ok`, `SUPERLATIVE_MARGIN_M
+= 0.30`). A "closest/farthest/near to Y" question is only well-posed if the
+target is *visibly* the nearest/farthest of its same-class candidates. VLA-3D
+statements are uniquely-referring but can tie in the xy-plane the ground robot
+navigates: e.g. two `file` objects stacked at the same (x,y) are exactly
+equidistant from any anchor, so "the file nearest the plant" has no determinate
+answer. **~14%** of single-layer superlatives were within 5 cm (and ~24% within
+15 cm) — unanswerable supervision, worse for the robot's low-res 360 camera.
+The gate keeps a single-layer superlative only if the target is the xy-nearest
+(or -farthest) candidate by ≥ 0.30 m (matching the nested generator's
+`CLOSEST_MARGIN_M`), dropping ties to **1.4%**. It also drops samples where
+VLA-3D's chosen answer disagrees with xy-geometry (it ranks by 3D distance).
+
+**Wall-between gate** (`wall_between_ok`, `closest`/`near` only). Straight-line
+xy distance through a wall isn't navigable proximity: "the cabinet closest to
+the fire alarm" was picking a cabinet on the far side of a glass partition.
+~23% of single-layer `closest`/`near` had the target→anchor segment cross a
+structural wall. The gate drops these — it clips the segment against each
+structural wall's xy footprint (height-filtered so flat "wall decal" / "wall
+lamp" fixtures don't count; glass partitions *do*, they're real navigation
+barriers) and rejects a crossing in the segment's middle portion (parameter
+`t ∈ (0.08, 0.92)`, so a wall-mounted anchor at `t≈1` or an object backed
+against its own wall at `t≈0` is not mistaken for a divider between them).
+`farthest` is exempt — the farthest object is naturally across the room.
+Residual wall-crossing in the final `closest`/`near` set: **0**.
 
 **Ordinal-ranked phrasings** ("second closest", "third farthest", …) are
 dropped: the official set uses only superlatives and contains zero

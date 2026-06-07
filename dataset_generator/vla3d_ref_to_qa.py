@@ -28,6 +28,7 @@ Output schema (one JSON object per line):
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 from collections import Counter
@@ -62,14 +63,140 @@ def is_ordinal_ranked(stmt: str) -> bool:
     return _ORDINAL_RANK_RE.search(stmt) is not None
 
 
-# Final single-layer sizing + feature quotas, chosen so the merged 12k corpus
-# (6k single-layer here + 6k nested) matches the official distribution:
-#   nested ~50%, color ~7%, indefinite "a X" anchors ~13%, omit-"Find" ~10%.
-# Nested contributes ~0 color and ~0 "a"-anchors, so those quotas live here.
-TARGET_SINGLE = 6000
-COLOR_QUOTA = 840        # ~7% of 12k
-A_ANCHOR_QUOTA = 1560    # ~13% of 12k
+# Final single-layer sizing + feature quotas. The merged corpus is now smaller
+# (~7.5k) after the relation-word reweight pulls `farthest`/`near` down toward
+# the official shape; nested contributes ~0 color / ~0 "a"-anchors so those
+# quotas live here. Color ~7% of the merged total; "a"-anchor is supply-capped
+# (~540 after the redundancy gate) so its quota just takes all available.
+TARGET_SINGLE = 3500
+COLOR_QUOTA = 350        # ~7% of the ~5k merged corpus
+A_ANCHOR_QUOTA = 1560    # supply-capped well below this; effectively "take all"
 OMIT_FIND_FRAC = 0.10
+
+# Per-relation caps on the single-layer pool, applied before bucketing. VLA-3D
+# referential statements are `farthest`/`near`-heavy; the official set is
+# `closest`-led with little `farthest`. Capping these two lets `closest` /
+# `between` / `on`-family fill the rest. Relations not listed are uncapped.
+REL_CAP = {"farthest": 300, "near": 380}
+
+# A superlative ("the X closest/farthest/near to Y") is only well-posed if the
+# target is *visibly* the closest/farthest among its same-class candidates.
+# VLA-3D statements are uniquely-referring but can tie in the xy-plane the robot
+# navigates in — e.g. two files stacked at the same (x,y) are equidistant from
+# any anchor, so "the file nearest the plant" has no determinate answer (~14% of
+# these samples are within 5 cm). Require the target to be THE xy-nearest /
+# -farthest by this margin, matching the nested generator's CLOSEST_MARGIN_M.
+SUPERLATIVE_MARGIN_M = 0.30
+_SUPERLATIVE_RELS = {"closest", "near", "farthest"}
+
+
+# Wall-occlusion gate (closest/near only). Straight-line xy distance through a
+# wall doesn't reflect navigable proximity: "the cabinet closest to the fire
+# alarm" picks a cabinet on the far side of a glass partition. `farthest` is
+# exempt — the farthest object is naturally across the room / a wall.
+_WALL_RELS = {"closest", "near"}
+# Keep the crossing away from both segment ends so a wall-mounted anchor
+# (picture / light switch / fire alarm, which sit *on* a wall, crossing near
+# t=1) or an object backed against its own wall (t≈0) is not mistaken for a
+# divider strictly *between* target and anchor.
+_WALL_T_LO, _WALL_T_HI = 0.08, 0.92
+_SCENE_WALLS: dict[str, list] = {}
+
+
+def _scene_walls(sc: VLAScene) -> list:
+    """Structural walls (incl. glass partitions — real navigation barriers).
+    Filtered by height so flat 'wall decal' / 'wall lamp' fixtures don't count."""
+    if sc.name not in _SCENE_WALLS:
+        ws = []
+        for o in sc.objects:
+            lbl = o.raw_label.lower()
+            if ("wall" in lbl
+                    and not any(x in lbl for x in
+                                ("decal", "lamp", "clock", "art", "paper",
+                                 "mount", "sticker", "switch"))
+                    and o.lz >= 1.2):
+                ws.append(o)
+        _SCENE_WALLS[sc.name] = ws
+    return _SCENE_WALLS[sc.name]
+
+
+def _seg_obb_interval(p0, p1, w) -> tuple[float, float] | None:
+    """Liang-Barsky clip of segment p0->p1 to wall w's xy OBB. Returns the
+    crossing parameter interval (t0, t1) along the segment, or None."""
+    ca, sa = math.cos(-w.heading), math.sin(-w.heading)
+    hx, hy = w.lx / 2, w.ly / 2
+
+    def loc(p):
+        dx, dy = p[0] - w.x, p[1] - w.y
+        return (ca * dx - sa * dy, sa * dx + ca * dy)
+
+    a = loc(p0)
+    b = loc(p1)
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t0, t1 = 0.0, 1.0
+    for pdir, q in ((-dx, a[0] + hx), (dx, hx - a[0]),
+                    (-dy, a[1] + hy), (dy, hy - a[1])):
+        if abs(pdir) < 1e-12:
+            if q < 0:
+                return None
+        else:
+            r = q / pdir
+            if pdir < 0:
+                if r > t1:
+                    return None
+                t0 = max(t0, r)
+            else:
+                if r < t0:
+                    return None
+                t1 = min(t1, r)
+    return (t0, t1) if t0 < t1 else None
+
+
+def wall_between_ok(sc: VLAScene, raw: dict) -> bool:
+    """False if a closest/near target is separated from its anchor by a wall
+    (the xy segment crosses a structural wall in its middle portion)."""
+    if raw["relation"] not in _WALL_RELS:
+        return True
+    anchors = raw["anchors"]
+    if not anchors:
+        return True
+    t = sc.by_id.get(raw["target_id"])
+    a = sc.by_id.get(anchors[0]["id"])
+    if t is None or a is None:
+        return True
+    for w in _scene_walls(sc):
+        if w.region_id != t.region_id:
+            continue
+        iv = _seg_obb_interval((t.x, t.y), (a.x, a.y), w)
+        if iv and iv[0] < _WALL_T_HI and iv[1] > _WALL_T_LO:
+            return False
+    return True
+
+
+def superlative_margin_ok(sc: VLAScene, raw: dict) -> bool:
+    """For closest/near/farthest, the target must be the unique xy-nearest (or
+    -farthest) candidate by SUPERLATIVE_MARGIN_M. Non-superlative relations and
+    cases with <2 candidates or a missing anchor pass through unchanged."""
+    if raw["relation"] not in _SUPERLATIVE_RELS:
+        return True
+    anchors = raw["anchors"]
+    if not anchors:
+        return True
+    a = sc.by_id.get(anchors[0]["id"])
+    cands = [raw["target_id"], *raw["distractor_ids"]]
+    objs = [sc.by_id.get(c) for c in cands]
+    if a is None or len(objs) < 2 or any(o is None for o in objs):
+        return True
+    ranked = sorted(
+        ((math.hypot(o.x - a.x, o.y - a.y), c)
+         for o, c in zip(objs, cands, strict=True)),
+        key=lambda t: t[0],
+    )
+    if raw["relation"] == "farthest":
+        ranked.reverse()
+    best_id = ranked[0][1]
+    margin = abs(ranked[1][0] - ranked[0][0])
+    return best_id == raw["target_id"] and margin >= SUPERLATIVE_MARGIN_M
 
 # Real colour words only. Deliberately excludes "dark"/"light": those match
 # object labels like "light switch" / "spot light", not colour modifiers.
@@ -219,6 +346,17 @@ def build_pair(sc: VLAScene, region_id: int, raw: dict) -> dict | None:
         if region_cnt[tgt_obj.raw_label] < 2:
             DROP_COUNTS["target_unique_in_view"] += 1
             return None
+    # Superlative margin: drop "closest/farthest/near" questions where the
+    # target isn't the unique xy-nearest/-farthest candidate by a visible margin
+    # (stacked / tied objects make the answer indeterminate).
+    if not superlative_margin_ok(sc, raw):
+        DROP_COUNTS["superlative_tie"] += 1
+        return None
+    # Wall between target and anchor (closest/near only) — straight-line
+    # distance through a wall isn't navigable proximity.
+    if not wall_between_ok(sc, raw):
+        DROP_COUNTS["wall_between"] += 1
+        return None
     question = rewrite_imperative(raw["statement"])
     if question is None:
         DROP_COUNTS["rewrite_failed"] += 1
@@ -307,6 +445,18 @@ def sample_single_layer(pairs: list[dict], rng: random.Random) -> list[dict]:
     Backfills from leftovers if any bucket is short.
     """
     rng.shuffle(pairs)
+    # Relation reweight: cap the over-supplied `farthest` / `near` statements so
+    # `closest` / `between` / `on`-family carry more of the single-layer share,
+    # tracking the official `closest`-led shape (see REL_CAP).
+    seen: Counter = Counter()
+    capped: list[dict] = []
+    for p in pairs:
+        rel = p["relation"]
+        if rel in REL_CAP and seen[rel] >= REL_CAP[rel]:
+            continue
+        seen[rel] += 1
+        capped.append(p)
+    pairs = capped
     # a-anchor is the priority bucket (its supply is scarcer than color's), so
     # an "a X" sample that also contains a color word still counts as a-anchor.
     a_anchor = [p for p in pairs if p["_a_anchor"]]
