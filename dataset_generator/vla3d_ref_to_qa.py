@@ -211,6 +211,46 @@ def has_color(question: str) -> bool:
     return _COLOR_RE.search(question) is not None
 
 
+# A colour modifier should name what the object *actually looks like*. VLA-3D
+# disambiguates near-identical objects by a minority colour ("the blue book" =
+# a 76%-gray book with 18% blue), which a perception system can't ground. Keep a
+# colour word only when it is the object's DOMINANT colour and covers at least
+# this fraction.
+COLOR_DOMINANT_MIN = 0.40
+
+# Map VLA-3D's technical palette to the basic colour words the human-authored
+# official set uses ("the red pillow", not "the maroon pillow" — and VLA-3D
+# labels those official red pillows "maroon"). Basic words pass through.
+COLOR_BASIC_MAP = {
+    "maroon": "red", "navy": "blue", "teal": "blue", "aqua": "blue",
+    "olive": "green", "beige": "brown", "tan": "brown", "violet": "purple",
+    "gold": "red", "golden": "red", "silver": "gray",
+}
+
+
+def color_gate_and_map(sc: VLAScene, raw: dict, question: str) -> str | None:
+    """Drop (return None) if any colour modifier in the statement names a
+    non-dominant / weak colour of its object; otherwise return the question with
+    technical colour words mapped to basic ones."""
+    used: list[tuple[str, int]] = []
+    if raw["target_color_used"]:
+        used.append((raw["target_color_used"].lower(), raw["target_id"]))
+    for a in raw["anchors"]:
+        if a["color_used"]:
+            used.append((a["color_used"].lower(), a["id"]))
+    for col, oid in used:
+        o = sc.by_id.get(oid)
+        if o is None:
+            return None
+        cols = [c.lower() for c in o.colors]
+        if not cols or cols[0] != col or o.color_percentages[0] < COLOR_DOMINANT_MIN:
+            return None  # weak / non-dominant colour modifier
+        basic = COLOR_BASIC_MAP.get(col)
+        if basic:
+            question = re.sub(rf"\b{re.escape(col)}\b", basic, question)
+    return question
+
+
 def _indefinite_article(word: str) -> str:
     return "an" if word[:1].lower() in "aeiou" else "a"
 
@@ -378,6 +418,14 @@ def build_pair(sc: VLAScene, region_id: int, raw: dict) -> dict | None:
         else:
             DROP_COUNTS["ill_formed_unfixable"] += 1
             return None
+
+    # Colour gate: drop weak/minority colour modifiers ("the blue book" at 18%
+    # blue), and map VLA-3D's technical palette to the official's basic words.
+    mapped = color_gate_and_map(sc, raw, question)
+    if mapped is None:
+        DROP_COUNTS["weak_color"] += 1
+        return None
+    question = mapped
 
     # Align object_list labels with the statement's class vocabulary so the
     # model can ground the question noun. VLA-3D's referential statements use

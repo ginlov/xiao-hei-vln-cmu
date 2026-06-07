@@ -159,6 +159,21 @@ against its own wall at `t≈0` is not mistaken for a divider between them).
 `farthest` is exempt — the farthest object is naturally across the room.
 Residual wall-crossing in the final `closest`/`near` set: **0**.
 
+**Colour gate + basic-word mapping** (`color_gate_and_map`). A colour modifier
+should name what the object *looks like*. VLA-3D disambiguates near-identical
+objects by a **minority** colour — "the blue book" was a 76%-gray book with 18%
+blue (it sits among seven gray books distinguished only by their 2nd colour) —
+which perception can't ground; ~37% of colour modifiers covered <30% of the
+object. The gate keeps a colour word only if it is the object's **dominant**
+colour at **≥ 40%** (`COLOR_DOMINANT_MIN`), using VLA-3D's structured
+`target_color_used` / anchor `color_used` rather than text-matching. It then
+maps VLA-3D's technical palette to the **basic** words the human-authored
+official set uses (`maroon→red`, `navy`/`teal`/`aqua→blue`, `olive→green`,
+`beige`/`tan→brown`, `violet→purple`): a maroon-100% pillow becomes "the red
+pillow" — exactly how the official set refers to it (VLA-3D labels those red
+pillows "maroon"). Net colour share stays at **7%** (enough dominant-colour
+supply remains); zero technical-palette or minority-colour modifiers survive.
+
 **Ordinal-ranked phrasings** ("second closest", "third farthest", …) are
 dropped: the official set uses only superlatives and contains zero
 ordinals, so these were out-of-distribution.
