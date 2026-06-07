@@ -206,6 +206,19 @@ def build_pair(sc: VLAScene, region_id: int, raw: dict) -> dict | None:
     if is_ordinal_ranked(raw["statement"]):
         DROP_COUNTS["ordinal_ranked"] += 1
         return None
+    # Redundancy gate: if the target's class is already unique within the
+    # object_list this sample carries, no spatial/attribute constraint is
+    # needed to identify it ("Find the dvd beside the chair" when only one dvd
+    # is in view). The official set never does this — 29/30 of its
+    # object_reference targets are non-unique, so the relation is doing real
+    # disambiguation. Single-layer object_list is region-filtered (below), so
+    # the operative scope is the region: require >=2 same-class instances there.
+    tgt_obj = sc.by_id.get(raw["target_id"])
+    if tgt_obj is not None:
+        region_cnt, _ = _region_info(sc, region_id)
+        if region_cnt[tgt_obj.raw_label] < 2:
+            DROP_COUNTS["target_unique_in_view"] += 1
+            return None
     question = rewrite_imperative(raw["statement"])
     if question is None:
         DROP_COUNTS["rewrite_failed"] += 1

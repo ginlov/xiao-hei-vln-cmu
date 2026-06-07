@@ -239,6 +239,13 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
                     if tgt_label in (anchor1.raw_label, anchor2.raw_label):
                         continue
                     n = len(tgt_objs)
+                    # Redundancy gate (ref only): skip if the target class is
+                    # already unique scene-wide — then "Find the X" needs no
+                    # constraint, unlike the official set (29/30 non-unique).
+                    # Counting (num) questions are exempt: a count is meaningful
+                    # regardless of how many same-class objects exist.
+                    if n == 1 and len(by_label.get(tgt_label, [])) < 2:
+                        continue
                     if n == 1:
                         t = tgt_objs[0]
                         q = (f"Find the {tgt_label} {inner_prep} the "
@@ -297,6 +304,10 @@ def _emit_between(sc: VLAScene, by_label: dict[str, list[VLAObject]]) -> list[di
                     if any(set(p) == {a1.id, a2.id} for p in m_pairs if isinstance(p, list)):
                         same_role.append(m.id)
                 if len(same_role) != 1 or same_role[0] != target.id:
+                    continue
+                # Redundancy gate: skip if the target class is already unique
+                # scene-wide — "between X and Y" would be a vacuous constraint.
+                if len(by_label.get(target.raw_label, [])) < 2:
                     continue
                 q = (f"Find the {target.raw_label} between the "
                      f"{a1.raw_label} and the {a2.raw_label}.")
