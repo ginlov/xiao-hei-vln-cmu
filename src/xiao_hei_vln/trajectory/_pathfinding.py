@@ -101,10 +101,12 @@ def find_collision_free_path(
         dst = ordered_wp_indices[k + 1]
         path_indices = _dijkstra(adj, n, src, dst)
         if path_indices is None:
-            full_path.append(all_nodes[dst])
-        else:
-            for idx in path_indices[1:]:
-                full_path.append(all_nodes[idx])
+            raise RuntimeError(
+                f"No collision-free path in visibility graph from {src} to {dst}; "
+                "consider increasing max_vis_dist / simplify_tol or adding more nodes"
+            )
+        for idx in path_indices[1:]:
+            full_path.append(all_nodes[idx])
 
     return np.array(full_path)
 

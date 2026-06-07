@@ -7,6 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
+pytest.importorskip("scipy")
+pytest.importorskip("shapely")
 from shapely.geometry import Polygon
 
 from xiao_hei_vln.trajectory._coverage import (
@@ -223,14 +226,17 @@ class TestPlanTrajectory:
         assert result.coverage.object_coverage >= 0.8
         assert result.path_length_m > 0
 
-    @pytest.mark.skipif(
-        not Path("/home/leo/Projects/CMU-VLN-Challenge-data/unity_env_models/studio.zip").exists(),
-        reason="Scene data not available",
-    )
     def test_studio_from_zip(self):
         from xiao_hei_vln.trajectory import plan_trajectory_from_zip
 
-        zip_path = Path("/home/leo/Projects/CMU-VLN-Challenge-data/unity_env_models/studio.zip")
+        import os
+
+        zip_path = Path(os.environ.get("XIAO_HEI_VLN_STUDIO_ZIP", ""))
+        if not zip_path.is_file():
+            pytest.skip(
+                "Set XIAO_HEI_VLN_STUDIO_ZIP to the path of a scene zip to run this test"
+            )
+
         result = plan_trajectory_from_zip(zip_path, "studio")
         assert result.coverage.object_coverage >= 0.95
         assert result.coverage.floor_coverage >= 0.90
