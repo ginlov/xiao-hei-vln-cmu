@@ -8,15 +8,21 @@ directory (gitignored).
 The 15 Unity scenes covered by VLA-3D are the same scenes the CMU VLN
 Challenge uses for training, with object IDs aligned 1:1 to the
 challenge's `object_list.txt`. We exploit that alignment to derive
-5,085 grounded Q&A pairs across the challenge's two scoreable runtime
+4,894 grounded Q&A pairs across the challenge's two scoreable runtime
 types (the third type, `instruction_following`, requires the official
 forbidden-zone labels and is tracked separately):
 
 | Source file            | Pairs  | Composition |
 |------------------------|-------:|---|
-| `vla3d_ref.jsonl`      | 4,865  | 3,500 single-layer `object_reference` rewrites + 1,365 nested-pattern ref pairs |
+| `vla3d_ref.jsonl`      | 4,674  | 3,500 single-layer `object_reference` rewrites + 1,174 nested-pattern ref pairs |
 | `vla3d_num.jsonl`      |   220  | 180 numerical templates (N1–N8) + 40 nested-pattern num pairs |
-| **Total**              | **5,085** | — |
+| **Total**              | **4,894** | — |
+
+All object labels use VLA-3D's **raw_label** vocabulary (object_result.csv,
+matching the runtime `object_list.txt`) consistently across both generators;
+the `closest`/`near` **wall-between** and **colour** gates are shared between the
+single-layer and nested generators (`geometry.py`, `phrasing.py`) so neither
+half can ship samples the other would reject.
 
 The corpus shrank from an earlier 12,190 when relation-word frequencies
 were aligned to the official shape (see *Relation-word usage* below): a

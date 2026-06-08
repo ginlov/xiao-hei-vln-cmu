@@ -172,12 +172,14 @@ def main() -> None:
                     help="Also include phase1_raw.jsonl (template-based fallback)")
     args = ap.parse_args()
 
-    # Fold any leftover intermediate nested.jsonl into ref/num first so the
-    # split sees the full corpus instead of silently under-counting by ~1.2k
-    # nested pairs. No-op when nested.jsonl is already gone.
-    from merge_nested import maybe_merge
-
-    maybe_merge(DATASET_DIR, seed=args.seed)
+    # Pure: don't mutate the corpus. The merge is an explicit pipeline step
+    # (merge_nested, run by regen.sh). If the intermediate nested file is still
+    # present, the split would silently under-count by ~1.2k pairs — fail fast.
+    nested = DATASET_DIR / "vla3d_nested.jsonl"
+    if nested.exists():
+        raise SystemExit(
+            f"[error] {nested.name} still present — run the merge step first: "
+            "uv run python dataset_generator/merge_nested.py")
 
     sources = [DATASET_DIR / s for s in DEFAULT_SOURCES]
     if args.include_legacy:

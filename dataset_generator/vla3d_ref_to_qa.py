@@ -34,7 +34,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from phrasing import apply_omit_find
+from geometry import wall_between
+from phrasing import apply_omit_find, dominant_color_or_none
 from vla3d_loader import VLAScene, load_all_vla_scenes, render_object_list
 
 # Statements containing any of these substrings get dropped — they're
@@ -79,105 +80,38 @@ OMIT_FIND_FRAC = 0.10
 # `between` / `on`-family fill the rest. Relations not listed are uncapped.
 REL_CAP = {"farthest": 300, "near": 380}
 
-# A superlative ("the X closest/farthest/near to Y") is only well-posed if the
-# target is *visibly* the closest/farthest among its same-class candidates.
-# VLA-3D statements are uniquely-referring but can tie in the xy-plane the robot
-# navigates in — e.g. two files stacked at the same (x,y) are equidistant from
-# any anchor, so "the file nearest the plant" has no determinate answer (~14% of
-# these samples are within 5 cm). Require the target to be THE xy-nearest /
-# -farthest by this margin, matching the nested generator's CLOSEST_MARGIN_M.
-SUPERLATIVE_MARGIN_M = 0.30
-_SUPERLATIVE_RELS = {"closest", "near", "farthest"}
-
-
-# Wall-occlusion gate (closest/near only). Straight-line xy distance through a
-# wall doesn't reflect navigable proximity: "the cabinet closest to the fire
-# alarm" picks a cabinet on the far side of a glass partition. `farthest` is
-# exempt — the farthest object is naturally across the room / a wall.
+# Wall-occlusion gate (closest/near only) — straight-line xy distance through a
+# wall isn't navigable proximity. `farthest` is exempt (the farthest object is
+# naturally across the room). The geometry is shared with the nested generator
+# via geometry.wall_between so both apply an identical gate.
 _WALL_RELS = {"closest", "near"}
-# Keep the crossing away from both segment ends so a wall-mounted anchor
-# (picture / light switch / fire alarm, which sit *on* a wall, crossing near
-# t=1) or an object backed against its own wall (t≈0) is not mistaken for a
-# divider strictly *between* target and anchor.
-_WALL_T_LO, _WALL_T_HI = 0.08, 0.92
-_SCENE_WALLS: dict[str, list] = {}
-
-
-def _scene_walls(sc: VLAScene) -> list:
-    """Structural walls (incl. glass partitions — real navigation barriers).
-    Filtered by height so flat 'wall decal' / 'wall lamp' fixtures don't count."""
-    if sc.name not in _SCENE_WALLS:
-        ws = []
-        for o in sc.objects:
-            lbl = o.raw_label.lower()
-            if ("wall" in lbl
-                    and not any(x in lbl for x in
-                                ("decal", "lamp", "clock", "art", "paper",
-                                 "mount", "sticker", "switch"))
-                    and o.lz >= 1.2):
-                ws.append(o)
-        _SCENE_WALLS[sc.name] = ws
-    return _SCENE_WALLS[sc.name]
-
-
-def _seg_obb_interval(p0, p1, w) -> tuple[float, float] | None:
-    """Liang-Barsky clip of segment p0->p1 to wall w's xy OBB. Returns the
-    crossing parameter interval (t0, t1) along the segment, or None."""
-    ca, sa = math.cos(-w.heading), math.sin(-w.heading)
-    hx, hy = w.lx / 2, w.ly / 2
-
-    def loc(p):
-        dx, dy = p[0] - w.x, p[1] - w.y
-        return (ca * dx - sa * dy, sa * dx + ca * dy)
-
-    a = loc(p0)
-    b = loc(p1)
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    t0, t1 = 0.0, 1.0
-    for pdir, q in ((-dx, a[0] + hx), (dx, hx - a[0]),
-                    (-dy, a[1] + hy), (dy, hy - a[1])):
-        if abs(pdir) < 1e-12:
-            if q < 0:
-                return None
-        else:
-            r = q / pdir
-            if pdir < 0:
-                if r > t1:
-                    return None
-                t0 = max(t0, r)
-            else:
-                if r < t0:
-                    return None
-                t1 = min(t1, r)
-    return (t0, t1) if t0 < t1 else None
 
 
 def wall_between_ok(sc: VLAScene, raw: dict) -> bool:
-    """False if a closest/near target is separated from its anchor by a wall
-    (the xy segment crosses a structural wall in its middle portion)."""
-    if raw["relation"] not in _WALL_RELS:
-        return True
-    anchors = raw["anchors"]
-    if not anchors:
+    """False if a closest/near target is separated from its anchor by a wall."""
+    if raw["relation"] not in _WALL_RELS or not raw["anchors"]:
         return True
     t = sc.by_id.get(raw["target_id"])
-    a = sc.by_id.get(anchors[0]["id"])
+    a = sc.by_id.get(raw["anchors"][0]["id"])
     if t is None or a is None:
         return True
-    for w in _scene_walls(sc):
-        if w.region_id != t.region_id:
-            continue
-        iv = _seg_obb_interval((t.x, t.y), (a.x, a.y), w)
-        if iv and iv[0] < _WALL_T_HI and iv[1] > _WALL_T_LO:
-            return False
-    return True
+    return not wall_between(sc, t, a)
+
+
+# closest/farthest are *superlatives*: the target must be THE xy-nearest /
+# -farthest candidate by a visible margin (two files stacked at the same x,y are
+# equidistant from any anchor → "the file nearest the plant" is indeterminate).
+# `near` is NOT a superlative — it has *radius* semantics matching the nested
+# generator's unique_near: the target must be the ONLY candidate within
+# NEAR_RADIUS_M of the anchor. Treating "near" as "closest" (the previous bug)
+# left the two generators with two different definitions of `near`.
+SUPERLATIVE_MARGIN_M = 0.30
+NEAR_RADIUS_M = 1.5
 
 
 def superlative_margin_ok(sc: VLAScene, raw: dict) -> bool:
-    """For closest/near/farthest, the target must be the unique xy-nearest (or
-    -farthest) candidate by SUPERLATIVE_MARGIN_M. Non-superlative relations and
-    cases with <2 candidates or a missing anchor pass through unchanged."""
-    if raw["relation"] not in _SUPERLATIVE_RELS:
+    rel = raw["relation"]
+    if rel not in ("closest", "near", "farthest"):
         return True
     anchors = raw["anchors"]
     if not anchors:
@@ -187,16 +121,17 @@ def superlative_margin_ok(sc: VLAScene, raw: dict) -> bool:
     objs = [sc.by_id.get(c) for c in cands]
     if a is None or len(objs) < 2 or any(o is None for o in objs):
         return True
-    ranked = sorted(
-        ((math.hypot(o.x - a.x, o.y - a.y), c)
-         for o, c in zip(objs, cands, strict=True)),
-        key=lambda t: t[0],
-    )
-    if raw["relation"] == "farthest":
+    dists = [(math.hypot(o.x - a.x, o.y - a.y), c)
+             for o, c in zip(objs, cands, strict=True)]
+    if rel == "near":
+        # Exactly one candidate within the radius, and it is the target.
+        within = [c for d, c in dists if d <= NEAR_RADIUS_M]
+        return within == [raw["target_id"]]
+    ranked = sorted(dists, key=lambda t: t[0])
+    if rel == "farthest":
         ranked.reverse()
-    best_id = ranked[0][1]
-    margin = abs(ranked[1][0] - ranked[0][0])
-    return best_id == raw["target_id"] and margin >= SUPERLATIVE_MARGIN_M
+    return (ranked[0][1] == raw["target_id"]
+            and abs(ranked[1][0] - ranked[0][0]) >= SUPERLATIVE_MARGIN_M)
 
 # Real colour words only. Deliberately excludes "dark"/"light": those match
 # object labels like "light switch" / "spot light", not colour modifiers.
@@ -211,27 +146,11 @@ def has_color(question: str) -> bool:
     return _COLOR_RE.search(question) is not None
 
 
-# A colour modifier should name what the object *actually looks like*. VLA-3D
-# disambiguates near-identical objects by a minority colour ("the blue book" =
-# a 76%-gray book with 18% blue), which a perception system can't ground. Keep a
-# colour word only when it is the object's DOMINANT colour and covers at least
-# this fraction.
-COLOR_DOMINANT_MIN = 0.40
-
-# Map VLA-3D's technical palette to the basic colour words the human-authored
-# official set uses ("the red pillow", not "the maroon pillow" — and VLA-3D
-# labels those official red pillows "maroon"). Basic words pass through.
-COLOR_BASIC_MAP = {
-    "maroon": "red", "navy": "blue", "teal": "blue", "aqua": "blue",
-    "olive": "green", "beige": "brown", "tan": "brown", "violet": "purple",
-    "gold": "red", "golden": "red", "silver": "gray",
-}
-
-
 def color_gate_and_map(sc: VLAScene, raw: dict, question: str) -> str | None:
     """Drop (return None) if any colour modifier in the statement names a
     non-dominant / weak colour of its object; otherwise return the question with
-    technical colour words mapped to basic ones."""
+    technical colour words mapped to basic ones. Dominance + mapping rules are
+    shared with the num generator via phrasing.dominant_color_or_none."""
     used: list[tuple[str, int]] = []
     if raw["target_color_used"]:
         used.append((raw["target_color_used"].lower(), raw["target_id"]))
@@ -242,12 +161,11 @@ def color_gate_and_map(sc: VLAScene, raw: dict, question: str) -> str | None:
         o = sc.by_id.get(oid)
         if o is None:
             return None
-        cols = [c.lower() for c in o.colors]
-        if not cols or cols[0] != col or o.color_percentages[0] < COLOR_DOMINANT_MIN:
+        basic = dominant_color_or_none(o.colors, o.color_percentages, col)
+        if basic is None:
             return None  # weak / non-dominant colour modifier
-        basic = COLOR_BASIC_MAP.get(col)
-        if basic:
-            question = re.sub(rf"\b{re.escape(col)}\b", basic, question)
+        if basic != col:
+            question = re.sub(rf"\b{re.escape(col)}\b", basic, question, flags=re.I)
     return question
 
 
@@ -427,19 +345,41 @@ def build_pair(sc: VLAScene, region_id: int, raw: dict) -> dict | None:
         return None
     question = mapped
 
-    # Align object_list labels with the statement's class vocabulary so the
-    # model can ground the question noun. VLA-3D's referential statements use
-    # a normalized class ('television') that often differs from
-    # object_result.csv's raw_label ('tv') — 46% of single-layer ref samples
-    # had object_list[target] != answer.label before this fix. Relabel:
-    #   target + same-class distractors -> target_class  (relation, not label,
-    #     must disambiguate — prevents trivial label-matching shortcuts)
-    #   each anchor -> its statement class
-    label_overrides: dict[int, str] = {raw["target_id"]: raw["target_class"]}
-    for d in raw["distractor_ids"]:
-        label_overrides[d] = raw["target_class"]
+    # Unify on raw_label (object_result.csv vocabulary), matching the nested
+    # generator and the runtime object_list.txt. VLA-3D's statements use a
+    # normalized class ('television') that differs from the raw_label ('tv') in
+    # 37% of cases; the nested generator already uses raw_label, so keeping the
+    # statement class here would put both "tv" and "television" in the merged
+    # corpus for the same object. Rewrite the question's class nouns to raw
+    # labels and relabel object_list the same way:
+    #   target + same-class distractors -> target raw_label (relation, not
+    #     label, must disambiguate — prevents trivial label-matching shortcuts)
+    #   each anchor -> its own raw_label
+    if tgt_obj is None:
+        DROP_COUNTS["missing_target_obj"] += 1
+        return None
+    tgt_raw = tgt_obj.raw_label
+    # class -> raw map for the question rewrite; a class that maps to two
+    # different raws (rare "the other X" edge, ~0.1%) is unresolvable -> drop.
+    class_to_raw: dict[str, str] = {raw["target_class"]: tgt_raw}
     for a in raw["anchors"]:
-        label_overrides[a["id"]] = a["class"]
+        ao = sc.by_id.get(a["id"])
+        if ao is None:
+            continue
+        if class_to_raw.setdefault(a["class"], ao.raw_label) != ao.raw_label:
+            DROP_COUNTS["label_vocab_conflict"] += 1
+            return None
+    for cls, rawlbl in class_to_raw.items():
+        if cls != rawlbl:
+            question = re.sub(rf"\b{re.escape(cls)}\b", rawlbl, question)
+
+    label_overrides: dict[int, str] = {raw["target_id"]: tgt_raw}
+    for d in raw["distractor_ids"]:
+        label_overrides[d] = tgt_raw
+    for a in raw["anchors"]:
+        ao = sc.by_id.get(a["id"])
+        if ao is not None:
+            label_overrides[a["id"]] = ao.raw_label
 
     return {
         "scene": sc.name,
@@ -454,7 +394,7 @@ def build_pair(sc: VLAScene, region_id: int, raw: dict) -> dict | None:
         # bug surfaced by visualize_sample.py.
         "object_list": render_object_list(sc, region_ids={region_id},
                                           label_overrides=label_overrides),
-        "answer": {"object_id": raw["target_id"], "label": raw["target_class"]},
+        "answer": {"object_id": raw["target_id"], "label": tgt_raw},
         "target": raw["target_id"],
         "anchors": [a["id"] for a in raw["anchors"]],
         "distractor_ids": raw["distractor_ids"],

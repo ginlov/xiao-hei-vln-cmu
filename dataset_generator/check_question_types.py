@@ -40,12 +40,15 @@ def runtime_classifier(text: str) -> str:
 
 
 def main() -> int:
-    # Fold any leftover intermediate nested.jsonl into ref/num first so this
-    # check is always against the full corpus, not partway through the
-    # pipeline. No-op when nested.jsonl is already gone.
-    from merge_nested import maybe_merge
-
-    maybe_merge(DATASET_DIR)
+    # Pure validator: never mutate the corpus it checks. The merge is an
+    # explicit pipeline step (merge_nested) run before this in regen.sh; if the
+    # intermediate nested file is still present the corpus is only partway
+    # through the pipeline, so fail fast rather than silently merging in place.
+    nested = DATASET_DIR / "vla3d_nested.jsonl"
+    if nested.exists():
+        print(f"[error] {nested.name} still present — run the merge step first: "
+              "uv run python dataset_generator/merge_nested.py", file=sys.stderr)
+        return 1
 
     total = 0
     mismatches = 0

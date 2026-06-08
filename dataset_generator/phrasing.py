@@ -10,6 +10,35 @@ from __future__ import annotations
 import random
 import re
 
+# ── Colour vocabulary (shared by ref and num generators) ─────────────────────
+# A colour modifier should name what the object actually looks like: keep it
+# only when it is the object's DOMINANT colour at >= this fraction. Map VLA-3D's
+# technical palette to the basic words the human-authored official set uses
+# ("the red pillow", which VLA-3D labels "maroon").
+COLOR_DOMINANT_MIN = 0.40
+COLOR_BASIC_MAP = {
+    "maroon": "red", "navy": "blue", "teal": "blue", "aqua": "blue",
+    "olive": "green", "beige": "brown", "tan": "brown", "violet": "purple",
+    "gold": "red", "golden": "red", "silver": "gray",
+}
+
+
+def basic_color(word: str) -> str:
+    """Map a VLA-3D colour word to the official basic-colour vocabulary."""
+    return COLOR_BASIC_MAP.get(word.lower(), word.lower())
+
+
+def dominant_color_or_none(colors: tuple, percentages: tuple, used: str) -> str | None:
+    """If `used` is the object's dominant colour covering >= COLOR_DOMINANT_MIN,
+    return its basic-word form; else None (weak / non-dominant modifier)."""
+    if not used:
+        return None
+    cols = [c.lower() for c in colors]
+    u = used.lower()
+    if not cols or cols[0] != u or percentages[0] < COLOR_DOMINANT_MIN:
+        return None
+    return basic_color(u)
+
 
 def to_omit_find(question: str) -> str | None:
     """'Find the X ...' -> 'The X ...'. Returns None if not a 'Find' imperative

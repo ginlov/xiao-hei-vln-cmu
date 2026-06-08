@@ -9,11 +9,11 @@ corpus; regenerate with `dataset_generator/regen.sh`.
 
 | | |
 |---|---|
-| Total Q&A pairs | **5,085** |
-| object_reference | 4,865 (96%) |
-| numerical | 220 (4%) |
+| Total Q&A pairs | **4,894** |
+| object_reference | 4,674 (95%) |
+| numerical | 220 (5%) |
 | instruction_following | not generated yet |
-| Sources | single-layer ref 3,500 · nested 1,405 · numerical templates 180 |
+| Sources | single-layer ref 3,500 · nested 1,214 · numerical templates 180 |
 | Scenes | 15 |
 | Determinism | seed 42 (byte-identical regen) |
 
@@ -94,19 +94,36 @@ scenes is measured honestly.
 (compositional questions are nested, and nested supply *is* `near`/`farthest`,
 which we capped). VLA-3D can't be both 57%-compositional and `on`/`closest`-heavy.
 
-## 6. Data-quality audit (the interesting part)
+## 6. Data problems found & fixed (the interesting part)
 
-Four logical defects found by inspecting samples in the 3D visualizer, each
-quantified and gated out:
+Each problem below was found by inspecting individual samples in the 3D
+visualizer, quantified across the corpus, then gated or reweighted out:
 
-| issue | example | before | after |
-|-------|---------|-------:|------:|
-| **Redundant constraint** — target class already unique, so the relation does nothing | "Find the dvd beside the big chair" (1 dvd) | 37% | 0% |
-| **Tied superlative** — candidates stacked / equidistant, no determinate answer | "the file nearest the plant" (two files same x,y) | 14% | 1.4% |
-| **Distance through a wall** — straight-line ≠ navigable proximity | "the cabinet closest to the fire alarm" (glass partition between) | 23% | 0% |
-| **Weak/technical colour** — minority or off-vocabulary colour word | "the blue book" (76% gray); "maroon" vs official "red" | 37% | 0% |
+| # | problem | example | before → after |
+|---|---------|---------|---------------:|
+| 1 | **Redundant constraint** — target class already unique in view, so the spatial relation does nothing | "Find the dvd beside the big chair" (only 1 dvd) | 37% → **0%** |
+| 2 | **Relation-word skew** — supply-driven `near`/`farthest` heavy, unlike the `on`/`closest`-led official set | corpus was 29% `near` + 29% `farthest` | reweighted: `closest` leads, `near`/`farthest` minority |
+| 3 | **Tied superlative** — `closest`/`farthest` candidates stacked / equidistant → no determinate answer | "the file nearest the plant" (two files at the same x,y) | 14% → **1.4%** |
+| 4 | **Distance through a wall** — straight-line ≠ navigable proximity | "the cabinet closest to the fire alarm" (glass partition between) | 23% → **0%** |
+| 5 | **Weak / technical colour** — minority colour, or VLA-3D's palette vs the official basic words | "the blue book" (76% gray); `maroon` mapped to `red` | 37% → **0%** |
+| 6 | **"in the room ⇒ 0" shortcut** — refusals (N5, answer 0) shared a phrasing with nothing positive | every "…in the room?" was 0 | balanced with N4 totals → 0 is **33%** of that phrasing, not 100% |
 
-These gates also shrank the corpus (a `closest`-led, defect-free corpus is
+Problems 1, 3, 4, 5 are **logical defects** (the sample is wrong or
+unanswerable); 2 and 6 are **training-bias** issues (the sample is valid but the
+distribution would teach a wrong cue). All were fixed in the generators, not by
+hand-editing the data.
+
+A code review surfaced three more **cross-generator consistency** problems,
+since closed: the single-layer and nested generators each applied the gates
+independently, so (a) `near` was enforced as a strict *closest* superlative in
+the single-layer half but as a 1.5 m-radius relation in the nested half — two
+definitions of the same word; (b) object labels used VLA-3D's normalized class
+("television") in one half and raw_label ("tv") in the other, putting both words
+for the same object in the merged corpus; (c) the wall-between and colour gates
+ran on only one generator. All three are now resolved by sharing the gates and
+the label vocabulary (`geometry.py`, `phrasing.py`, raw_label everywhere).
+
+The gates also shrank the corpus (a `closest`-led, defect-free corpus is
 supply-limited to ~5k vs an earlier 12k that was `near`/`farthest`-heavy and
 included these defects).
 

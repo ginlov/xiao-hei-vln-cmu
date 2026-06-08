@@ -24,6 +24,7 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from geometry import wall_between
 from phrasing import apply_omit_find
 from vla3d_loader import VLAObject, VLAScene, load_all_vla_scenes, render_object_list
 from vla3d_num_gen import BAD_LABELS, pluralize
@@ -255,6 +256,13 @@ def _emit_inner_outer(sc: VLAScene, by_label: dict[str, list[VLAObject]],
                     selected = unique_near_of_label_to(anchor1_mates, anchor2, NEAR_RADIUS_M)
                     if selected is None or selected.id != anchor1.id:
                         continue
+
+                # Wall-between gate (closest/near outer): "the X on anchor1
+                # closest/near to anchor2" isn't navigable proximity if a wall
+                # separates anchor1 and anchor2. `farthest` is exempt (naturally
+                # across the room). Same shared gate as single-layer ref.
+                if outer in ("closest", "near") and wall_between(sc, anchor1, anchor2):
+                    continue
 
                 # Keep nested object_list scene-wide: anchor2 is a *scene*
                 # singleton and may live in a different region than the

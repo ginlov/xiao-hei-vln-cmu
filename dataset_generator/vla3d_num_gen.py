@@ -25,7 +25,7 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from phrasing import apply_count_phrasing
+from phrasing import COLOR_DOMINANT_MIN, apply_count_phrasing, basic_color
 from vla3d_loader import VLAObject, VLAScene, load_all_vla_scenes, render_object_list
 
 # Randomness is threaded explicitly through `rng = random.Random(seed)` in
@@ -223,7 +223,10 @@ def emit_refusal(sc: VLAScene, rng: random.Random) -> list[dict]:
 def emit_color_on(sc: VLAScene) -> list[dict]:
     """N6: How many <color> <X> are on the <anchor>?
 
-    Use VLA-3D's color_scheme1 (dominant color, named).
+    Uses the object's dominant colour (color_scheme1), but only when it covers
+    >= COLOR_DOMINANT_MIN, and mapped to the official basic-colour vocabulary —
+    the same gate as the ref generator's color_gate_and_map, so the num half
+    doesn't ship unmapped "maroon"/"aqua" or weak minority colours.
     """
     out: list[dict] = []
     singletons = label_singletons_in_scene(sc)
@@ -231,15 +234,15 @@ def emit_color_on(sc: VLAScene) -> list[dict]:
         if not usable_anchor(anchor):
             continue
         on_objs = collect_related(sc, "on", anchor)
-        # Group by (color, label)
+        # Group by (basic colour, label)
         by_color_label: dict[tuple[str, str], list[VLAObject]] = defaultdict(list)
         for o in on_objs:
             if not usable_target_label(o.raw_label):
                 continue
             c = o.colors[0]
-            if not good_color(c):
+            if not good_color(c) or o.color_percentages[0] < COLOR_DOMINANT_MIN:
                 continue
-            by_color_label[(c, o.raw_label)].append(o)
+            by_color_label[(basic_color(c), o.raw_label)].append(o)
         # Emit "How many <color> <X> are on the <anchor>?" — the official set
         # uses these even when the colour is redundant ("How many red pillows
         # are on the sofa?" with all pillows red), so we don't filter on
