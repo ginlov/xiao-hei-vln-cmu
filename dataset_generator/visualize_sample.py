@@ -36,6 +36,7 @@ import random
 import re
 import signal
 import sys
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,26 @@ except ImportError:
 
 HERE = Path(__file__).parent
 DEFAULT_SCENE_ROOT = HERE / "vla-3d" / "Unity"
+
+# Render defaults live in config/visualize.toml (repo root). CLI flags override
+# every value; if the file is missing we fall back to the built-ins below.
+CONFIG_PATH = HERE.parent / "config" / "visualize.toml"
+_FALLBACK_CFG = {
+    "pointcloud": True, "point_size": 2.5, "voxel_size": 0.02,
+    "gray_points": False, "dark_bg": True, "ceiling_cut": 0.5,
+    "line_radius": 0.02, "show_other": False, "seed": 42,
+}
+
+
+def _load_config() -> dict:
+    try:
+        with CONFIG_PATH.open("rb") as f:
+            return {**_FALLBACK_CFG, **tomllib.load(f).get("visualize", {})}
+    except FileNotFoundError:
+        return dict(_FALLBACK_CFG)
+
+
+CFG = _load_config()
 
 # RGB in [0, 1]
 COLOR_TARGET = (1.00, 0.15, 0.15)
@@ -539,42 +560,42 @@ def main() -> int:
         "--sample-per-scene", type=int, default=None,
         help="batch: up to N samples per scene (requires --save)",
     )
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed", type=int, default=CFG["seed"])
     ap.add_argument(
-        "--pointcloud", action=argparse.BooleanOptionalAction, default=True,
+        "--pointcloud", action=argparse.BooleanOptionalAction, default=CFG["pointcloud"],
         help="overlay the scene point cloud (default on; --no-pointcloud to "
              "disable for a lighter boxes-only view)",
     )
     ap.add_argument(
-        "--point-size", type=float, default=2.5,
-        help="point cloud point size in pixels (default 2.5; bump to 4-5 for chunky)",
+        "--point-size", type=float, default=CFG["point_size"],
+        help="point cloud point size in pixels (config default 2.5; bump to 4-5 for chunky)",
     )
     ap.add_argument(
-        "--voxel-size", type=float, default=0.02,
-        help="voxel downsample size in meters (default 0.02; 0 disables)",
+        "--voxel-size", type=float, default=CFG["voxel_size"],
+        help="voxel downsample size in meters (config default; 0 disables)",
     )
     ap.add_argument(
-        "--gray-points", action="store_true",
+        "--gray-points", action="store_true", default=CFG["gray_points"],
         help="force uniform gray (else use VLA-3D native per-point RGB)",
     )
     ap.add_argument(
-        "--dark-bg", action=argparse.BooleanOptionalAction, default=True,
+        "--dark-bg", action=argparse.BooleanOptionalAction, default=CFG["dark_bg"],
         help="dark background — point colors and OBBs pop more (default on; "
              "--no-dark-bg for a white background)",
     )
     ap.add_argument(
-        "--ceiling-cut", type=float, default=0.5,
+        "--ceiling-cut", type=float, default=CFG["ceiling_cut"],
         help="crop top N meters of point cloud so ceiling stops occluding "
-             "(default 0.5; 0 to disable)",
+             "(config default 0.5; 0 to disable)",
     )
     ap.add_argument(
-        "--line-radius", type=float, default=0.02,
-        help="OBB edge thickness in meters, drawn as solid tubes (default 0.02 "
-             "= 2 cm; 0 = thin 1px wireframe). Use this instead of a line "
-             "width: Open3D's legacy renderer ignores line_width on macOS.",
+        "--line-radius", type=float, default=CFG["line_radius"],
+        help="OBB edge thickness in meters, drawn as solid tubes (config "
+             "default 0.02 = 2 cm; 0 = thin 1px wireframe). Use this instead of "
+             "a line width: Open3D's legacy renderer ignores line_width on macOS.",
     )
     ap.add_argument(
-        "--show-other", action="store_true",
+        "--show-other", action="store_true", default=CFG["show_other"],
         help="also draw the gray context OBBs for every other object. Off by "
              "default — only target / anchor / distractor boxes are shown "
              "(the point cloud already gives spatial context)",

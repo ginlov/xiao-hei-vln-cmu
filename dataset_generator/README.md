@@ -290,9 +290,12 @@ match the `closest to X` relation, heading isn't flipped — render any
 row as a 3D OBB wireframe scene:
 
 By default the viewer overlays the scene **point cloud** on a **dark
-background** with **2 cm tube** OBB edges and a **0.02 m** voxel
-downsample — the most readable setup out of the box. Opt out with
-`--no-pointcloud` / `--no-dark-bg` or override the numeric knobs.
+background** with **2 cm tube** OBB edges and a **0.1 m** voxel
+downsample — the most readable setup out of the box. These defaults live in
+[`config/visualize.toml`](../config/visualize.toml) (repo root); edit that to
+change the out-of-the-box look. Every value is still overridable per-run on the
+command line (`--no-pointcloud` / `--no-dark-bg` / `--voxel-size 0.02` …), and
+the CLI flag always wins.
 
 ```bash
 # One-time install (heavy ~400 MB Open3D wheel; opt-in only)
@@ -329,7 +332,7 @@ Options:
 | `--seed N` | 42 | RNG seed for `--random` / batch sampling |
 | `--pointcloud` / `--no-pointcloud` | **on** | overlay the scene point cloud |
 | `--point-size F` | 2.5 | point size in px (bump to 4–5 for chunky) |
-| `--voxel-size F` | **0.02** | voxel downsample in m (0 disables) |
+| `--voxel-size F` | **0.1** | voxel downsample in m (0 disables) |
 | `--gray-points` | off | force uniform gray instead of native RGB |
 | `--dark-bg` / `--no-dark-bg` | **on** | dark background so colors/OBBs pop |
 | `--ceiling-cut F` | 0.5 | crop top F m of cloud so the ceiling stops occluding |
