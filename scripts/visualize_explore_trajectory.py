@@ -25,10 +25,10 @@ import heapq
 import math
 from dataclasses import dataclass
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
+from matplotlib.patches import Polygon as MplPolygon
 
 from xiao_hei_vln.messages import (
     ChallengeQuestion,
@@ -303,8 +303,46 @@ def run_exploration(
 
 # ─── plotting ───────────────────────────────────────────────────────────
 
-# UNKNOWN=0 → grey, FREE=1 → white, OCCUPIED=2 → near-black
-_GRID_CMAP = ListedColormap(["#bbbbbb", "#ffffff", "#1a1a1a"])
+def _extract_obstacle_rects(room: Room) -> list[tuple[float, float, float, float]]:
+    """Find axis-aligned rectangles of contiguous OCCUPIED cells in the room.
+
+    Returns a list of ``(x0, y0, x1, y1)`` rectangles in world coordinates,
+    used to draw furniture as "holes" in the polygon (PR #10 style).
+    """
+    occ = room.occ
+    res = room.resolution_m
+    visited = np.zeros_like(occ, dtype=bool)
+    rects: list[tuple[float, float, float, float]] = []
+    H, W = occ.shape
+
+    for i in range(H):
+        for j in range(W):
+            if not occ[i, j] or visited[i, j]:
+                continue
+            # Skip the room's own wall border — those form the outer polygon,
+            # not "holes". Detect by checking whether the cell sits on the
+            # outer ring of the grid.
+            if i == 0 or i == H - 1 or j == 0 or j == W - 1:
+                visited[i, j] = True
+                continue
+            # Greedy rectangle expansion right then down.
+            j_end = j
+            while j_end + 1 < W and occ[i, j_end + 1] and not visited[i, j_end + 1] \
+                    and not (j_end + 1 == W - 1):
+                j_end += 1
+            i_end = i
+            while i_end + 1 < H:
+                row_ok = all(
+                    occ[i_end + 1, k] and not visited[i_end + 1, k]
+                    and not (i_end + 1 == H - 1)
+                    for k in range(j, j_end + 1)
+                )
+                if not row_ok:
+                    break
+                i_end += 1
+            visited[i:i_end + 1, j:j_end + 1] = True
+            rects.append((j * res, i * res, (j_end + 1) * res, (i_end + 1) * res))
+    return rects
 
 
 def render(room: Room, record: dict, output_path: str) -> None:
@@ -317,96 +355,111 @@ def render(room: Room, record: dict, output_path: str) -> None:
     if gm.origin_xy is None:
         raise RuntimeError("GlobalMap was never initialised; nothing to plot")
 
-    ox, oy = gm.origin_xy
-    H, W = gm.shape
-    extent = (ox, ox + W * gm.resolution_m, oy, oy + H * gm.resolution_m)
-
-    fig, axes = plt.subplots(1, 3, figsize=(20, 6.5))
-
-    # ── Panel 1: ground truth ──────────────────────────────────────────
-    ax = axes[0]
-    ax.imshow(
-        room.occ,
-        cmap=ListedColormap(["#ffffff", "#1a1a1a"]),
-        origin="lower",
-        extent=(0.0, room.width_m, 0.0, room.height_m),
-    )
-    ax.plot(traj[:, 0], traj[:, 1], color="#1d4ed8", linewidth=2.0, label="Trajectory")
-    ax.plot(traj[0, 0], traj[0, 1], marker="o", color="#047857", markersize=12, label="Start")
-    ax.plot(traj[-1, 0], traj[-1, 1], marker="*", color="#b91c1c", markersize=18, label="End")
-    if waypoints.size > 0:
-        ax.scatter(
-            waypoints[:, 0], waypoints[:, 1],
-            c="#f59e0b", s=14, alpha=0.45, label="Frontier targets",
-        )
-    ax.set_title("Ground truth + trajectory")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_xlim(0.0, room.width_m)
-    ax.set_ylim(0.0, room.height_m)
-    ax.set_aspect("equal")
-    ax.legend(loc="upper left", fontsize=9)
-
-    # ── Panel 2: responder's accumulated GlobalMap ─────────────────────
-    ax = axes[1]
-    ax.imshow(gm.grid, cmap=_GRID_CMAP, origin="lower", extent=extent, vmin=0, vmax=2)
-    ax.plot(traj[:, 0], traj[:, 1], color="#1d4ed8", linewidth=2.0)
-    ax.plot(traj[0, 0], traj[0, 1], marker="o", color="#047857", markersize=10)
-    ax.plot(traj[-1, 0], traj[-1, 1], marker="*", color="#b91c1c", markersize=16)
-    ax.set_title(f"Responder GlobalMap view (after {final_tick + 1} ticks)")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_xlim(-0.5, room.width_m + 0.5)
-    ax.set_ylim(-0.5, room.height_m + 0.5)
-    ax.set_aspect("equal")
-    legend_handles = [
-        Patch(facecolor="#bbbbbb", edgecolor="#666", label="UNKNOWN"),
-        Patch(facecolor="#ffffff", edgecolor="#666", label="FREE"),
-        Patch(facecolor="#1a1a1a", edgecolor="#666", label="OCCUPIED"),
-    ]
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=9)
-
-    # ── Panel 3: final frontier clusters overlaid on the map ───────────
-    ax = axes[2]
-    ax.imshow(gm.grid, cmap=_GRID_CMAP, origin="lower", extent=extent, vmin=0, vmax=2)
-    ax.plot(traj[:, 0], traj[:, 1], color="#1d4ed8", linewidth=1.2, alpha=0.6)
-    clusters = gm.find_frontier_clusters(min_cluster_size=3)
-    if clusters:
-        for c in clusters:
-            cx, cy = c.centroid_xy
-            ax.scatter([cx], [cy], color="#f59e0b", s=80, edgecolor="black", zorder=3)
-            ax.annotate(
-                f"size={c.size}",
-                (cx, cy),
-                textcoords="offset points",
-                xytext=(6, 6),
-                fontsize=8,
-            )
-        ax.set_title(f"Final frontiers ({len(clusters)} clusters remain)")
-    else:
-        ax.set_title("Final frontiers — none remain (room mapped)")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_xlim(-0.5, room.width_m + 0.5)
-    ax.set_ylim(-0.5, room.height_m + 0.5)
-    ax.set_aspect("equal")
-
-    fig.suptitle("Phase A frontier exploration — synthetic living room", fontsize=13, y=1.02)
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=120, bbox_inches="tight")
-    print(f"Saved {output_path}")
-
-    # Print a short stats summary so the script doubles as a smoke test.
+    # Stats for the title line and the printed summary.
     n_free = int((gm.grid == FREE).sum())
     n_occ = int((gm.grid == OCCUPIED).sum())
     n_unk = int((gm.grid == UNKNOWN).sum())
+    n_known = n_free + n_occ
+    clusters = gm.find_frontier_clusters(min_cluster_size=3)
+
+    # Path length: sum of consecutive-segment lengths in the recorded trajectory.
+    seg_lengths = np.linalg.norm(np.diff(traj, axis=0), axis=1)
+    path_length_m = float(seg_lengths.sum())
+
+    matplotlib.use("Agg")
+    fig, ax = plt.subplots(1, 1, figsize=(14, 10))
+
+    # ── Traversable area: sparse sample of FREE cells from the responder's view
+    free_ij = np.argwhere(gm.grid == FREE)
+    if free_ij.size > 0:
+        ox, oy = gm.origin_xy
+        free_xy = np.column_stack([
+            ox + (free_ij[:, 1] + 0.5) * gm.resolution_m,
+            oy + (free_ij[:, 0] + 0.5) * gm.resolution_m,
+        ])
+        ax.scatter(
+            free_xy[::3, 0], free_xy[::3, 1],
+            s=0.3, c="lightgray", alpha=0.6, label="Traversable area (observed)",
+        )
+
+    # ── Outer polygon boundary: the room walls
+    boundary_x = [0.0, room.width_m, room.width_m, 0.0, 0.0]
+    boundary_y = [0.0, 0.0, room.height_m, room.height_m, 0.0]
+    ax.plot(boundary_x, boundary_y, "b-", linewidth=0.8, label="Polygon boundary")
+
+    # ── Furniture as polygon "holes" — salmon fill, red border
+    hole_label_used = False
+    for (x0, y0, x1, y1) in _extract_obstacle_rects(room):
+        poly = MplPolygon(
+            [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+            closed=True, facecolor="salmon", alpha=0.5,
+            edgecolor="red", linewidth=0.6,
+            label=None if hole_label_used else "Furniture hole",
+        )
+        ax.add_patch(poly)
+        hole_label_used = True
+
+    # ── Remaining frontier clusters — red ×, analogous to PR #10 "uncovered objects"
+    if clusters:
+        cx = [c.centroid_xy[0] for c in clusters]
+        cy = [c.centroid_xy[1] for c in clusters]
+        ax.plot(
+            cx, cy, "x", color="red", markersize=8, alpha=0.9,
+            label=f"Remaining frontier ({len(clusters)})",
+        )
+
+    # ── Trajectory path + waypoints (PR #10 colour palette)
+    if traj.size > 0:
+        ax.plot(
+            traj[:, 0], traj[:, 1],
+            "-", color="royalblue", linewidth=1.5, alpha=0.7,
+            zorder=5, label="Trajectory path",
+        )
+        if waypoints.size > 0:
+            ax.scatter(
+                waypoints[:, 0], waypoints[:, 1],
+                c="royalblue", s=20, zorder=6, label="Waypoint emitted",
+            )
+        ax.plot(
+            traj[0, 0], traj[0, 1], "s", color="lime", markersize=10,
+            zorder=7, label="Start",
+        )
+        ax.plot(
+            traj[-1, 0], traj[-1, 1], "D", color="orangered", markersize=8,
+            zorder=7, label="End",
+        )
+
+    # ── Cosmetics matching PR #10
+    cells_explored_pct = 100.0 * n_known / max(n_known + n_unk, 1)
+    title_main = "Phase A frontier exploration — synthetic living room"
+    title_stats = (
+        f"Ticks={final_tick + 1} "
+        f"FreeCells={n_free} "
+        f"FrontiersLeft={len(clusters)} "
+        f"PathLen={path_length_m:.1f}m"
+    )
+    ax.set_title(f"{title_main}\n{title_stats}")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_xlim(-0.5, room.width_m + 0.5)
+    ax.set_ylim(-0.5, room.height_m + 0.5)
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {output_path}")
+
+    # Stats summary so the script doubles as a smoke test.
     print(
-        f"  ticks ran        = {final_tick + 1}\n"
-        f"  cells FREE       = {n_free}\n"
-        f"  cells OCCUPIED   = {n_occ}\n"
-        f"  cells UNKNOWN    = {n_unk}\n"
+        f"  ticks ran         = {final_tick + 1}\n"
+        f"  cells FREE        = {n_free}\n"
+        f"  cells OCCUPIED    = {n_occ}\n"
+        f"  cells UNKNOWN     = {n_unk}\n"
+        f"  cells explored    = {cells_explored_pct:.1f}% of observable area\n"
         f"  waypoints emitted = {len(waypoints)}\n"
-        f"  trajectory length = {len(traj)} samples"
+        f"  trajectory length = {path_length_m:.1f} m"
     )
 
 
