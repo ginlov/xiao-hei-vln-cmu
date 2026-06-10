@@ -7,6 +7,10 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
                         HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
                         Falls back to in-process vLLM when the URL is
                         unset (`pip install .[qwen-local]` + CUDA GPU).
+  - `perception`      — Phase A frontier-based exploration. No VLM,
+                        no detection yet; stitches `terrain_ext` into a
+                        global occupancy grid and emits waypoints toward
+                        the highest-scored unexplored frontier each tick.
 """
 
 from __future__ import annotations
@@ -45,8 +49,12 @@ def _build_responder(name: str):
                 tick_hz=TICK_HZ,
             )
         return QwenResponder(engine, config, logger=logger), logger
+    if name == "perception":
+        from xiao_hei_vln.perception_responder import PerceptionResponder
+
+        return PerceptionResponder(), None
     raise ValueError(
-        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen, perception",
     )
 
 
@@ -59,7 +67,11 @@ def main() -> None:
     from xiao_hei_vln.adapters.ros.subscribers import bind_subscribers
 
     rclpy.init()
-    node_name = "xiao_hei_qwen_vlm" if RESPONDER_NAME == "qwen" else "xiao_hei_dummy_vlm"
+    node_name = {
+        "qwen": "xiao_hei_qwen_vlm",
+        "perception": "xiao_hei_perception_vlm",
+        "dummy": "xiao_hei_dummy_vlm",
+    }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
     node: Node = rclpy.create_node(node_name)
 
     cache = LatestCache()
