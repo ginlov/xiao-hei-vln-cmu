@@ -29,6 +29,12 @@ replay = [
     "matplotlib>=3.8",
     "pillow>=10",
 ]
+# Offline trajectory generation from traversable-area point clouds.
+trajectory = [
+    "scipy>=1.12",
+    "shapely>=2.0",
+    "matplotlib>=3.8",
+]
 # Documentation site (mkdocs serve / mkdocs gh-deploy).
 docs = [
     "mkdocs-material>=9.5",

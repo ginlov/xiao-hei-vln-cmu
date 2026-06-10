@@ -10,7 +10,7 @@
 ## Install for development
 
 ```bash
-git clone https://github.com/longgiang2015bn/xiao-hei-vln-cmu.git
+git clone https://github.com/ginlov/xiao-hei-vln-cmu.git
 cd xiao-hei-vln-cmu
 uv sync
 ```

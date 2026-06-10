@@ -110,3 +110,34 @@ MkDocs + Material theme with mkdocstrings for API reference. Deploys to GitHub P
 - **Phase 1 — Scaffolding + core content**: `mkdocs.yml`, landing page, architecture diagram, quickstart, docker, configuration reference.
 - **Phase 2 — Concepts + guides**: messages, responder protocol, tick loop, Qwen engine, new-model tutorial, evaluation guide, data generation, VLM logging guide, auto-generated API docs.
 - **Phase 3 — GitHub Pages integration**: CI workflow (`.github/workflows/docs.yml`), verify live deployment.
+
+## Task 7 - Data coupling
+
+This challenge is good to decouple to 2 phases: exploration and reasoning. To prepare for that process, we need to prepare data for each sub-task:
+
+- Sub-task 1: Explore the whole scene
+  - Required data: Robot trajectories that can cover the whole scene (including the position and heading)
+- Sub-task 2:
+  - Required data: Images, sensors data that cover the whole scene, ideally, this should be collected when robot is guided to go along the trajectories we got above.
+
+### Sub-task 1:
+- Some thoughts from Gemini:
+  - The Standard Pipeline1. Viewpoint Generation (The Art Gallery Problem)You need to find a discrete set of robot positions (viewpoints) that collectively see the entire room, accounting for furniture occlusions.Sample Candidate Points: Discretize your traversable area into a uniform grid or randomly sample a high-density set of candidate positions $P$.Compute Visibility Polygons: For each sampled point $p \in P$, compute its Visibility Polygon—the 2D area the robot's sensor can see from that exact spot, raycasting against the furniture and walls.Solve Set Cover: Treat this as a Minimum Set Cover problem. You want to select the smallest subset of viewpoints whose combined visibility polygons cover 100% of the room's free space. You can solve this efficiently using a greedy approximation algorithm (repeatedly picking the viewpoint that sees the most remaining unseen area) or an Integer Linear Programming (ILP) solver for an exact solution.2. Trajectory Generation (TSP + Path Planning)Once you have your minimal set of target viewpoints, you need to connect them into a smooth, collision-free trajectory.Compute Distance Matrix: Use a standard path planner like A*, Dijkstra, or RRT* to find the shortest obstacle-free distance between every pair of selected viewpoints.Solve Traveling Salesperson Problem (TSP): Plug these distances into a TSP solver (like the Concorde TSP solver or a genetic algorithm heuristic) to find the optimal order in which to visit the viewpoints.Smooth the Trajectory: Spline the resulting waypoint path (using Bezier curves or B-splines) to ensure kinematic feasibility for your specific robot drive system.Alternative: Next-Best-View (NBV) HeuristicIf your map is exceptionally complex or you want an iterative approach rather than solving a heavy global optimization problem:Start at the robot’s initial position and mark the visible area as "seen".Identify the boundaries (frontiers) between seen and unseen areas.Evaluate a cluster of nearby candidate positions based on an information gain metric: $\text{Gain} = \frac{\text{New Area Visible}}{\text{Travel Cost to Position}}$.Move to the highest-scoring position, update the map, and repeat until 100% coverage is achieved.Are you working with a 360-degree field-of-view sensor (like a LiDAR), or a directional camera with a limited horizontal field of view?
+- On constraint is that you need to take into account the robot size.
+- Visualize and explore dataset. Key questions to answer is:
+  - What is included in data, in traversable area file?
+  - What objects are presented and how?
+  - What is the criteria of a trajectory that helps robot to see every corner of scenes.
+- Problem statement:
+  - What is the input?
+  - What is the desired output? Accompanying metrics.
+  - What are the constraints.
+- Literature review on existing algorithms. Propose at least 2 and at most 4 algorithms to consider.
+- Implement algorithm.
+- Verify generated trajectory.
+- Documentation.
+
+### Sub-task 2:
+- Design a new responder to take in the trajectory and help robot to go around the scenes to collect data.
+- Implement responder.
+- Execute robot to get data.

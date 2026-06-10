@@ -255,3 +255,4 @@ docker/compose.*.local.yml
 dataset_generator/vla-3d/
 # dataset/: regeneratable training corpora + scene splits (generator OUTPUT).
 dataset/
+trajectories/

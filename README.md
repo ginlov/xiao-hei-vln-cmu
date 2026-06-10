@@ -3,6 +3,8 @@
 Team Xiao Hei's stack for the [CMU Vision-Language-Navigation
 Challenge 2026](https://www.ai-meets-autonomy.com/cmu-vln-challenge).
 
+**[Documentation](https://ginlov.github.io/xiao-hei-vln-cmu/)**
+
 The repo provides a typed Python contract between the challenge's
 ROS 2 sensors and a VLM, a dummy VLM that satisfies the contract end-to-end,
 and a docker image that drops straight into the official challenge
