@@ -227,6 +227,47 @@ class GlobalMap:
             return False
         return bool(self._grid[i, j] == FREE)
 
+    def compute_reachable_mask(self, from_x: float, from_y: float) -> np.ndarray:
+        """4-connected BFS over FREE cells starting at ``(from_x, from_y)``.
+
+        Returns a boolean (H, W) mask where True means the cell is FREE *and*
+        connected to the seed via a path of FREE 4-neighbours. Cells
+        immediately adjacent to FREE-but-not-yet-reachable terrain are
+        included if their cluster is reached.
+
+        The frontier planner uses this in place of straight-line line-of-sight
+        so it can route the robot *around* furniture instead of through it.
+        Cost: one BFS per tick, O(|FREE|) — typically a few hundred cells in
+        a living-room-sized grid; trivial.
+        """
+        mask = np.zeros((self._H, self._W), dtype=bool)
+        if not self.is_initialised:
+            return mask
+
+        si, sj = self.world_to_idx(from_x, from_y)
+        if not (0 <= si < self._H and 0 <= sj < self._W):
+            return mask
+        if self._grid[si, sj] != FREE:
+            # Seed isn't on FREE — still mark it so the robot's own cell shows up
+            # as reachable for downstream lookups, but don't expand from here.
+            mask[si, sj] = True
+            return mask
+
+        stack: list[tuple[int, int]] = [(si, sj)]
+        mask[si, sj] = True
+        while stack:
+            ci, cj = stack.pop()
+            for ni, nj in ((ci - 1, cj), (ci + 1, cj), (ci, cj - 1), (ci, cj + 1)):
+                if (
+                    0 <= ni < self._H
+                    and 0 <= nj < self._W
+                    and not mask[ni, nj]
+                    and self._grid[ni, nj] == FREE
+                ):
+                    mask[ni, nj] = True
+                    stack.append((ni, nj))
+        return mask
+
     def line_passes_through(
         self,
         x0: float,

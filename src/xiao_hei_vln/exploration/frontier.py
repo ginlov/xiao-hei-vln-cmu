@@ -98,13 +98,19 @@ class FrontierPlanner:
 
         Useful for debugging and for the future VLM-scored variant which
         layers a Qwen score on top of the geometric ranking.
+
+        "Reachable" means the cluster's representative cell sits in the
+        same 4-connected FREE component as the robot's current cell. This
+        is computed via a single BFS per tick — much more permissive than
+        a straight-line check and correctly routes around furniture.
         """
         clusters = self._map.find_frontier_clusters(self._min_cluster_size)
         if not clusters:
             return []
 
         px, py = pose.position.x, pose.position.y
-        reachable = (c for c in clusters if self._reachable(pose, c.centroid_xy))
+        reach_mask = self._map.compute_reachable_mask(px, py)
+        reachable = (c for c in clusters if self._reachable(c, reach_mask))
         return [self._score(c, px, py) for c in reachable]
 
     def reset(self) -> None:
@@ -113,16 +119,21 @@ class FrontierPlanner:
 
     # ------------------------------------------------------------------ internals
 
-    def _reachable(self, pose: OdomPose, target_xy: tuple[float, float]) -> bool:
-        """Cheap straight-line reachability check.
+    def _reachable(self, cluster: FrontierCluster, reach_mask) -> bool:
+        """Connected-component reachability check.
 
-        For the current single-room scenario this is sufficient. Upgrade
-        to an A* search on the occupancy grid if the planner starts
-        picking obviously-unreachable targets through non-convex obstacles.
+        ``reach_mask`` is the BFS-derived (H, W) boolean mask of FREE cells
+        reachable from the robot — see ``GlobalMap.compute_reachable_mask``.
+        A cluster is reachable iff its representative cell is True in that
+        mask (or an immediate 4-neighbour is, since cluster cells are FREE
+        but the BFS only walks FREE — and frontier cells *are* FREE so they
+        should be in-mask by construction).
         """
-        return not self._map.line_passes_through(
-            pose.position.x, pose.position.y, target_xy[0], target_xy[1],
-        )
+        ci, cj = cluster.cell_ij
+        H, W = reach_mask.shape
+        if not (0 <= ci < H and 0 <= cj < W):
+            return False
+        return bool(reach_mask[ci, cj])
 
     def _score(self, cluster: FrontierCluster, px: float, py: float) -> ScoredFrontier:
         cx, cy = cluster.centroid_xy

@@ -36,6 +36,14 @@ def _bare_grid_with_top_frontier() -> GlobalMap:
     return gm
 
 
+def _mark_pose_free(gm: GlobalMap, pose: OdomPose) -> None:
+    """Ensure the robot's cell is FREE — matches production update() behaviour."""
+    i, j = gm.world_to_idx(pose.position.x, pose.position.y)
+    H, W = gm.shape
+    if 0 <= i < H and 0 <= j < W:
+        gm.grid[i, j] = FREE
+
+
 class TestEmpty:
     def test_returns_none_when_no_clusters(self) -> None:
         gm = GlobalMap()
@@ -55,13 +63,14 @@ class TestSelection:
         gm = GlobalMap(half_extent_m=5.0, resolution_m=0.5)
         gm.update(np.zeros((0,), dtype=np.float32), _pose(0.0, 0.0))
         gm.grid[:] = UNKNOWN
-        # Left cluster: small FREE patch centred at world x ≈ -2.5
-        gm.grid[8:11, 4:6] = FREE  # 3 rows × 2 cols
-        # Right cluster: bigger FREE patch centred at world x ≈ +2.5
-        gm.grid[8:11, 14:19] = FREE  # 3 rows × 5 cols
+        # Build a single FREE corridor that contains both clusters and the
+        # robot, so BFS reachability connects them all (BFS-based reachability
+        # otherwise correctly treats disconnected components as unreachable).
+        gm.grid[8:11, 4:19] = FREE
         planner = FrontierPlanner(gm, min_cluster_size=2)
-        # Robot at the midpoint between the two cluster centroids.
-        chosen = planner.select(_pose(0.0, -0.75))
+        pose = _pose(0.0, -0.75)
+        _mark_pose_free(gm, pose)
+        chosen = planner.select(pose)
         assert chosen is not None
         # Bigger cluster's representative cell is on the right (x > 0).
         assert chosen.centroid_xy[0] > 0.0
@@ -74,6 +83,7 @@ class TestSelection:
             history_length=3,
         )
         pose = _pose(0.0, 0.0)
+        _mark_pose_free(gm, pose)
 
         # Force-feed the history with the candidate centroid to drive its score
         # way below zero. Then a second call must still produce *something*
@@ -101,8 +111,12 @@ class TestScoringFormula:
     def test_distance_term_negative(self) -> None:
         gm = _bare_grid_with_top_frontier()
         planner = FrontierPlanner(gm)
-        # The frontier is at y ≈ 0.25; put the robot far south so distance is large.
-        scored = planner.score_all(_pose(0.0, -2.5))
+        # Robot must stand on a FREE cell connected to the frontier for the
+        # BFS reachability check to admit it. The frontier is along y ≈ 0.25
+        # and the FREE region extends down to y ≈ 2.75, so a robot anywhere
+        # inside the FREE region will see a non-zero positive distance.
+        pose = _pose(0.0, 2.0)
+        scored = planner.score_all(pose)
         assert scored
         assert scored[0].distance_term < 0
         assert scored[0].distance_m > 0
@@ -110,7 +124,9 @@ class TestScoringFormula:
     def test_size_term_grows_with_size(self) -> None:
         gm = _bare_grid_with_top_frontier()
         planner = FrontierPlanner(gm)
-        scored = planner.score_all(_pose(0.0, 0.0))
+        pose = _pose(0.0, 0.0)
+        _mark_pose_free(gm, pose)
+        scored = planner.score_all(pose)
         assert scored
         # log1p(size) is positive and increases with size.
         bigger = max(scored, key=lambda s: s.size_term)
@@ -124,7 +140,9 @@ class TestReset:
     def test_reset_clears_history(self) -> None:
         gm = _bare_grid_with_top_frontier()
         planner = FrontierPlanner(gm)
-        planner.select(_pose(0.0, 0.0))
+        pose = _pose(0.0, 0.0)
+        _mark_pose_free(gm, pose)
+        planner.select(pose)
         assert len(planner.history) == 1
         planner.reset()
         assert planner.history == ()
