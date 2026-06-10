@@ -23,9 +23,9 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
-# After the nested merge step runs (either explicitly via merge_nested.py or
-# implicitly via maybe_merge() below), nested samples live inside the two
-# type-aligned files and are identifiable via the `source` field.
+# After the explicit nested merge step (merge_nested.py, run before this in
+# regen.sh), nested samples live inside the two type-aligned files and are
+# identifiable via the `source` field. This script never merges — see main().
 SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 
 
