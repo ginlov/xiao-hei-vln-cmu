@@ -1,0 +1,16 @@
+# Default render settings for dataset_generator/visualize_sample.py.
+#
+# These set the out-of-the-box look of the sample visualizer. Every value
+# here is overridable on the command line (e.g. `--voxel-size 0.02`); the CLI
+# flag always wins. If this file is missing, the script falls back to its own
+# built-in defaults.
+[visualize]
+pointcloud  = true   # overlay the scene point cloud
+point_size  = 2.5    # point size in pixels
+voxel_size  = 0.1    # voxel downsample in meters (0 disables) — coarser = faster
+gray_points = false  # force uniform gray instead of VLA-3D native per-point RGB
+dark_bg     = true   # dark background so point colors and OBBs pop
+ceiling_cut = 0.5    # crop top N meters of cloud so the ceiling stops occluding
+line_radius = 0.02   # OBB edge thickness in meters, drawn as tubes (0 = 1px wire)
+show_other  = false  # also draw gray context OBBs for every other object
+seed        = 42     # RNG seed for --random / batch sampling
