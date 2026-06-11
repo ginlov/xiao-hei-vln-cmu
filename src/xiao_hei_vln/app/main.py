@@ -19,6 +19,11 @@ from xiao_hei_vln.sync import LatestCache
 TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
 RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
+# Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
+_EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "30"))
+# Optional: directory to save the debug PNG after exploration completes.
+_EXPLORATION_PLOT_DIR = os.environ.get("XIAO_HEI_EXPLORATION_PLOT_DIR", "")
+
 
 def _build_responder(name: str):
     if name == "dummy":
@@ -50,6 +55,41 @@ def _build_responder(name: str):
     )
 
 
+def _build_explorer(node):
+    """Return a FrontierExplorer, or None when exploration is disabled."""
+    if _EXPLORATION_MAX_WAYPOINTS <= 0:
+        return None
+    from xiao_hei_vln.exploration import FrontierExplorer
+
+    explorer = FrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    node.get_logger().info(
+        f"Exploration enabled: FrontierExplorer(max_waypoints={_EXPLORATION_MAX_WAYPOINTS})"
+    )
+    return explorer
+
+
+def _maybe_save_plot(explorer, node) -> None:
+    """Save the debug PNG if XIAO_HEI_EXPLORATION_PLOT_DIR is configured."""
+    if not _EXPLORATION_PLOT_DIR:
+        return
+    try:
+        from pathlib import Path
+
+        from xiao_hei_vln.exploration import save_exploration_plot
+
+        out_dir = Path(_EXPLORATION_PLOT_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "exploration.png"
+        save_exploration_plot(
+            explorer.get_visited_waypoints(),
+            explorer.get_grid(),
+            out_path,
+        )
+        node.get_logger().info(f"Exploration plot saved to {out_path}")
+    except Exception as exc:  # noqa: BLE001
+        node.get_logger().warn(f"Could not save exploration plot: {exc}")
+
+
 def main() -> None:
     # Local imports so the rest of the package stays importable without rclpy.
     import rclpy
@@ -67,12 +107,44 @@ def main() -> None:
     publisher = VLMOutputPublisher(node)
     responder, logger = _build_responder(RESPONDER_NAME)
 
-    state = {"tick_id": 0, "last_question_text": None}
+    # Build the exploration strategy (None when disabled via env var).
+    explorer = _build_explorer(node)
+
+    state = {"tick_id": 0, "last_question_text": None, "exploration_started": False,
+             "last_exploration_wp": None}
 
     def tick() -> None:
+        from xiao_hei_vln.messages.outputs import WaypointPathResponse
+
         now = node.get_clock().now().to_msg()
         snapshot = cache.snapshot(state["tick_id"], Stamp(sec=now.sec, nanosec=now.nanosec))
         state["tick_id"] += 1
+
+        # Exploration phase: runs only when no question is active.
+        if explorer is not None and not explorer.is_complete() and snapshot.question is None:
+            if not state["exploration_started"]:
+                node.get_logger().info("Exploration started.")
+                state["exploration_started"] = True
+
+            wp = explorer.update(snapshot)
+            if wp is not None:
+                # Log only when the target waypoint changes.
+                wp_key = (round(wp.x, 2), round(wp.y, 2))
+                if wp_key != state["last_exploration_wp"]:
+                    visited = len(explorer.get_visited_waypoints())
+                    node.get_logger().info(
+                        f"Exploration waypoint {visited + 1}/{explorer._max_waypoints}: "
+                        f"({wp.x:.2f}, {wp.y:.2f})"
+                    )
+                    state["last_exploration_wp"] = wp_key
+                publisher.publish(WaypointPathResponse(waypoints=[wp]))
+            if explorer.is_complete():
+                node.get_logger().info(
+                    f"Exploration complete. "
+                    f"Visited {len(explorer.get_visited_waypoints())} waypoints."
+                )
+                _maybe_save_plot(explorer, node)
+            return
 
         # New question → reset the responder so it handles it from scratch.
         if (
