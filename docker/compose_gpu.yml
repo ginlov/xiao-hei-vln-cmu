@@ -64,7 +64,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-qwen}
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-qwen,exploration}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
@@ -76,9 +76,12 @@ services:
       - XIAO_HEI_QWEN_MODEL
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-30}
+      - XIAO_HEI_EXPLORATION_PLOT_DIR=${XIAO_HEI_EXPLORATION_PLOT_DIR:-/exploration_plots}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
+      - ../exploration_plots:/exploration_plots
     stdin_open: true
     tty: true
     depends_on:
