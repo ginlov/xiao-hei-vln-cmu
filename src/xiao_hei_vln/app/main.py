@@ -21,6 +21,7 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "30"))
+_EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 # Optional: directory to save the debug PNG after exploration completes.
 _EXPLORATION_PLOT_DIR = os.environ.get("XIAO_HEI_EXPLORATION_PLOT_DIR", "")
 
@@ -56,21 +57,40 @@ def _build_responder(name: str):
 
 
 def _build_explorer(node):
-    """Return a FrontierExplorer, or None when exploration is disabled."""
+    """Instantiate the configured exploration strategy, or None if disabled.
+
+    Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: frontier).
+    Add new strategies here as additional elif branches.
+    """
     if _EXPLORATION_MAX_WAYPOINTS <= 0:
         return None
-    from xiao_hei_vln.exploration import FrontierExplorer
 
-    explorer = FrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    if _EXPLORATION_STRATEGY == "frontier":
+        from xiao_hei_vln.exploration import FrontierExplorer
+        explorer = FrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    else:
+        node.get_logger().error(
+            f"Unknown exploration strategy {_EXPLORATION_STRATEGY!r} — disabling exploration."
+        )
+        return None
+
     node.get_logger().info(
-        f"Exploration enabled: FrontierExplorer(max_waypoints={_EXPLORATION_MAX_WAYPOINTS})"
+        f"Exploration enabled: {type(explorer).__name__} "
+        f"(strategy={_EXPLORATION_STRATEGY}, max_waypoints={_EXPLORATION_MAX_WAYPOINTS})"
     )
     return explorer
 
 
 def _maybe_save_plot(explorer, node) -> None:
-    """Save the debug PNG if XIAO_HEI_EXPLORATION_PLOT_DIR is configured."""
+    """Save the debug PNG if XIAO_HEI_EXPLORATION_PLOT_DIR is configured.
+
+    Skipped silently when the active strategy does not expose get_grid() /
+    get_visited_waypoints() (not all algorithms maintain an OccupancyGrid).
+    """
     if not _EXPLORATION_PLOT_DIR:
+        return
+    if not (hasattr(explorer, "get_visited_waypoints") and hasattr(explorer, "get_grid")):
+        node.get_logger().info("Exploration plot skipped: strategy does not support it.")
         return
     try:
         from pathlib import Path
