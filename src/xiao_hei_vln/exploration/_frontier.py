@@ -92,7 +92,7 @@ class FrontierExplorer:
 
         rx, ry = pose.position.x, pose.position.y
 
-        # Advance when robot reaches the current target
+        # Advance when robot reaches the current target.
         if self._current_target is not None and self._within_reach(rx, ry, self._current_target):
             self._visited.append(self._current_target)
             self._current_target = None
@@ -106,6 +106,10 @@ class FrontierExplorer:
         if self._current_target is None:
             self._current_target = self._select_frontier(rx, ry)
             if self._current_target is None:
+                # If the grid is still empty the simulator hasn't sent terrain
+                # data yet — wait rather than declaring exploration done.
+                if not self._grid.free_cells:
+                    return None
                 self._done = True
                 return None
 
