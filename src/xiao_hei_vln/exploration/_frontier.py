@@ -154,6 +154,20 @@ class FrontierExplorer:
 
         return self._current_target
 
+    def force_skip(self) -> None:
+        """Skip the current target immediately — call when nav stack has demonstrably settled
+        above the advance threshold with no improvement."""
+        if self._current_target is None:
+            return
+        self.skipped_count += 1
+        self._consecutive_skip_count += 1
+        self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
+        self._current_target = None
+        self._target_set_time = None
+        self._best_dist_to_target = float("inf")
+        if self._consecutive_skip_count >= self._max_consecutive_skips:
+            self._done = True
+
     def advance(self) -> None:
         """Mark the current target as visited — call when nav stack signals arrival."""
         if self._current_target is not None:

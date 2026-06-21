@@ -41,8 +41,23 @@ FrontierExplorer(
     max_consecutive_skips=20,    # give up after 20 skips in a row
 )
 _WP_REACHED_THRESHOLD = 0.92    # nav stack settles between 0.25-0.90m
-_wp_reached_state = {"value": inf, "close_ticks": 0, "best": inf}
+_wp_reached_state = {"value": inf, "close_ticks": 0, "best": inf,
+                     "settled_ticks": 0, "prev_best": inf}
 ```
+
+### Early-skip (Option 2) logic
+`force_skip()` is called from `tick()` — not from within `_frontier.py` — when the nav stack has demonstrably settled above threshold with no improvement for 5 consecutive ticks:
+
+```
+after 4s minimum delay (nav needs time to respond):
+  if best hasn't improved by >0.02m since last tick:
+      settled_ticks += 1
+  if settled_ticks >= 5:        # 2.5s of no improvement
+      force_skip()
+```
+
+Minimum early-skip time = **6.5s** (4s delay + 2.5s settled window) vs 12s stuck_timeout_s.  
+A target actively approaching (best keeps shrinking) resets settled_ticks and gets the full 12s.
 
 ## exploration.log format
 Written to `exploration_logs/exploration.log` — one structured event per line:

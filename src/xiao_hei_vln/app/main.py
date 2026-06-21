@@ -156,7 +156,8 @@ def main() -> None:
     )
 
     # Track nav stack's distance to current waypoint; best = closest approach this target.
-    _wp_reached_state = {"value": float("inf"), "close_ticks": 0, "best": float("inf")}
+    _wp_reached_state = {"value": float("inf"), "close_ticks": 0, "best": float("inf"),
+                         "settled_ticks": 0, "prev_best": float("inf")}
     _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
 
     def _on_wp_reached(msg) -> None:
@@ -221,6 +222,26 @@ def main() -> None:
                     _wp_reached_state["close_ticks"] = 0
 
             prev_skipped = explorer.skipped_count
+
+            # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
+            # 4s minimum delay gives the nav stack time to respond before we start counting.
+            now_s = node.get_clock().now().nanoseconds / 1e9
+            if (
+                explorer._current_target is not None
+                and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
+                and state["wp_start_time"] is not None
+                and now_s - state["wp_start_time"] > 4.0
+            ):
+                if _wp_reached_state["best"] >= _wp_reached_state["prev_best"] - 0.02:
+                    _wp_reached_state["settled_ticks"] += 1
+                else:
+                    _wp_reached_state["settled_ticks"] = 0
+                _wp_reached_state["prev_best"] = _wp_reached_state["best"]
+                if _wp_reached_state["settled_ticks"] >= 5:
+                    explorer.force_skip()
+                    _wp_reached_state["settled_ticks"] = 0
+                    _wp_reached_state["prev_best"] = float("inf")
+
             wp = explorer.update(snapshot)
 
             if explorer.skipped_count > prev_skipped:
@@ -258,6 +279,8 @@ def main() -> None:
                     _wp_reached_state["best"] = float("inf")
                     _wp_reached_state["value"] = float("inf")
                     _wp_reached_state["close_ticks"] = 0
+                    _wp_reached_state["settled_ticks"] = 0
+                    _wp_reached_state["prev_best"] = float("inf")
                 publisher.publish(WaypointPathResponse(waypoints=[wp]))
 
             if explorer.is_complete():
