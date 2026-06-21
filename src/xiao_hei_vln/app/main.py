@@ -216,6 +216,7 @@ def main() -> None:
                         _wp_reached_state["close_ticks"] = 0
                         _wp_reached_state["value"] = float("inf")
                         _wp_reached_state["best"] = float("inf")
+                        state["last_exploration_wp"] = None  # force WP_SET for next target
                 else:
                     _wp_reached_state["close_ticks"] = 0
 
@@ -255,6 +256,8 @@ def main() -> None:
                     state["last_exploration_wp"] = wp_key
                     state["wp_start_time"] = now_s
                     _wp_reached_state["best"] = float("inf")
+                    _wp_reached_state["value"] = float("inf")
+                    _wp_reached_state["close_ticks"] = 0
                 publisher.publish(WaypointPathResponse(waypoints=[wp]))
 
             if explorer.is_complete():
