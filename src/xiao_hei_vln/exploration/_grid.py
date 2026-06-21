@@ -73,6 +73,15 @@ class OccupancyGrid:
     def free_cells(self) -> set[tuple[int, int]]:
         return self._free
 
+    def mark_occupied(self, x: float, y: float, radius_cells: int = 1) -> None:
+        """Mark a region around (x, y) as occupied to suppress future frontier selection there."""
+        cx, cy = self._to_grid(x, y)
+        for dx in range(-radius_cells, radius_cells + 1):
+            for dy in range(-radius_cells, radius_cells + 1):
+                cell = (cx + dx, cy + dy)
+                self._free.discard(cell)
+                self._occupied.add(cell)
+
     @property
     def resolution(self) -> float:
         return self._res

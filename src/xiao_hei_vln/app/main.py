@@ -11,6 +11,7 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
 
 from __future__ import annotations
 
+import logging
 import os
 
 from xiao_hei_vln.messages.common import Stamp
@@ -22,6 +23,7 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "30"))
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
+_EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 # Optional: directory to save the debug PNG after exploration completes.
 _EXPLORATION_PLOT_DIR = os.environ.get("XIAO_HEI_EXPLORATION_PLOT_DIR", "")
 
@@ -67,7 +69,13 @@ def _build_explorer(node):
 
     if _EXPLORATION_STRATEGY == "frontier":
         from xiao_hei_vln.exploration import FrontierExplorer
-        explorer = FrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+        explorer = FrontierExplorer(
+            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
+            waypoint_reach_dist=0.3,
+            max_waypoint_dist=_EXPLORATION_MAX_WAYPOINT_DIST,
+            stuck_timeout_s=12.0,
+            max_consecutive_skips=20,
+        )
     else:
         node.get_logger().error(
             f"Unknown exploration strategy {_EXPLORATION_STRATEGY!r} — disabling exploration."
@@ -76,7 +84,8 @@ def _build_explorer(node):
 
     node.get_logger().info(
         f"Exploration enabled: {type(explorer).__name__} "
-        f"(strategy={_EXPLORATION_STRATEGY}, max_waypoints={_EXPLORATION_MAX_WAYPOINTS})"
+        f"(strategy={_EXPLORATION_STRATEGY}, max_waypoints={_EXPLORATION_MAX_WAYPOINTS}, "
+        f"reach_dist=0.3m, max_waypoint_dist={_EXPLORATION_MAX_WAYPOINT_DIST}m)"
     )
     return explorer
 
@@ -130,8 +139,80 @@ def main() -> None:
     # Build the exploration strategy (None when disabled via env var).
     explorer = _build_explorer(node)
 
+    # Route the frontier module's debug logs through rclpy so they appear in ROS output.
+    # Set XIAO_HEI_EXPLORATION_DEBUG=1 to enable.
+    if os.environ.get("XIAO_HEI_EXPLORATION_DEBUG", "0") == "1":
+        _py_logger = logging.getLogger("xiao_hei_vln.exploration")
+        _py_logger.setLevel(logging.DEBUG)
+        _py_logger.addHandler(logging.StreamHandler())
+
+    # Nav debug log — written to the mounted volume so it survives the container.
+    _nav_log_path = os.path.join(_EXPLORATION_PLOT_DIR or "/exploration_logs", "nav_debug.log")
+    _nav_log_file = open(_nav_log_path, "w", buffering=1)  # line-buffered
+
+    def _nav_log(msg: str) -> None:
+        now_s = node.get_clock().now().nanoseconds / 1e9
+        line = f"[{now_s:.3f}] {msg}\n"
+        _nav_log_file.write(line)
+        node.get_logger().info(f"[nav_debug] {msg}")
+
+    # Subscribe to /way_point_reached — nav stack signals when it finishes a goal.
+    from std_msgs.msg import Float32
+    from sensor_msgs.msg import PointCloud2
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+    import struct
+
+    _debug_qos = QoSProfile(
+        depth=5,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        history=HistoryPolicy.KEEP_LAST,
+    )
+
+    _wp_reached_state = {"value": float("inf"), "close_ticks": 0}
+    _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
+
+    def _on_wp_reached(msg) -> None:
+        v = float(msg.data)
+        _wp_reached_state["value"] = v
+        _nav_log(f"way_point_reached value={v:.4f}")
+
+    node.create_subscription(Float32, "/way_point_reached", _on_wp_reached, _debug_qos)
+
+    # Subscribe to /traversable_area — log bounds and point count periodically.
+    _traversable_logged = {"count": 0}
+
+    def _on_traversable(msg) -> None:
+        _traversable_logged["count"] += 1
+        # Only log every 10th message to avoid spam.
+        if _traversable_logged["count"] % 10 != 1:
+            return
+        n = int(msg.width) * int(msg.height)
+        step = int(msg.point_step)
+        raw = bytes(msg.data)
+        field_offsets = {f.name: int(f.offset) for f in msg.fields}
+        xs, ys = [], []
+        for i in range(n):
+            base = i * step
+            ox = field_offsets.get("x")
+            oy = field_offsets.get("y")
+            if ox is not None and oy is not None:
+                x = struct.unpack_from("<f", raw, base + ox)[0]
+                y = struct.unpack_from("<f", raw, base + oy)[0]
+                xs.append(x)
+                ys.append(y)
+        if xs:
+            _nav_log(
+                f"traversable_area points={n} "
+                f"x=[{min(xs):.2f},{max(xs):.2f}] "
+                f"y=[{min(ys):.2f},{max(ys):.2f}]"
+            )
+        else:
+            _nav_log(f"traversable_area points={n} (no x/y fields found)")
+
+    node.create_subscription(PointCloud2, "/traversable_area", _on_traversable, _debug_qos)
+
     state = {"tick_id": 0, "last_question_text": None, "exploration_started": False,
-             "last_exploration_wp": None}
+             "last_exploration_wp": None, "exploration_tick": 0}
 
     def tick() -> None:
         from xiao_hei_vln.messages.outputs import WaypointPathResponse
@@ -146,22 +227,74 @@ def main() -> None:
                 node.get_logger().info("Exploration started.")
                 state["exploration_started"] = True
 
+            pose = snapshot.pose
+            robot_pos = (
+                f"({pose.position.x:.2f}, {pose.position.y:.2f})" if pose is not None else "unknown"
+            )
+
+            # Use /way_point_reached (nav stack's own distance) to detect arrival.
+            # When it stays below threshold for 3 consecutive ticks, the nav stack
+            # has done its best — advance regardless of odometry distance.
+            if explorer._current_target is not None:
+                if _wp_reached_state["value"] < _WP_REACHED_THRESHOLD:
+                    _wp_reached_state["close_ticks"] += 1
+                    if _wp_reached_state["close_ticks"] >= 3:
+                        node.get_logger().info(
+                            f"Nav stack settled at {_wp_reached_state['value']:.3f}m "
+                            f"— advancing waypoint"
+                        )
+                        explorer.advance()
+                        _wp_reached_state["close_ticks"] = 0
+                        _wp_reached_state["value"] = float("inf")  # prevent carry-over to next target
+                else:
+                    _wp_reached_state["close_ticks"] = 0
+
+            prev_skipped = explorer.skipped_count
             wp = explorer.update(snapshot)
+            state["exploration_tick"] += 1
+            etick = state["exploration_tick"]
+
+            # Surface stuck-skip events immediately as INFO.
+            if explorer.skipped_count > prev_skipped:
+                node.get_logger().info(
+                    f"Exploration waypoint SKIPPED (stuck): "
+                    f"target={state['last_exploration_wp']}  robot={robot_pos}  "
+                    f"total_skipped={explorer.skipped_count}"
+                )
+                state["last_exploration_wp"] = None
+
             if wp is not None:
-                # Log only when the target waypoint changes.
+                # Log every time the target waypoint changes.
                 wp_key = (round(wp.x, 2), round(wp.y, 2))
                 if wp_key != state["last_exploration_wp"]:
-                    visited = len(explorer.get_visited_waypoints())
+                    visited = len(explorer._visited)
                     node.get_logger().info(
                         f"Exploration waypoint {visited + 1}/{explorer._max_waypoints}: "
-                        f"({wp.x:.2f}, {wp.y:.2f})"
+                        f"({wp.x:.2f}, {wp.y:.2f})  robot={robot_pos}  visited_so_far={visited}"
                     )
                     state["last_exploration_wp"] = wp_key
                 publisher.publish(WaypointPathResponse(waypoints=[wp]))
+            else:
+                if not explorer.is_complete():
+                    node.get_logger().debug(
+                        f"Explorer returned None (no frontier yet)  robot={robot_pos}  "
+                        f"etick={etick}"
+                    )
+
+            # Periodic heartbeat every 20 exploration ticks to catch silent-spin.
+            if etick % 20 == 0:
+                node.get_logger().info(
+                    f"Exploration heartbeat: etick={etick}  "
+                    f"visited={len(explorer._visited)}/{explorer._max_waypoints}  "
+                    f"skipped={explorer.skipped_count}  "
+                    f"current_target={state['last_exploration_wp']}  robot={robot_pos}"
+                )
             if explorer.is_complete():
                 node.get_logger().info(
                     f"Exploration complete. "
-                    f"Visited {len(explorer.get_visited_waypoints())} waypoints."
+                    f"Visited {len(explorer._visited)} waypoints, "
+                    f"skipped {explorer.skipped_count} "
+                    f"(consecutive_skips={explorer._consecutive_skip_count})."
                 )
                 _maybe_save_plot(explorer, node)
             return
@@ -202,6 +335,7 @@ def main() -> None:
         pass
     finally:
         responder.close()
+        _nav_log_file.close()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -8,20 +8,25 @@ Algorithm per tick
 1. Ingest terrain_ext into OccupancyGrid to expand the known map.
 2. If the robot is within `waypoint_reach_dist` of the current target,
    mark that waypoint as visited and clear the target.
-3. If the budget is exhausted, mark done and return None.
-4. If no target is set, find frontier cells, cluster them, score each
+3. If the robot has not reached the target within `stuck_timeout_s` seconds,
+   skip the waypoint and select a new frontier.
+4. If the budget is exhausted, mark done and return None.
+5. If no target is set, find frontier cells, cluster them, score each
    cluster by size / (1 + distance) and pick the best centroid.
-5. Return the current target waypoint.
+6. Return the current target waypoint.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import deque
 
 from xiao_hei_vln.exploration._grid import OccupancyGrid
 from xiao_hei_vln.messages.inputs import VLMInput
 from xiao_hei_vln.messages.outputs import Waypoint
+
+_log = logging.getLogger(__name__)
 
 
 def _cluster_frontier(cells: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
@@ -61,19 +66,31 @@ class FrontierExplorer:
         self,
         max_waypoints: int = 30,
         grid_resolution: float = 0.2,
-        waypoint_reach_dist: float = 1.0,
+        waypoint_reach_dist: float = 0.3,
         min_frontier_size: int = 5,
         cost_threshold: float = 0.5,
+        stuck_timeout_s: float = 30.0,
+        max_waypoint_dist: float = 1.5,
+        max_consecutive_skips: int = 3,
     ) -> None:
         self._max_waypoints = max_waypoints
         self._reach_dist = waypoint_reach_dist
         self._min_frontier_size = min_frontier_size
         self._cost_threshold = cost_threshold
+        self._stuck_timeout_s = stuck_timeout_s
+        self._max_waypoint_dist = max_waypoint_dist
+        self._max_consecutive_skips = max_consecutive_skips
 
         self._grid = OccupancyGrid(grid_resolution)
         self._current_target: Waypoint | None = None
         self._visited: list[Waypoint] = []
         self._done = False
+
+        # Stuck detection state — reset whenever a new target is assigned.
+        self._target_set_time: float | None = None
+        self._best_dist_to_target: float = float("inf")
+        self.skipped_count: int = 0
+        self._consecutive_skip_count: int = 0
 
     # ------------------------------------------------------------------
     # Strategy interface
@@ -91,29 +108,105 @@ class FrontierExplorer:
             return self._current_target
 
         rx, ry = pose.position.x, pose.position.y
+        now = snapshot.tick_time.to_seconds()
 
         # Advance when robot reaches the current target.
         if self._current_target is not None and self._within_reach(rx, ry, self._current_target):
+            dist = math.hypot(rx - self._current_target.x, ry - self._current_target.y)
+            _log.debug(
+                "Waypoint reached: robot=(%.2f, %.2f) wp=(%.2f, %.2f) dist=%.3f "
+                "reach_threshold=%.2f visited_after=%d",
+                rx, ry,
+                self._current_target.x, self._current_target.y,
+                dist, self._reach_dist,
+                len(self._visited) + 1,
+            )
             self._visited.append(self._current_target)
             self._current_target = None
+            self._target_set_time = None
+            self._best_dist_to_target = float("inf")
+            self._consecutive_skip_count = 0
+
+        # Stuck detection: track closest approach; skip if timeout exceeded.
+        if self._current_target is not None:
+            dist = math.hypot(rx - self._current_target.x, ry - self._current_target.y)
+            if dist < self._best_dist_to_target:
+                self._best_dist_to_target = dist
+
+            elapsed = now - self._target_set_time  # type: ignore[operator]
+            if elapsed > self._stuck_timeout_s:
+                _log.debug(
+                    "Stuck detected: target=(%.2f, %.2f) elapsed=%.1fs "
+                    "best_dist=%.3f reach_threshold=%.2f — skipping waypoint",
+                    self._current_target.x, self._current_target.y,
+                    elapsed, self._best_dist_to_target, self._reach_dist,
+                )
+                self.skipped_count += 1
+                self._consecutive_skip_count += 1
+                # Mark a larger area so we don't re-select the same unreachable frontier.
+                self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
+                self._current_target = None
+                self._target_set_time = None
+                self._best_dist_to_target = float("inf")
+                if self._consecutive_skip_count >= self._max_consecutive_skips:
+                    _log.debug(
+                        "Max consecutive skips (%d) reached — robot cannot make progress, "
+                        "declaring exploration done.",
+                        self._max_consecutive_skips,
+                    )
+                    self._done = True
+                    return None
 
         # Budget check
         if len(self._visited) >= self._max_waypoints:
+            _log.debug(
+                "Budget exhausted: visited=%d max=%d robot=(%.2f, %.2f)",
+                len(self._visited), self._max_waypoints, rx, ry,
+            )
             self._done = True
             return None
 
-        # Select a new frontier target when needed
+        # Select a new frontier target when needed.
         if self._current_target is None:
+            _log.debug(
+                "Selecting new frontier target: free_cells=%d robot=(%.2f, %.2f)",
+                len(self._grid.free_cells), rx, ry,
+            )
             self._current_target = self._select_frontier(rx, ry)
             if self._current_target is None:
                 # If the grid is still empty the simulator hasn't sent terrain
                 # data yet — wait rather than declaring exploration done.
                 if not self._grid.free_cells:
+                    _log.debug("No frontier found and grid is empty — waiting for terrain data.")
                     return None
+                _log.debug(
+                    "No frontier clusters found (free_cells=%d) — marking exploration done.",
+                    len(self._grid.free_cells),
+                )
                 self._done = True
                 return None
+            self._target_set_time = now
+            self._best_dist_to_target = math.hypot(
+                rx - self._current_target.x, ry - self._current_target.y
+            )
 
         return self._current_target
+
+    def advance(self) -> None:
+        """Mark the current target as visited — call when nav stack signals arrival."""
+        if self._current_target is not None:
+            _log.debug(
+                "advance() called: marking wp=(%.2f, %.2f) visited, visited_after=%d",
+                self._current_target.x, self._current_target.y,
+                len(self._visited) + 1,
+            )
+            # Suppress this frontier so it isn't re-selected next tick.
+            self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=1)
+            self._visited.append(self._current_target)
+            self._current_target = None
+            self._target_set_time = None
+            self._best_dist_to_target = float("inf")
+            self._consecutive_skip_count = 0
 
     def is_complete(self) -> bool:
         return self._done
@@ -123,6 +216,10 @@ class FrontierExplorer:
         self._current_target = None
         self._visited = []
         self._done = False
+        self._target_set_time = None
+        self._best_dist_to_target = float("inf")
+        self.skipped_count = 0
+        self._consecutive_skip_count = 0
 
     # ------------------------------------------------------------------
     # Accessors for visualisation / reporting
@@ -142,16 +239,24 @@ class FrontierExplorer:
 
     def _select_frontier(self, rx: float, ry: float) -> Waypoint | None:
         raw_cells = self._grid.frontier_cells()
+        _log.debug("_select_frontier: raw_frontier_cells=%d", len(raw_cells))
         if not raw_cells:
             return None
 
         clusters = _cluster_frontier(raw_cells)
+        clusters_before_filter = len(clusters)
         clusters = [c for c in clusters if len(c) >= self._min_frontier_size]
+        _log.debug(
+            "_select_frontier: clusters=%d (after min_size=%d filter: %d)",
+            clusters_before_filter, self._min_frontier_size, len(clusters),
+        )
         if not clusters:
             return None
 
         best_wp: Waypoint | None = None
         best_score = -1.0
+        nearest_wp: Waypoint | None = None
+        nearest_dist = float("inf")
 
         for cluster in clusters:
             # Centroid in world coordinates
@@ -165,16 +270,50 @@ class FrontierExplorer:
             if dist < 1e-6:
                 dist = 1e-6
 
+            wp = Waypoint(x=cx, y=cy, heading=math.atan2(cy - ry, cx - rx))
+
+            # Skip targets the robot is already at — assigning them causes
+            # immediate false-visits without the robot moving anywhere.
+            if dist <= self._reach_dist:
+                _log.debug(
+                    "_select_frontier: skipping cluster at (%.2f, %.2f) — "
+                    "dist=%.3f already within reach_dist=%.2f",
+                    cx, cy, dist, self._reach_dist,
+                )
+                continue
+
+            # Track nearest VALID (outside reach_dist) cluster as fallback.
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_wp = wp
+
+            # Only score clusters within the preferred distance cap.
+            if dist > self._max_waypoint_dist:
+                continue
+
             # Larger clusters that are closer score higher
             score = len(cluster) / (1.0 + dist)
             if score > best_score:
                 best_score = score
-                best_wp = Waypoint(
-                    x=cx,
-                    y=cy,
-                    heading=math.atan2(cy - ry, cx - rx),
-                )
+                best_wp = wp
 
+        # Fall back to the nearest cluster when all exceeded max_waypoint_dist.
+        if best_wp is None:
+            best_wp = nearest_wp
+            _log.debug(
+                "_select_frontier: all clusters exceed max_dist=%.1f — "
+                "falling back to nearest at dist=%.2f",
+                self._max_waypoint_dist, nearest_dist,
+            )
+
+        if best_wp is not None:
+            best_dist = math.hypot(best_wp.x - rx, best_wp.y - ry)
+            _log.debug(
+                "_select_frontier: selected wp=(%.2f, %.2f) score=%.3f dist_to_robot=%.3f "
+                "within_reach=%s",
+                best_wp.x, best_wp.y, best_score, best_dist,
+                best_dist < self._reach_dist,
+            )
         return best_wp
 
     def _within_reach(self, rx: float, ry: float, wp: Waypoint) -> bool:
