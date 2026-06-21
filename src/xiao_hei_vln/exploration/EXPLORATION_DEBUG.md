@@ -5,69 +5,70 @@ Robot exploration completed 200 "waypoints" in seconds without actually moving. 
 
 ## Root Causes Found & Fixed
 
-### 1. False visits (primary bug) — FIXED
+### 1. False visits — FIXED
 `waypoint_reach_dist=1.0m` was too large. Frontier centroid landed within reach of the stationary robot every tick. Fixed by: reducing to 0.3m, AND fixing `_select_frontier` to track `nearest_wp` fallback only from clusters OUTSIDE reach_dist (old code's fallback bypassed the within-reach filter).
 
-### 2. Nav stack settles short of goal — FIXED (tuned)
-`/way_point_reached` (Float32) is a **continuous distance topic** — not a one-shot event. Nav stack navigates, then stabilizes at a fixed distance when it can't go further (obstacle inflation). The settled distance varies widely:
+### 2. Nav stack settles short of goal — FIXED
+`/way_point_reached` (Float32) is a **continuous distance topic** — not a one-shot event. Nav stack navigates, then stabilizes at a fixed distance when it can't go further (obstacle inflation). Settled distance varies by environment:
 - ~0.25m — open space, close goal
 - ~0.37-0.65m — frontier near an obstacle
-- ~0.75-0.88m — tighter obstacle clearance required
+- ~0.75-0.90m — tighter obstacle clearance required
 - ~1.0-1.8m — mostly blocked path
 
-**Fix in `main.py` tick loop:** when `/way_point_reached` stays below `_WP_REACHED_THRESHOLD` for 3 consecutive ticks (~1.5s), call `explorer.advance()`. After advance fires, reset `_wp_reached_state["value"] = inf` so the stale distance doesn't carry over to the next target.
-
-**Threshold evolution:**
-- `0.35m` (original) — only worked for the very first waypoint; most targets settled at 0.37-0.88m so advance() never fired
-- `0.75m` (current) — covers most reachable targets based on observed nav_debug.log values
+**Fix:** when `/way_point_reached` stays below `_WP_REACHED_THRESHOLD` for 3 consecutive ticks (~1.5s), call `explorer.advance()`. Reset `_wp_reached_state["value"]` and `["best"]` to `inf` after each advance so stale distances don't carry over to the next target.
 
 ### 3. Stuck in dead end → infinite reselect loop — FIXED
 After a stuck skip, `_select_frontier` returned the same unreachable frontier. Fixed by `mark_occupied(..., radius_cells=3)` on skip.
 
-### 4. Cycling through same 5-6 frontier points — FIXED
+### 4. Cycling through same frontier points — FIXED
 After `advance()`, the frontier wasn't suppressed. Fixed by `mark_occupied(..., radius_cells=1)` in `advance()`.
 
-### 5. `max_consecutive_skips=3` too aggressive — FIXED
-Terminated exploration when robot was genuinely exploring new areas (3 different skips in new space). Increased to 10.
-
-### 6. Nav topic carry-over false advance — FIXED
-After `advance()`, `_wp_reached_state["value"]` retained the old settled distance. Next tick would immediately count toward the new target's close_ticks, causing a false advance after just 3 ticks. Fixed by resetting to `inf` after each advance().
+### 5. Nav topic carry-over false advance — FIXED
+After `advance()`, stale distance value immediately counted toward the new target's close_ticks, causing a false advance after 3 ticks. Fixed by resetting both `value` and `best` to `inf` after each advance.
 
 ## Current Parameters (`_build_explorer` in `main.py`)
 ```python
 FrontierExplorer(
     max_waypoints=N,             # set via XIAO_HEI_EXPLORATION_MAX_WAYPOINTS
-    waypoint_reach_dist=0.3,     # odometry fallback threshold (rarely triggers now)
+    waypoint_reach_dist=0.3,     # odometry fallback threshold (rarely triggers)
     max_waypoint_dist=1.5,       # prefer frontiers within 1.5m
-    stuck_timeout_s=12.0,        # skip waypoint if no progress in 12s (nav needs time for far targets)
+    stuck_timeout_s=12.0,        # skip waypoint if no progress in 12s
     max_consecutive_skips=20,    # give up after 20 skips in a row
 )
-_WP_REACHED_THRESHOLD = 0.92    # /way_point_reached threshold to trigger advance()
-_wp_reached_state = {"value": inf, "close_ticks": 0}  # reset value after each advance
+_WP_REACHED_THRESHOLD = 0.92    # nav stack settles between 0.25-0.90m
+_wp_reached_state = {"value": inf, "close_ticks": 0, "best": inf}
 ```
+
+## exploration.log format
+Written to `exploration_logs/exploration.log` — one structured event per line:
+```
+[timestamp_s] EVENT  key=value  key=value ...
+```
+
+| Event | Fields | What it means |
+|---|---|---|
+| `START` | max_waypoints, threshold, stuck_timeout, max_skips | Logged once when exploration begins |
+| `WP_SET` | target, robot, dist | New frontier target selected; dist = robot→target |
+| `WP_ADVANCE` | target, nav_dist, visited | Nav stack settled below threshold; waypoint counted as visited |
+| `WP_SKIP` | target, robot, elapsed, best_nav_dist, last_nav_dist, consecutive | Stuck timeout fired |
+| `DONE` | visited, skipped, reason | reason = budget_exhausted \| max_consecutive_skips \| no_frontiers |
+
+**Reading WP_SKIP:**
+- `best_nav_dist` — closest the nav stack got to the target
+- `last_nav_dist` — distance at timeout; if `last > best`, the nav stack retreated after approaching
+- If `best_nav_dist` consistently > 0.92m across many skips → raise `_WP_REACHED_THRESHOLD` or those frontiers are genuinely inaccessible
 
 ## Key Topics
 | Topic | Type | What it is |
 |---|---|---|
 | `/way_point_with_heading` | Pose2D | We publish target waypoints here |
-| `/way_point_reached` | Float32 | Nav stack's continuous distance to current waypoint (~2Hz, may publish less when idle) |
-| `/traversable_area` | PointCloud2 | Nav stack's traversable map (logged periodically to nav_debug.log) |
+| `/way_point_reached` | Float32 | Nav stack's continuous distance to current waypoint (not a one-shot event) |
 | `/state_estimation` | Odometry | Robot pose — takes 90-190s to arrive after container start |
 
 ## Files Changed
-- `src/xiao_hei_vln/exploration/_frontier.py` — stuck detection, `max_consecutive_skips`, `advance()` method, frontier filter fix, `mark_occupied` on skip and advance
-- `src/xiao_hei_vln/exploration/_grid.py` — added `mark_occupied()` method
-- `src/xiao_hei_vln/app/main.py` — `/way_point_reached` subscriber, nav-distance-based advance with carry-over fix, heartbeat logging, skip event logging
-
-## Observation from Latest Run (max_waypoints=5000)
-Robot physically traveled from (0,0) to (4.93, -3.74) — 6+m range. Only 4 "visited" (advance triggered) + 10 skips (stuck timeout). The robot DID explore the space; skips were doing genuine exploration because `mark_occupied` blacklisted each skipped area. The problem was just that `advance()` was barely triggering (0.35m threshold too tight).
-
-`nav_debug.log` (at `exploration_logs/nav_debug.log`) shows raw `/way_point_reached` values per run — check this to tune `_WP_REACHED_THRESHOLD`.
-
-## What to Try If Still Broken
-1. Check `nav_debug.log` — if values are consistently above 0.75m, raise threshold to 0.9m
-2. If robot stops exploring after 10 consecutive skips but the map isn't covered, increase `max_consecutive_skips`
-3. Subscribe to `/traversable_area` and use it as the occupancy grid source — waypoints would then always be in nav-stack-reachable space
+- `src/xiao_hei_vln/exploration/_frontier.py` — stuck detection, `advance()`, frontier filter fix, `mark_occupied` on skip and advance
+- `src/xiao_hei_vln/exploration/_grid.py` — added `mark_occupied()`
+- `src/xiao_hei_vln/app/main.py` — structured `exploration.log`, `/way_point_reached` subscriber, nav-distance-based advance
 
 ## Run Command
 ```
