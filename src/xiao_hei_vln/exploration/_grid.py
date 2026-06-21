@@ -22,6 +22,8 @@ class OccupancyGrid:
         self._res = resolution
         self._free: set[tuple[int, int]] = set()
         self._occupied: set[tuple[int, int]] = set()
+        # Cells explicitly suppressed via mark_occupied — terrain updates cannot re-free these.
+        self._blacklisted: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------------
     # Public update
@@ -33,8 +35,9 @@ class OccupancyGrid:
             cell = self._to_grid(float(pts[i, 0]), float(pts[i, 1]))
             cost = float(pts[i, 3])
             if cost <= cost_threshold:
-                self._free.add(cell)
-                self._occupied.discard(cell)
+                if cell not in self._blacklisted:
+                    self._free.add(cell)
+                    self._occupied.discard(cell)
             else:
                 # Only mark occupied if we haven't already confirmed it's free
                 # from a previous snapshot with a better viewpoint.
@@ -74,13 +77,18 @@ class OccupancyGrid:
         return self._free
 
     def mark_occupied(self, x: float, y: float, radius_cells: int = 1) -> None:
-        """Mark a region around (x, y) as occupied to suppress future frontier selection there."""
+        """Mark a region around (x, y) as permanently occupied.
+
+        Blacklisted cells are not restored by subsequent terrain updates, so
+        skipped / visited frontier areas are not re-selected.
+        """
         cx, cy = self._to_grid(x, y)
         for dx in range(-radius_cells, radius_cells + 1):
             for dy in range(-radius_cells, radius_cells + 1):
                 cell = (cx + dx, cy + dy)
                 self._free.discard(cell)
                 self._occupied.add(cell)
+                self._blacklisted.add(cell)
 
     @property
     def resolution(self) -> float:

@@ -24,7 +24,12 @@ After a stuck skip, `_select_frontier` returned the same unreachable frontier. F
 After `advance()`, the frontier wasn't suppressed. Fixed by `mark_occupied(..., radius_cells=1)` in `advance()`.
 
 ### 5. Nav topic carry-over false advance — FIXED
-After `advance()`, stale distance value immediately counted toward the new target's close_ticks, causing a false advance after 3 ticks. Fixed by resetting both `value` and `best` to `inf` after each advance.
+After `advance()`, stale distance value immediately counted toward the new target's close_ticks, causing a false advance after 3 ticks. Fixed by resetting `value`, `best`, and `close_ticks` in both the advance block and WP_SET. Also reset `last_exploration_wp` after advance so the next target always triggers WP_SET.
+
+### 6. mark_occupied undone by terrain updates — FIXED
+`mark_occupied()` suppresses a frontier by adding cells to `_occupied`. But `OccupancyGrid.update()` runs every tick and re-adds those same cells to `_free` whenever the terrain sensor reports them as traversable (cost ≤ 0.5) — which it always does for open floor. This caused the robot to re-select the same unreachable frontier on every tick, spinning through the full `stuck_timeout_s × max_consecutive_skips` before giving up.
+
+**Fix:** added `_blacklisted` set in `OccupancyGrid`. Cells passed to `mark_occupied()` are permanently blacklisted and skipped by `update()`, so terrain data can never restore them.
 
 ## Current Parameters (`_build_explorer` in `main.py`)
 ```python
@@ -67,7 +72,7 @@ Written to `exploration_logs/exploration.log` — one structured event per line:
 
 ## Files Changed
 - `src/xiao_hei_vln/exploration/_frontier.py` — stuck detection, `advance()`, frontier filter fix, `mark_occupied` on skip and advance
-- `src/xiao_hei_vln/exploration/_grid.py` — added `mark_occupied()`
+- `src/xiao_hei_vln/exploration/_grid.py` — added `mark_occupied()`, `_blacklisted` set to permanently suppress frontier cells
 - `src/xiao_hei_vln/app/main.py` — structured `exploration.log`, `/way_point_reached` subscriber, nav-distance-based advance
 
 ## Run Command
