@@ -11,6 +11,9 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
                         no detection yet; stitches `terrain_ext` into a
                         global occupancy grid and emits waypoints toward
                         the highest-scored unexplored frontier each tick.
+  - `gemini`          — Frontier exploration *plus* Gemini for the final
+                        answer (Task 1) or route plan (Task 2). Requires
+                        `XIAO_HEI_GEMINI_API_KEY`. `pip install .[gemini]`.
 """
 
 from __future__ import annotations
@@ -53,8 +56,29 @@ def _build_responder(name: str):
         from xiao_hei_vln.perception_responder import PerceptionResponder
 
         return PerceptionResponder(), None
+    if name == "gemini":
+        from dataclasses import asdict
+
+        from xiao_hei_vln.gemini import GeminiConfig, GeminiEngine, GeminiResponder
+        from xiao_hei_vln.logger import VLMLogger
+
+        config = GeminiConfig.from_env()
+        engine = GeminiEngine(config)
+        engine.warmup()
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config=asdict(config),
+                responder_name="gemini",
+                tick_hz=TICK_HZ,
+            )
+        return GeminiResponder(engine, config, logger=logger), logger
     raise ValueError(
-        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen, perception",
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; "
+        "expected one of: dummy, qwen, perception, gemini",
     )
 
 
@@ -70,6 +94,7 @@ def main() -> None:
     node_name = {
         "qwen": "xiao_hei_qwen_vlm",
         "perception": "xiao_hei_perception_vlm",
+        "gemini": "xiao_hei_gemini_vlm",
         "dummy": "xiao_hei_dummy_vlm",
     }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
     node: Node = rclpy.create_node(node_name)

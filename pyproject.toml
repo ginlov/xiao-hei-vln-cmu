@@ -24,6 +24,14 @@ qwen-local = [
     "pillow>=10",
     "huggingface-hub>=0.24",
 ]
+# Gemini API responder — explores via the perception pipeline, then asks
+# Gemini for the final answer / route. Lazy-imported so test/CI environments
+# without the SDK installed can still import `xiao_hei_vln.gemini` for typing.
+gemini = [
+    "google-genai>=0.5",
+    "pillow>=10",
+    "matplotlib>=3.8",
+]
 # HTML report generation from VLM tick logs (scripts/generate_report.py).
 replay = [
     "matplotlib>=3.8",
