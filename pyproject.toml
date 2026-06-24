@@ -28,7 +28,9 @@ qwen-local = [
 # Gemini for the final answer / route. Lazy-imported so test/CI environments
 # without the SDK installed can still import `xiao_hei_vln.gemini` for typing.
 gemini = [
-    "google-genai>=0.5",
+    # The SDK had a major reshape at 1.0 — `client.models.generate_content`
+    # only exists post-1.0. Pinning >=1.0 keeps us on the supported API.
+    "google-genai>=1.0",
     "pillow>=10",
     "matplotlib>=3.8",
 ]

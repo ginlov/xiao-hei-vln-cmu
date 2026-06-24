@@ -297,6 +297,99 @@ class TestTask2InstructionFollowing:
 # ===========================================================================
 
 
+@dataclass
+class FakeLogger:
+    """Captures the VLMLogger calls GeminiResponder makes."""
+
+    new_questions: list[str] = field(default_factory=list)
+    ticks: list[dict] = field(default_factory=list)
+    closed: bool = False
+
+    def new_question(self, text: str) -> None:
+        self.new_questions.append(text)
+
+    def log_tick(
+        self,
+        snapshot,
+        system_prompt: str,
+        user_text: str,
+        output,
+        inference_ms: float,
+        evidence,
+    ) -> None:
+        self.ticks.append({
+            "tick_id": snapshot.tick_id,
+            "system_prompt": system_prompt,
+            "user_text": user_text,
+            "output": output,
+            "inference_ms": inference_ms,
+        })
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestLoggerIntegration:
+    def test_logger_receives_new_question_log_tick_close(self) -> None:
+        engine = FakeGeminiEngine(
+            response=NumericalResponse(value=4, rationale="ok"),
+        )
+        logger = FakeLogger()
+        responder = GeminiResponder(
+            engine,
+            _config(max_explore_ticks=2),
+            perception=FakeExploringPerception(),
+            logger=logger,
+        )
+
+        # Tick 1, 2 — explore. Tick 3 — past max_explore_ticks, Gemini fires.
+        for t in range(1, 4):
+            responder.respond(_snapshot(tick_id=t, question_text="How many", pose=_pose(t * 0.1, 0)))
+
+        assert logger.new_questions == ["How many"]
+        # One log_tick per tick — including the two explore ticks.
+        assert len(logger.ticks) == 3
+        # First two log_tick calls came from explore-phase (empty system).
+        assert logger.ticks[0]["system_prompt"] == ""
+        assert logger.ticks[1]["system_prompt"] == ""
+        # Third was the real Gemini call.
+        assert '"kind": "numerical"' in logger.ticks[2]["system_prompt"]
+        assert logger.ticks[2]["output"] is not None
+
+        responder.close()
+        assert logger.closed is True
+
+
+class TestEngineFailureFallback:
+    def test_task1_gemini_raises_then_responder_keeps_exploring(self) -> None:
+        class FlakyEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def infer_multimodal(self, **_kwargs):
+                self.calls += 1
+                raise RuntimeError("network blip")
+
+            def warmup(self) -> None:
+                pass
+
+        engine = FlakyEngine()
+        responder = GeminiResponder(
+            engine,
+            _config(max_explore_ticks=1),
+            perception=FakeExploringPerception(),
+        )
+
+        # Tick 1 explores; tick 2 trips the trigger but engine raises —
+        # responder should fall back to a perception waypoint and not commit.
+        responder.respond(_snapshot(tick_id=1, question_text="How many cups", pose=_pose(0, 0)))
+        out = responder.respond(_snapshot(tick_id=2, question_text="How many cups", pose=_pose(0.1, 0)))
+        assert engine.calls == 1
+        assert not responder.is_done()
+        # Falls back to a perception waypoint.
+        assert isinstance(out, WaypointPathResponse)
+
+
 class TestLifecycle:
     def test_reset_clears_state(self) -> None:
         engine = FakeGeminiEngine(

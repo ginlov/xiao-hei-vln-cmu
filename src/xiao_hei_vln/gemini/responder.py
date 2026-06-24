@@ -24,6 +24,7 @@ API mirrors :class:`xiao_hei_vln.qwen.responder.QwenResponder`
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from xiao_hei_vln.gemini.config import GeminiConfig
@@ -85,6 +86,11 @@ class GeminiResponder:
 
         self._tick_count += 1
 
+        # First-tick hook: open a per-question subdir in the logger so
+        # `log_tick` has somewhere to write.
+        if self._tick_count == 1 and self._logger is not None:
+            self._logger.new_question(snapshot.question.text)
+
         # Update cross-tick state from this snapshot — both the scene
         # graph and our local trajectory ring.
         self._scene.update(snapshot)
@@ -116,7 +122,8 @@ class GeminiResponder:
         self._done = False
 
     def close(self) -> None:
-        pass
+        if self._logger is not None:
+            self._logger.close()
 
     # ------------------------------------------------------------------ Task 1
 
@@ -126,17 +133,33 @@ class GeminiResponder:
             return self._committed_answer
 
         if not self._should_commit(snapshot):
-            # Delegate one waypoint to the frontier explorer.
+            # Delegate one waypoint to the frontier explorer. Log the
+            # tick with empty prompts — useful for offline analysis of
+            # how the explore phase progressed even though Gemini wasn't
+            # called.
             explore_out = self._perception.respond(snapshot)
             if isinstance(explore_out, WaypointPathResponse):
                 self._last_perception_rationale = explore_out.rationale
+            self._log_tick(
+                snapshot,
+                system_prompt="",
+                user_text=f"<explore-phase tick={self._tick_count}>",
+                output=explore_out,
+                inference_ms=0.0,
+            )
             return explore_out
 
-        # Trigger fired — call Gemini once, commit, done.
-        self._committed_answer = self._call_gemini(
+        # Trigger fired — call Gemini once, commit, done. On failure
+        # (network blip, malformed JSON) bail out cleanly: re-emit a
+        # last-ditch perception waypoint and let the next tick re-fire
+        # the trigger.
+        result = self._call_gemini(
             snapshot,
             exploration_summary=self._exploration_summary(),
         )
+        if result is None:
+            return self._perception.respond(snapshot)
+        self._committed_answer = result
         self._done = True
         return self._committed_answer
 
@@ -162,6 +185,9 @@ class GeminiResponder:
         """Instruction-following: plan once via Gemini, then step waypoints."""
         if not self._planned_waypoints:
             out = self._call_gemini(snapshot, exploration_summary=None)
+            if out is None:
+                # Gemini failed mid-plan; bail out so the next tick can retry.
+                return None
             if isinstance(out, WaypointPathResponse):
                 self._planned_waypoints = list(out.waypoints)
             else:
@@ -201,7 +227,13 @@ class GeminiResponder:
         snapshot: VLMInput,
         *,
         exploration_summary: str | None,
-    ) -> VLMOutput:
+    ) -> VLMOutput | None:
+        """Build the bundle, call Gemini, log the tick.
+
+        Returns ``None`` if anything in the build → call → parse chain
+        raises (network blip, malformed JSON, etc.). The caller decides
+        whether to retry on the next tick or fall back to exploration.
+        """
         bundle = build_bundle(
             snapshot=snapshot,
             scene=self._scene,
@@ -225,11 +257,50 @@ class GeminiResponder:
             len(images),
             len(self._scene.viewpoints),
         )
-        return self._engine.infer_multimodal(
-            system=system,
-            user_text=full_user_text,
-            images=images,
-        )
+
+        output: VLMOutput | None = None
+        t0 = time.perf_counter()
+        try:
+            output = self._engine.infer_multimodal(
+                system=system,
+                user_text=full_user_text,
+                images=images,
+            )
+        except Exception:
+            log.exception("Gemini inference failed; skipping commit this tick")
+        finally:
+            inference_ms = (time.perf_counter() - t0) * 1000.0
+            self._log_tick(
+                snapshot,
+                system_prompt=system,
+                user_text=full_user_text,
+                output=output,
+                inference_ms=inference_ms,
+            )
+        return output
+
+    def _log_tick(
+        self,
+        snapshot: VLMInput,
+        *,
+        system_prompt: str,
+        user_text: str,
+        output: VLMOutput | None,
+        inference_ms: float,
+    ) -> None:
+        if self._logger is None:
+            return
+        try:
+            self._logger.log_tick(
+                snapshot,
+                system_prompt,
+                user_text,
+                output,
+                inference_ms,
+                [self._last_perception_rationale or ""],
+            )
+        except Exception:
+            log.exception("VLMLogger.log_tick failed; continuing")
 
     # ------------------------------------------------------------------ helpers
 

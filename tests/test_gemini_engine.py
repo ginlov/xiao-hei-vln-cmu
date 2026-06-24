@@ -12,11 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from xiao_hei_vln.gemini.config import GeminiConfig
-from xiao_hei_vln.gemini.engine import (
-    _VLM_OUTPUT_SCHEMA,
-    GeminiEngine,
-    _sniff_mime,
-)
+from xiao_hei_vln.gemini.engine import GeminiEngine, _sniff_mime
 from xiao_hei_vln.messages import NumericalResponse, WaypointPathResponse
 
 
@@ -25,11 +21,14 @@ def _config() -> GeminiConfig:
 
 
 def _fake_client_returning(json_payload: dict) -> MagicMock:
-    """A MagicMock client whose `generate_content` returns the given JSON."""
+    """A MagicMock client whose ``models.generate_content`` returns the
+    given JSON — matches the real ``google-genai`` SDK shape where
+    ``generate_content`` lives on the ``client.models`` namespace.
+    """
     client = MagicMock()
     response = MagicMock()
     response.text = json.dumps(json_payload)
-    client.generate_content.return_value = response
+    client.models.generate_content.return_value = response
     return client
 
 
@@ -83,11 +82,13 @@ class TestInferMultimodal:
         engine = GeminiEngine(_config(), client=client)
         engine.infer_multimodal(system="MY-SYSTEM", user_text="text", images=[])
         # Inspect what was sent to the SDK
-        call = client.generate_content.call_args
+        call = client.models.generate_content.call_args
         config = call.kwargs["config"]
         assert config["system_instruction"] == "MY-SYSTEM"
         assert config["response_mime_type"] == "application/json"
-        assert config["response_schema"] == _VLM_OUTPUT_SCHEMA
+        # We deliberately do NOT pass `response_schema`; the discriminated
+        # `VLMOutput` union isn't representable in Gemini's OpenAPI-3 subset.
+        assert "response_schema" not in config
 
     def test_call_attaches_images_with_mime(self) -> None:
         client = _fake_client_returning({
@@ -101,7 +102,7 @@ class TestInferMultimodal:
             user_text="here are images",
             images=[png, jpg],
         )
-        contents = client.generate_content.call_args.kwargs["contents"]
+        contents = client.models.generate_content.call_args.kwargs["contents"]
         assert len(contents) == 1
         parts = contents[0]["parts"]
         # 2 inline images + 1 text part
@@ -116,7 +117,7 @@ class TestInferMultimodal:
         })
         engine = GeminiEngine(_config(), client=client)
         engine.infer_multimodal(system="s", user_text="just text", images=[])
-        parts = client.generate_content.call_args.kwargs["contents"][0]["parts"]
+        parts = client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
         assert len(parts) == 1
         assert parts[0]["text"] == "just text"
 
@@ -128,11 +129,11 @@ class TestWarmup:
         })
         engine = GeminiEngine(_config(), client=client)
         engine.warmup()
-        assert client.generate_content.call_count == 1
+        assert client.models.generate_content.call_count == 1
 
     def test_warmup_propagates_errors(self) -> None:
         client = MagicMock()
-        client.generate_content.side_effect = RuntimeError("auth failed")
+        client.models.generate_content.side_effect = RuntimeError("auth failed")
         engine = GeminiEngine(_config(), client=client)
         with pytest.raises(RuntimeError, match="auth failed"):
             engine.warmup()
@@ -147,7 +148,7 @@ class TestExtractTextFallback:
             "kind": "numerical", "value": 7, "rationale": "from candidates",
         }))]
         response.candidates = [candidate]
-        client.generate_content.return_value = response
+        client.models.generate_content.return_value = response
         engine = GeminiEngine(_config(), client=client)
         out = engine.infer_multimodal(system="s", user_text="u", images=[])
         assert isinstance(out, NumericalResponse)

@@ -19,8 +19,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
-from pydantic import TypeAdapter
-
 from xiao_hei_vln.gemini.config import GeminiConfig
 from xiao_hei_vln.messages import VLMOutput, parse_vlm_output
 
@@ -30,13 +28,8 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 
-# Same schema the Qwen engine uses for guided decoding — kept in sync via
-# the canonical VLMOutput TypeAdapter.
-_VLM_OUTPUT_SCHEMA = TypeAdapter(VLMOutput).json_schema()
-
-
-class GeminiClientProtocol(Protocol):
-    """Surface the engine depends on; lets tests inject fakes."""
+class _ModelsNamespaceProtocol(Protocol):
+    """The ``client.models`` namespace surface we depend on."""
 
     def generate_content(
         self,
@@ -45,6 +38,19 @@ class GeminiClientProtocol(Protocol):
         contents: list[Any],
         config: Any,
     ) -> Any:
+        ...
+
+
+class GeminiClientProtocol(Protocol):
+    """The ``genai.Client`` surface we depend on.
+
+    The real SDK routes ``generate_content`` through ``client.models`` —
+    not the top-level client. We expose only that namespace so tests can
+    inject a fake without modelling the rest of the client.
+    """
+
+    @property
+    def models(self) -> _ModelsNamespaceProtocol:
         ...
 
 
@@ -128,7 +134,7 @@ class GeminiEngine:
         contents = self._build_contents(user_text=user_text, images=images)
         gen_config = self._build_generation_config(system=system)
 
-        response = self._client.generate_content(
+        response = self._client.models.generate_content(
             model=self._config.model,
             contents=contents,
             config=gen_config,
@@ -160,16 +166,25 @@ class GeminiEngine:
         return [{"role": "user", "parts": parts}]
 
     def _build_generation_config(self, *, system: str) -> Any:
-        """JSON-mode config plus optional response schema.
+        """JSON-mode config.
 
         Returns a plain dict the SDK accepts as a ``GenerateContentConfig``.
+
+        We deliberately do **not** pass ``response_schema``:
+        ``VLMOutput`` is a discriminated union (``numerical |
+        object_reference | waypoint_path``), which the SDK's schema
+        translator cannot represent cleanly today (``oneOf`` +
+        ``discriminator`` aren't in the OpenAPI-3 subset Gemini accepts).
+        Instead we lean on ``response_mime_type='application/json'``
+        plus the strict JSON-shape contract in the system prompt —
+        Gemini is already very reliable in that mode, and
+        :func:`parse_vlm_output` handles the discriminator on our side.
         """
         return {
             "system_instruction": system,
             "temperature": self._config.temperature,
             "max_output_tokens": self._config.max_output_tokens,
             "response_mime_type": "application/json",
-            "response_schema": _VLM_OUTPUT_SCHEMA,
         }
 
 
