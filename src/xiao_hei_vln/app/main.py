@@ -223,6 +223,7 @@ def main() -> None:
                     _wp_reached_state["close_ticks"] = 0
 
             prev_skipped = explorer.skipped_count
+            prev_visited = len(explorer._visited)
 
             # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
             # 4s minimum delay gives the nav stack time to respond before we start counting.
@@ -244,17 +245,26 @@ def main() -> None:
 
             wp = explorer.update(snapshot)
 
+            # Log odometry-reach advances (update() clears the target internally — no nav event fired).
+            if len(explorer._visited) > prev_visited and explorer.skipped_count == prev_skipped:
+                _exp_log("WP_ADVANCE",
+                         target=f"({explorer._visited[-1].x:.2f},{explorer._visited[-1].y:.2f})",
+                         nav_dist="odom",
+                         visited=len(explorer._visited))
+
             if explorer.skipped_count > prev_skipped:
                 elapsed = round(now_s - state["wp_start_time"], 1) if state["wp_start_time"] else "?"
+                last_wp = state["last_exploration_wp"]
+                skip_target = f"({last_wp[0]:.2f},{last_wp[1]:.2f})" if last_wp else "unknown"
                 _exp_log("WP_SKIP",
-                         target=state["last_exploration_wp"],
+                         target=skip_target,
                          robot=robot_pos,
                          elapsed=f"{elapsed}s",
                          best_nav_dist=f"{_wp_reached_state['best']:.2f}",
                          last_nav_dist=f"{_wp_reached_state['value']:.2f}",
                          consecutive=explorer._consecutive_skip_count)
                 node.get_logger().info(
-                    f"Exploration SKIP: target={state['last_exploration_wp']}  "
+                    f"Exploration SKIP: target={skip_target}  "
                     f"best_nav_dist={_wp_reached_state['best']:.2f}m  "
                     f"consecutive={explorer._consecutive_skip_count}"
                 )
