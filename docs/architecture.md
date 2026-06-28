@@ -22,7 +22,7 @@ graph LR
     end
 
     SIM --> ROS
-    ROS -->|7 topics| SUB
+    ROS -->|challenge topics| SUB
     SUB -->|overwrite latest| CACHE
     TICK -->|snapshot| CACHE
     CACHE -->|VLMInput| RESP
@@ -54,12 +54,13 @@ All three containers share `network_mode: host` so ROS 2 DDS discovery and the v
 | ROS topic | Rate | Python type | Description |
 |---|---|---|---|
 | `/camera/image` | ~10 Hz | `ImageFrame` | 1920x640 BGR8 panoramic |
-| `/registered_scan` | ~10 Hz | `LidarScan` | (x,y,z,intensity) in map frame |
-| `/sensor_scan` | ~10 Hz | `LidarScan` | (x,y,z) in sensor frame |
-| `/terrain_map` | ~10 Hz | `TerrainMap` | Local 5m traversability |
-| `/terrain_map_ext` | ~10 Hz | `TerrainMap` | Extended 20m traversability |
-| `/state_estimation` | ~200 Hz | `OdomPose` | Robot pose in map frame |
+| `/registered_scan` | ~5 Hz | `LidarScan` | (x,y,z,intensity) in map frame |
+| `/sensor_scan` | ~5 Hz | `LidarScan` | (x,y,z) in sensor frame |
+| `/terrain_map` | ~5 Hz | `TerrainMap` | Local 5m traversability |
+| `/terrain_map_ext` | ~5 Hz | `TerrainMap` | Extended 20m traversability |
+| `/state_estimation` | 100–200 Hz | `OdomPose` | Robot pose in map frame |
 | `/challenge_question` | 1 Hz | `ChallengeQuestion` | Natural language question |
+| `/way_point_reached` | continuous | `Float32` | Nav stack distance to current waypoint (exploration only) |
 
 ## Output topics
 
@@ -76,7 +77,8 @@ src/xiao_hei_vln/
 ├── messages/      # Pydantic models for all I/O types
 ├── sync/          # LatestCache — thread-safe sensor buffer
 ├── adapters/      # ROS 2 subscribers + publishers
-├── app/           # rclpy entry point, tick loop, responder factory
+├── app/           # rclpy entry point, tick loop, explorer + responder factory
+├── exploration/   # Exploration strategies (FrontierExplorer + protocol)
 ├── logger.py      # VLM tick logger (model-agnostic)
 ├── image_utils.py # Shared image conversion helpers
 ├── dummy/         # Reference responder (no GPU)
@@ -88,23 +90,33 @@ src/xiao_hei_vln/
 
 ## Tick lifecycle
 
+The tick loop runs in two phases.  Exploration runs first; the responder
+only runs once exploration is complete or a question is active.
+
 ```mermaid
 sequenceDiagram
     participant Timer as 2 Hz Timer
     participant Cache as LatestCache
+    participant Exp as Explorer
     participant Resp as Responder
     participant Engine as HTTPQwenEngine
     participant vLLM as vLLM Server
 
     Timer->>Cache: snapshot(tick_id, timestamp)
     Cache-->>Timer: VLMInput
-    Timer->>Resp: respond(VLMInput)
-    Resp->>Resp: build prompts (system + user)
-    Resp->>Engine: infer(system, user_text, image)
-    Engine->>vLLM: POST /v1/chat/completions
-    vLLM-->>Engine: JSON response
-    Engine-->>Resp: VLMOutput
-    Resp->>Resp: update evidence, check done
-    Resp-->>Timer: VLMOutput
-    Timer->>Timer: publisher.publish(output)
+
+    alt exploration active (no question + not complete)
+        Timer->>Exp: update(VLMInput)
+        Exp-->>Timer: Waypoint | None
+        Timer->>Timer: publisher.publish(WaypointPathResponse)
+    else question active or exploration done
+        Timer->>Resp: respond(VLMInput)
+        Resp->>Resp: build prompts (system + user)
+        Resp->>Engine: infer(system, user_text, image)
+        Engine->>vLLM: POST /v1/chat/completions
+        vLLM-->>Engine: JSON response
+        Engine-->>Resp: VLMOutput
+        Resp-->>Timer: VLMOutput
+        Timer->>Timer: publisher.publish(output)
+    end
 ```
