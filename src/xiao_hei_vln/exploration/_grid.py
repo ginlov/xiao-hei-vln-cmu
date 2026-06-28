@@ -62,9 +62,6 @@ class OccupancyGrid:
     # ------------------------------------------------------------------
     # Coordinate helpers
 
-    def to_grid(self, x: float, y: float) -> tuple[int, int]:
-        return (math.floor(x / self._res), math.floor(y / self._res))
-
     def to_world(self, ix: int, iy: int) -> tuple[float, float]:
         half = self._res * 0.5
         return (ix * self._res + half, iy * self._res + half)

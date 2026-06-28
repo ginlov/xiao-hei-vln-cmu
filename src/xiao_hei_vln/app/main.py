@@ -24,7 +24,7 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "100"))
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
-_EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_PLOT_DIR", "")
+_EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
 
 
 def _build_responder(name: str):
@@ -89,8 +89,8 @@ def _build_explorer(node):
     return explorer
 
 
-def _maybe_save_plot(explorer, node) -> None:
-    """Save the debug PNG if XIAO_HEI_EXPLORATION_PLOT_DIR is configured.
+def _maybe_save_png(explorer, node) -> None:
+    """Save the debug PNG if XIAO_HEI_EXPLORATION_LOG_DIR is configured.
 
     Skipped silently when the active strategy does not expose get_grid() /
     get_visited_waypoints() (not all algorithms maintain an OccupancyGrid).
@@ -194,6 +194,7 @@ def main() -> None:
                          stuck_timeout=f"{explorer._stuck_timeout_s}s",
                          max_skips=explorer._max_consecutive_skips)
 
+            now_s = node.get_clock().now().nanoseconds / 1e9
             pose = snapshot.pose
             robot_pos = (
                 f"({pose.position.x:.2f},{pose.position.y:.2f})" if pose is not None else "unknown"
@@ -225,7 +226,6 @@ def main() -> None:
 
             # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
             # 4s minimum delay gives the nav stack time to respond before we start counting.
-            now_s = node.get_clock().now().nanoseconds / 1e9
             if (
                 explorer._current_target is not None
                 and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
@@ -245,7 +245,6 @@ def main() -> None:
             wp = explorer.update(snapshot)
 
             if explorer.skipped_count > prev_skipped:
-                now_s = node.get_clock().now().nanoseconds / 1e9
                 elapsed = round(now_s - state["wp_start_time"], 1) if state["wp_start_time"] else "?"
                 _exp_log("WP_SKIP",
                          target=state["last_exploration_wp"],
@@ -265,7 +264,6 @@ def main() -> None:
             if wp is not None:
                 wp_key = (round(wp.x, 2), round(wp.y, 2))
                 if wp_key != state["last_exploration_wp"]:
-                    now_s = node.get_clock().now().nanoseconds / 1e9
                     dist_to_wp = math.hypot(
                         wp.x - (pose.position.x if pose else 0.0),
                         wp.y - (pose.position.y if pose else 0.0),
@@ -298,7 +296,7 @@ def main() -> None:
                     f"Exploration complete: visited={len(explorer._visited)} "
                     f"skipped={explorer.skipped_count} reason={reason}"
                 )
-                _maybe_save_plot(explorer, node)
+                _maybe_save_png(explorer, node)
             return
 
         # New question → reset the responder so it handles it from scratch.

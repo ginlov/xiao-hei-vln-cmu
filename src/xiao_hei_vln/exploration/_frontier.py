@@ -85,7 +85,6 @@ class FrontierExplorer:
 
         # Stuck detection state — reset whenever a new target is assigned.
         self._target_set_time: float | None = None
-        self._best_dist_to_target: float = float("inf")
         self.skipped_count: int = 0
         self._consecutive_skip_count: int = 0
 
@@ -112,15 +111,10 @@ class FrontierExplorer:
             self._visited.append(self._current_target)
             self._current_target = None
             self._target_set_time = None
-            self._best_dist_to_target = float("inf")
             self._consecutive_skip_count = 0
 
-        # Stuck detection: track closest approach; skip if timeout exceeded.
+        # Stuck detection: skip if timeout exceeded without nav-stack advance.
         if self._current_target is not None:
-            dist = math.hypot(rx - self._current_target.x, ry - self._current_target.y)
-            if dist < self._best_dist_to_target:
-                self._best_dist_to_target = dist
-
             elapsed = now - self._target_set_time  # type: ignore[operator]
             if elapsed > self._stuck_timeout_s:
                 self.skipped_count += 1
@@ -129,7 +123,6 @@ class FrontierExplorer:
                 self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
                 self._current_target = None
                 self._target_set_time = None
-                self._best_dist_to_target = float("inf")
                 if self._consecutive_skip_count >= self._max_consecutive_skips:
                     self._done = True
                     return None
@@ -148,9 +141,6 @@ class FrontierExplorer:
                 self._done = True
                 return None
             self._target_set_time = now
-            self._best_dist_to_target = math.hypot(
-                rx - self._current_target.x, ry - self._current_target.y
-            )
 
         return self._current_target
 
@@ -164,7 +154,6 @@ class FrontierExplorer:
         self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
         self._current_target = None
         self._target_set_time = None
-        self._best_dist_to_target = float("inf")
         if self._consecutive_skip_count >= self._max_consecutive_skips:
             self._done = True
 
@@ -176,7 +165,6 @@ class FrontierExplorer:
             self._visited.append(self._current_target)
             self._current_target = None
             self._target_set_time = None
-            self._best_dist_to_target = float("inf")
             self._consecutive_skip_count = 0
 
     def is_complete(self) -> bool:
@@ -188,7 +176,6 @@ class FrontierExplorer:
         self._visited = []
         self._done = False
         self._target_set_time = None
-        self._best_dist_to_target = float("inf")
         self.skipped_count = 0
         self._consecutive_skip_count = 0
 
