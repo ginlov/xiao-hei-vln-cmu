@@ -7,6 +7,8 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
                         HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
                         Falls back to in-process vLLM when the URL is
                         unset (`pip install .[qwen-local]` + CUDA GPU).
+  - `gemini`          — Gemini API, with scene objects loaded from
+                        `XIAO_HEI_OBJECT_LIST_PATH`.
 """
 
 from __future__ import annotations
@@ -52,8 +54,37 @@ def _build_responder(name: str):
                 tick_hz=TICK_HZ,
             )
         return QwenResponder(engine, config, logger=logger), logger
+    if name == "gemini":
+        from xiao_hei_vln.gemini import (
+            GeminiConfig,
+            GeminiEngine,
+            GeminiResponder,
+            ObjectEntryProvider,
+        )
+
+        object_list_path = os.environ.get("XIAO_HEI_OBJECT_LIST_PATH")
+        if not object_list_path:
+            raise ValueError(
+                "XIAO_HEI_RESPONDER=gemini requires XIAO_HEI_OBJECT_LIST_PATH "
+                "to point at an object_list.txt file",
+            )
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "XIAO_HEI_RESPONDER=gemini requires GEMINI_API_KEY or GOOGLE_API_KEY",
+            )
+        config = GeminiConfig(
+            api_key=api_key,
+            model=os.environ.get("XIAO_HEI_GEMINI_MODEL", "gemini-2.5-flash"),
+            temperature=float(os.environ.get("XIAO_HEI_GEMINI_TEMPERATURE", "0.0")),
+            image_long_edge=int(os.environ.get("XIAO_HEI_GEMINI_IMAGE_LONG_EDGE", "1024")),
+        )
+        engine = GeminiEngine(config)
+        provider = ObjectEntryProvider(object_list_path)
+        max_ticks = int(os.environ.get("XIAO_HEI_GEMINI_MAX_TICKS", "30"))
+        return GeminiResponder(engine, provider, max_ticks_per_question=max_ticks), None
     raise ValueError(
-        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen, gemini",
     )
 
 
@@ -127,7 +158,7 @@ def main() -> None:
     from xiao_hei_vln.adapters.ros.subscribers import bind_subscribers
 
     rclpy.init()
-    node_name = "xiao_hei_qwen_vlm" if RESPONDER_NAME == "qwen" else "xiao_hei_dummy_vlm"
+    node_name = f"xiao_hei_{RESPONDER_NAME}_vlm"
     node: Node = rclpy.create_node(node_name)
 
     cache = LatestCache()
