@@ -26,7 +26,7 @@ COPY src ./src
 #                   may conflict with apt packages — not recommended).
 ARG XIAO_HEI_EXTRA=""
 RUN if [ -n "$XIAO_HEI_EXTRA" ]; then \
-        python3 -m pip install --no-cache-dir --break-system-packages -e ".[${XIAO_HEI_EXTRA}]"; \
+        python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed -e ".[${XIAO_HEI_EXTRA}]"; \
     else \
         python3 -m pip install --no-cache-dir --break-system-packages -e .; \
     fi

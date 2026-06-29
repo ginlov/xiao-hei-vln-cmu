@@ -36,11 +36,20 @@ are required — docker-compose sets them for you, but they can be overridden.
 |---|---|---|
 | `XIAO_HEI_QWEN_MAX_TICKS` | `30` | Max ticks per question before timeout |
 
+## Exploration
+
+| Variable | Default | Description |
+|---|---|---|
+| `XIAO_HEI_EXPLORATION_STRATEGY` | `frontier` | Exploration algorithm to use. Only `frontier` is currently implemented; unknown values disable exploration with an error log |
+| `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | Waypoint budget. Set to `0` to disable exploration entirely and go straight to question answering |
+| `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` | `1.5` | Preferred maximum distance (metres) to a frontier target. Closer targets score higher; if all exceed this cap the nearest valid one is used as a fallback |
+| `XIAO_HEI_EXPLORATION_LOG_DIR` | `/exploration_logs` (GPU compose) | Directory for `exploration.log` and the debug PNG. The text log is always written (falls back to `/exploration_logs`); the PNG is only saved when this variable is explicitly set |
+
 ## Logging
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` (GPU compose) | Directory for tick logs. Unset = logging disabled |
+| `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` (GPU compose) | Directory for VLM tick logs. Unset = logging disabled |
 
 ## Authentication
 
