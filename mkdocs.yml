@@ -71,8 +71,11 @@ nav:
       - Responder Protocol: concepts/responder.md
       - Tick Loop: concepts/tick-loop.md
       - Qwen Engine: concepts/qwen-engine.md
+      - Exploration Phase: concepts/exploration.md
+      - Frontier Explorer: concepts/frontier-explorer.md
   - Guides:
       - New Model Integration: guides/new-model.md
+      - New Exploration Strategy: guides/new-exploration-strategy.md
       - Evaluation: guides/evaluation.md
       - Data Generation: guides/data-generation.md
       - Dataset EDA: eda_report.md
