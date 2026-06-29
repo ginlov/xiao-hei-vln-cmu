@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Regenerate the full VLA-3D Q&A corpus end-to-end:
 #
-#   ref_to_qa  →  num_gen  →  nested_gen  →  check_question_types
+#   ref_to_qa  →  num_gen  →  nested_gen  →  merge_nested  →  check_question_types
 #
-# `check_question_types` auto-merges the nested intermediate file before
-# validating, so the merge step does not appear here explicitly.
+# `merge_nested` is an explicit step: it folds vla3d_nested.jsonl into ref/num.
+# `check_question_types` is then a *pure* validator — it fails fast if the merge
+# hasn't run and never mutates the corpus.
 #
 # Path-independent: works from any cwd, always runs uv from the repo root.
 # Fail-fast on any step.
@@ -16,7 +17,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 
 cd "$ROOT"
 
-for step in vla3d_ref_to_qa vla3d_num_gen vla3d_nested_gen check_question_types; do
+for step in vla3d_ref_to_qa vla3d_num_gen vla3d_nested_gen merge_nested check_question_types; do
   echo "=== $step ==="
   uv run python "dataset_generator/$step.py"
 done

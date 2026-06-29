@@ -23,29 +23,32 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 DATASET_DIR = HERE.parent / "dataset"
-# After the nested merge step runs (either explicitly via merge_nested.py or
-# implicitly via maybe_merge() below), nested samples live inside the two
-# type-aligned files and are identifiable via the `source` field.
+# After the explicit nested merge step (merge_nested.py, run before this in
+# regen.sh), nested samples live inside the two type-aligned files and are
+# identifiable via the `source` field. This script never merges — see main().
 SOURCES = ("vla3d_ref.jsonl", "vla3d_num.jsonl")
 
 
 def runtime_classifier(text: str) -> str:
     """1:1 mirror of `xiao_hei_vln.messages.question.classify_question`."""
     head = text.lstrip().lower()
-    if head.startswith("how many"):
+    if head.startswith("how many") or head.startswith("count "):
         return "numerical"
-    if head.startswith("find"):
+    if head.startswith("find") or head.startswith("the "):
         return "object_reference"
     return "instruction_following"
 
 
 def main() -> int:
-    # Fold any leftover intermediate nested.jsonl into ref/num first so this
-    # check is always against the full corpus, not partway through the
-    # pipeline. No-op when nested.jsonl is already gone.
-    from merge_nested import maybe_merge
-
-    maybe_merge(DATASET_DIR)
+    # Pure validator: never mutate the corpus it checks. The merge is an
+    # explicit pipeline step (merge_nested) run before this in regen.sh; if the
+    # intermediate nested file is still present the corpus is only partway
+    # through the pipeline, so fail fast rather than silently merging in place.
+    nested = DATASET_DIR / "vla3d_nested.jsonl"
+    if nested.exists():
+        print(f"[error] {nested.name} still present — run the merge step first: "
+              "uv run python dataset_generator/merge_nested.py", file=sys.stderr)
+        return 1
 
     total = 0
     mismatches = 0

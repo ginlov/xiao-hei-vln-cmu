@@ -1,6 +1,6 @@
 site_name: Xiao Hei VLN
 site_description: Team Xiao Hei's VLM stack for the CMU VLN Challenge 2026
-repo_url: https://github.com/longgiang2015bn/xiao-hei-vln-cmu
+repo_url: https://github.com/ginlov/xiao-hei-vln-cmu
 repo_name: xiao-hei-vln-cmu
 
 theme:
@@ -75,7 +75,9 @@ nav:
       - New Model Integration: guides/new-model.md
       - Evaluation: guides/evaluation.md
       - Data Generation: guides/data-generation.md
+      - Dataset EDA: eda_report.md
       - VLM Logging & Replay: guides/vlm-logging.md
+      - Coverage Trajectory: guides/trajectory.md
   - API Reference:
       - messages: api/messages.md
       - logger: api/logger.md
@@ -83,6 +85,7 @@ nav:
       - qwen: api/qwen.md
       - evaluator: api/evaluator.md
       - sync: api/sync.md
+      - trajectory: api/trajectory.md
   - Task Reports:
       - tasks/index.md
       - Design Docs:

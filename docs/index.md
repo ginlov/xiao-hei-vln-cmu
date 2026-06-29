@@ -22,6 +22,8 @@ A typed Python framework that sits between the challenge's ROS 2 sensor topics a
 | Plug in a new VLM | [New Model Guide](guides/new-model.md) |
 | Configure parameters | [Configuration](getting-started/configuration.md) |
 | Run evaluation | [Evaluation Guide](guides/evaluation.md) |
+| Generate the training corpus | [Data Generation](guides/data-generation.md) |
+| Explore the dataset (distributions, quality) | [Dataset EDA](eda_report.md) |
 | Debug a VLM run | [VLM Logging](guides/vlm-logging.md) |
 
 ## Project status

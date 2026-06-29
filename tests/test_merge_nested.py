@@ -283,10 +283,11 @@ class TestMaybeMerge:
         assert (a / NUM_FILE).read_bytes() == (b / NUM_FILE).read_bytes()
 
 
-class TestConsumersAutoMergeOnImport:
-    """End-to-end check: running ``check_question_types.main()`` or
-    ``split_and_dump.main()`` while ``vla3d_nested.jsonl`` is still on
-    disk must auto-fold it before reading the corpus."""
+class TestConsumersAreSideEffectFree:
+    """``check_question_types`` and ``split_and_dump`` must NOT mutate the
+    corpus: if ``vla3d_nested.jsonl`` is still on disk (merge step not run),
+    they fail fast and leave every file untouched. The merge is an explicit
+    pipeline step (``merge_nested``), not a side effect of validation."""
 
     def _seed_real_shaped_files(
         self, dataset_dir: Path, n_nested_ref: int = 2, n_nested_num: int = 2
@@ -306,7 +307,7 @@ class TestConsumersAutoMergeOnImport:
             + [_num(f"scene_n{i}", i + 20, "vla3d_nested") for i in range(n_nested_num)],
         )
 
-    def test_check_question_types_auto_merges(
+    def test_check_question_types_fails_fast_and_does_not_merge(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -319,24 +320,20 @@ class TestConsumersAutoMergeOnImport:
 
         rc = check_question_types.main()
 
-        assert rc == 0
-        assert not (tmp_path / NESTED_FILE).exists()
-        out = capsys.readouterr().out
-        assert "auto-merge" in out
-        # Confirm the full corpus (1 + 1 originals + 2+2 nested = 6) was checked
-        assert "Checked 6 pairs" in out
+        assert rc == 1                                  # fail fast
+        assert (tmp_path / NESTED_FILE).exists()        # corpus untouched
+        err = capsys.readouterr().err
+        assert "merge_nested" in err
 
-    def test_split_and_dump_auto_merges(
+    def test_split_and_dump_fails_fast_and_does_not_merge(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
     ) -> None:
         import split_and_dump
 
         self._seed_real_shaped_files(tmp_path, n_nested_ref=3, n_nested_num=3)
         monkeypatch.setattr(split_and_dump, "DATASET_DIR", tmp_path)
-        # split_and_dump reads sys.argv, so neutralise it
         monkeypatch.setattr(
             "sys.argv",
             [
@@ -346,13 +343,9 @@ class TestConsumersAutoMergeOnImport:
             ],
         )
 
-        split_and_dump.main()
-
-        assert not (tmp_path / NESTED_FILE).exists()
-        out = capsys.readouterr().out
-        assert "auto-merge" in out
-        # 1 + 1 + 3 + 3 = 8 pairs total now in the two files
-        assert "Total pairs loaded: 8" in out
+        with pytest.raises(SystemExit):
+            split_and_dump.main()
+        assert (tmp_path / NESTED_FILE).exists()         # corpus untouched
 
 
 class TestMergeMatchesRealCounts:

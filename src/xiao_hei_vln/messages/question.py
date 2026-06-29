@@ -22,15 +22,24 @@ class QuestionType(StrEnum):
 
 
 def classify_question(text: str) -> QuestionType:
-    """Heuristic classifier matching the dummy VLM's behaviour.
+    """Heuristic classifier for the three challenge categories.
 
-    "How many ..." → numerical, "Find ..." → object reference,
-    anything else → instruction following.
+    "How many ..." / "Count ..." → numerical; "Find ..." or a bare "The ..."
+    noun phrase → object reference; anything else → instruction following.
+    ("Count the number of chairs with pillows on them." is an official
+    numerical item, so a leading "Count" routes to numerical.)
+
+    The leading-"The" case matters: 3 of the 30 official object_reference
+    questions drop the imperative and read "The red pillow closest to the
+    sushi." / "The blue chair that is closest to ...". The official
+    instruction_following questions never start with "the" — they all begin
+    with an action verb (Go / First / Take) — so routing a leading "the" to
+    object_reference is unambiguous and avoids misclassifying those items.
     """
     head = text.lstrip().lower()
-    if head.startswith("how many"):
+    if head.startswith("how many") or head.startswith("count "):
         return QuestionType.NUMERICAL
-    if head.startswith("find"):
+    if head.startswith("find") or head.startswith("the "):
         return QuestionType.OBJECT_REFERENCE
     return QuestionType.INSTRUCTION_FOLLOWING
 

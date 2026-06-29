@@ -237,31 +237,42 @@ def load_vla_scene(scene_dir: Path | str) -> VLAScene:
     )
 
 
-def render_object(o: VLAObject) -> str:
+def render_object(o: VLAObject, label: str | None = None) -> str:
     """One-line text record matching the runtime `object_list.txt` schema:
 
         id  cx cy cz  lx ly lz  heading  "label"
 
     The label is double-quoted so multi-word labels (e.g. ``potted plant``)
     round-trip through ``xiao_hei_vln.dummy.fixtures.read_object_list``,
-    which requires a quoted label.
+    which requires a quoted label. Pass `label` to override `o.raw_label`
+    (used to align object_list vocabulary with the referential statement's
+    class vocabulary so the model can ground the question noun).
     """
+    shown = label if label is not None else o.raw_label
     return (
         f"{o.id} {o.x:.2f} {o.y:.2f} {o.z:.2f} "
-        f"{o.lx:.2f} {o.ly:.2f} {o.lz:.2f} {o.heading:.2f} \"{o.raw_label}\""
+        f"{o.lx:.2f} {o.ly:.2f} {o.lz:.2f} {o.heading:.2f} \"{shown}\""
     )
 
 
-def render_object_list(sc: VLAScene, region_ids: set[int] | None = None) -> list[str]:
+def render_object_list(sc: VLAScene, region_ids: set[int] | None = None,
+                       label_overrides: dict[int, str] | None = None) -> list[str]:
     """Render every object in `sc` (or only those in `region_ids`).
-    Drops objects with region_id < 0 (unassigned)."""
+    Drops objects with region_id < 0 (unassigned).
+
+    `label_overrides` maps object_id -> display label; matched objects are
+    rendered with that label instead of their raw_label. VLA-3D referential
+    statements use a normalized class vocabulary ('television') that differs
+    from object_result.csv's raw_label ('tv'); overriding keeps the
+    object_list groundable against the question."""
     out: list[str] = []
     for o in sc.objects:
         if o.region_id < 0:
             continue
         if region_ids is not None and o.region_id not in region_ids:
             continue
-        out.append(render_object(o))
+        override = label_overrides.get(o.id) if label_overrides else None
+        out.append(render_object(o, label=override))
     return out
 
 
