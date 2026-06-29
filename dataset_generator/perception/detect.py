@@ -43,6 +43,21 @@ def _sam(weights: str):
     return SAM(weights)
 
 
+def _largest_cc(m: np.ndarray) -> np.ndarray:
+    """Keep only the largest connected component of a boolean mask, dropping
+    stray SAM fragments. No-op if scipy is missing or the mask is single-blob."""
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return m
+    lbl, n = ndimage.label(m)
+    if n <= 1:
+        return m
+    sizes = np.bincount(lbl.ravel())
+    sizes[0] = 0
+    return lbl == int(sizes.argmax())
+
+
 def dets_from_yolo_sam(
     frame_dir: Path,
     names: list[str],
@@ -96,10 +111,18 @@ def dets_from_yolo_sam(
             for i, (x1, y1, x2, y2) in enumerate(xyxy.astype(int)):
                 cmasks[i, y1:y2, x1:x2] = True
 
-        for cm, c, s in zip(cmasks, cls, scr):
-            cm = cm & valid
+        for cm, box, c, s in zip(cmasks, xyxy, cls, scr):
+            # Clip the SAM mask to the YOLO box: box-prompted SAM often bleeds
+            # onto the co-planar wall *outside* the detection (the wall-decal /
+            # picture spill that inflates 3D boxes and spawns phantom wall nodes).
+            # Then keep the largest connected blob to drop stray fragments.
+            x1, y1, x2, y2 = box.astype(int)
+            bx = np.zeros_like(cm)
+            bx[max(0, y1):max(0, y2), max(0, x1):max(0, x2)] = True
+            cm = cm & bx & valid
             if cm.sum() == 0:
                 continue
+            cm = _largest_cc(cm)
             em = np.zeros((H, W), bool)
             em[v[cm], u[cm]] = True          # crop pixels -> equirect pixels
             dets.append({"label": names[c], "score": float(s), "mask": em,

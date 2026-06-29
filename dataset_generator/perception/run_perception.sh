@@ -26,6 +26,10 @@ say(){ printf "\n\033[1;36m== %s ==\033[0m\n" "$*"; }
 dexec(){ docker exec "$CONTAINER" bash -lc "$*"; }
 dros(){ docker exec "$CONTAINER" bash -lc \
   "source /opt/ros/jazzy/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; $*"; }
+# The sim is "up" only if the Unity env process is alive — a topic name can linger
+# in DDS discovery after a restart, so grepping topics gives false positives and we
+# wrongly skip launching system_simulation.sh (Unity + rviz never come up).
+sim_up(){ dexec "pgrep -f Model.x86_64 >/dev/null"; }
 
 ############################ 1. sim ############################
 if [ "${SKIP_SIM:-0}" != 1 ]; then
@@ -33,14 +37,15 @@ if [ "${SKIP_SIM:-0}" != 1 ]; then
   export DISPLAY=:0
   xhost +local: >/dev/null 2>&1 || true
   docker start "$CONTAINER" >/dev/null
-  if ! dros "ros2 topic list 2>/dev/null | grep -q /registered_scan"; then
+  if ! sim_up; then
     docker exec -d "$CONTAINER" bash -lc "DISPLAY=:0 $SIM_SH > /tmp/sim.log 2>&1"
-    echo "  launched simulation, waiting for topics..."
-    for _ in $(seq 1 30); do
-      dros "ros2 topic list 2>/dev/null | grep -q /registered_scan" && break
+    echo "  launched simulation, waiting for Unity + topics..."
+    for _ in $(seq 1 40); do
+      sim_up && dros "ros2 topic list 2>/dev/null | grep -q /registered_scan" && break
       sleep 1
     done
   fi
+  sim_up && echo "  Unity alive" || echo "  WARNING: Unity (Model.x86_64) not running"
   n=$(dros "ros2 topic list 2>/dev/null | grep -cE 'camera|registered_scan|way_point'" 2>/dev/null || echo 0)
   echo "  sim topics visible: $n"
 fi

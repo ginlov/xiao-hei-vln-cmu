@@ -43,8 +43,39 @@ NMS_IOU = 0.5          # cross-label: suppress the weaker of two boxes above thi
 PTS_CAP = 4000         # cap accumulated points per node (subsample beyond this)
 
 
+# Flat wall-decor classes whose box-prompted masks frequently grab the co-planar
+# bare wall, lifting to a large, thin, vertical "sheet" that is a phantom rather
+# than the object. We reject only such sheets, and only for these labels, so
+# furniture / shelves / TVs are never touched.
+FLAT_LABELS = {"wall decal", "picture", "painting", "photo", "poster",
+               "mirror", "wall art", "framed picture", "frame"}
+WALL_MIN_EXTENT = 2.0      # a real picture/decal's long side is well under this (m)
+WALL_MAX_THICK = 0.12      # essentially planar (m)
+WALL_NORMAL_MAX_Z = 0.4    # plane normal ~horizontal => a vertical wall surface
+
+
 def _aabb(pts: np.ndarray):
     return pts.min(0), pts.max(0)
+
+
+def _pca_extents(pts: np.ndarray):
+    """Return (extent-per-PCA-axis, plane-normal). Extents are along the principal
+    axes (ascending eigenvalue), so ext.min() is the planar thickness and the
+    smallest-variance eigenvector is the surface normal."""
+    X = pts - pts.mean(0)
+    _, V = np.linalg.eigh(X.T @ X)        # columns = axes, ascending eigenvalue
+    proj = X @ V
+    return proj.max(0) - proj.min(0), V[:, 0]
+
+
+def _is_wall_sheet(pts: np.ndarray, label: str) -> bool:
+    """True iff a flat-label node is actually a chunk of bare wall: large, planar,
+    and vertical. Real pictures/decals stay (their long side is short)."""
+    if label not in FLAT_LABELS or len(pts) < 8:
+        return False
+    ext, normal = _pca_extents(pts)
+    return (ext.max() > WALL_MIN_EXTENT and ext.min() < WALL_MAX_THICK
+            and abs(normal[2]) < WALL_NORMAL_MAX_Z)
 
 
 def iou_3d(a_min, a_max, b_min, b_max) -> float:
@@ -132,11 +163,13 @@ class ObjectMap:
         self.nodes = keep
         return self
 
-    def prune(self, min_obs: int = 1, min_pts: int = 15):
-        """Drop low-evidence nodes: a single-frame hit with very few LiDAR points
-        is transient detector noise, not a trustworthy persistent object."""
+    def prune(self, min_obs: int = 1, min_pts: int = 15, drop_wall_sheets: bool = True):
+        """Drop low-evidence nodes (a single-frame hit with very few LiDAR points
+        is transient detector noise) and, optionally, flat-label "wall sheet"
+        phantoms (large planar vertical patches that are bare wall, not objects)."""
         self.nodes = [nd for nd in self.nodes
-                      if nd.n_obs > min_obs or len(nd.pts) >= min_pts]
+                      if (nd.n_obs > min_obs or len(nd.pts) >= min_pts)
+                      and not (drop_wall_sheets and _is_wall_sheet(nd.pts, nd.label))]
         return self
 
     def export_nodes(self, min_pts: int = 15):
