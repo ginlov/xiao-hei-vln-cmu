@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from xiao_hei_vln.logger import VLMLogger
 from xiao_hei_vln.messages import (
     ChallengeQuestion,
     Header,
@@ -22,7 +23,6 @@ from xiao_hei_vln.messages import (
     WaypointPathResponse,
 )
 from xiao_hei_vln.messages.sensors import ImageFrame
-from xiao_hei_vln.logger import VLMLogger
 from xiao_hei_vln.qwen.config import QwenConfig
 
 _has_pillow = importlib.util.find_spec("PIL") is not None
@@ -295,3 +295,88 @@ def test_write_prediction_appends_multiple(logger: VLMLogger) -> None:
     assert len(lines) == 2
     assert json.loads(lines[0])["question"] == "How many chairs"
     assert json.loads(lines[1])["prediction"]["kind"] == "waypoint_path"
+
+
+# ---------------------------------------------------------------------------
+# Scene field — optional per-tick scene-representation snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_scene_field_absent_when_not_supplied(logger: VLMLogger) -> None:
+    """Backwards-compat: omitting scene means the record has no `scene` key."""
+    logger.new_question("Q")
+    logger.log_tick(_snapshot(tick_id=1), "sys", "usr", NumericalResponse(value=1), 5.0, [])
+    record = json.loads(
+        (logger.session_dir / "q_001_q" / "ticks.jsonl").read_text().splitlines()[0]
+    )
+    assert "scene" not in record
+
+
+def test_scene_field_round_trips(logger: VLMLogger) -> None:
+    """scene dict is preserved verbatim in the JSONL record."""
+    logger.new_question("Q")
+    scene_dict = {
+        "tick_id": 1,
+        "room": {
+            "label": "scene", "scene_bounds": [[-1, -1, 0], [5, 5, 0]],
+            "best_image_tick_id": None, "best_image_position": None,
+            "viewpoint_tick_ids": [1],
+        },
+        "viewpoints": [{"tick_id": 1, "position": [0, 0, 0], "yaw": 0.0}],
+        "objects": [{"object_id": 1, "label": "chair", "position": [1, 2, 0],
+                     "confidence": 1.0,
+                     "bbox_min": None, "bbox_max": None,
+                     "first_tick_id": 1, "last_tick_id": 1,
+                     "observing_viewpoint_ids": [1], "spatial_relations": []}],
+    }
+    logger.log_tick(
+        _snapshot(tick_id=1), "sys", "usr", NumericalResponse(value=1), 5.0, [],
+        scene=scene_dict,
+    )
+    record = json.loads(
+        (logger.session_dir / "q_001_q" / "ticks.jsonl").read_text().splitlines()[0]
+    )
+    assert record["scene"] == scene_dict
+
+
+class _FakeScene:
+    """Minimal duck-typed scene for attach_scene tests."""
+
+    def __init__(self, snapshots: list[dict]) -> None:
+        self._snapshots = snapshots
+        self._idx = 0
+
+    def to_dict(self) -> dict:
+        snap = self._snapshots[self._idx]
+        self._idx = min(self._idx + 1, len(self._snapshots) - 1)
+        return snap
+
+
+def test_attach_scene_auto_logs_per_tick(logger: VLMLogger) -> None:
+    """After attach_scene, log_tick pulls a fresh to_dict() per call."""
+    s1 = {"tick_id": 1, "objects": []}
+    s2 = {"tick_id": 2, "objects": [{"label": "chair"}]}
+    logger.attach_scene(_FakeScene([s1, s2]))
+    logger.new_question("Q")
+    logger.log_tick(_snapshot(tick_id=1), "s", "u", NumericalResponse(value=1), 1.0, [])
+    logger.log_tick(_snapshot(tick_id=2), "s", "u", NumericalResponse(value=2), 1.0, [])
+
+    lines = (logger.session_dir / "q_001_q" / "ticks.jsonl").read_text().splitlines()
+    r1 = json.loads(lines[0])
+    r2 = json.loads(lines[1])
+    assert r1["scene"] == s1
+    assert r2["scene"] == s2
+
+
+def test_explicit_scene_overrides_attached(logger: VLMLogger) -> None:
+    """Explicit scene= kwarg wins over the attached scene."""
+    logger.attach_scene(_FakeScene([{"from": "attached"}]))
+    logger.new_question("Q")
+    logger.log_tick(
+        _snapshot(tick_id=1), "s", "u", NumericalResponse(value=1), 1.0, [],
+        scene={"from": "explicit"},
+    )
+    record = json.loads(
+        (logger.session_dir / "q_001_q" / "ticks.jsonl").read_text().splitlines()[0]
+    )
+    assert record["scene"] == {"from": "explicit"}

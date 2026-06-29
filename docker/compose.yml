@@ -1,3 +1,22 @@
+# Unified xiao-hei VLN stack.
+#
+# Single compose file for all responders. Use the `docker/run` wrapper,
+# which maps XIAO_HEI_RESPONDER to the right compose profile:
+#
+#   XIAO_HEI_RESPONDER=dummy       docker/run up -d   # dummy responder, no vllm
+#   XIAO_HEI_RESPONDER=qwen        docker/run up -d   # qwen responder + vllm sidecar
+#   XIAO_HEI_RESPONDER=perception  docker/run up -d   # perception sidecar (YOLO+SAM)
+#
+# Or call docker compose directly if you'd rather manage the profile yourself:
+#
+#   docker compose -f docker/compose.yml up -d                          # dummy (no sidecars)
+#   docker compose -f docker/compose.yml --profile qwen up -d           # qwen (starts vllm)
+#   docker compose -f docker/compose.yml --profile perception up -d     # perception sidecar
+#
+# Perception responder options (all optional):
+#   export XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room  # sim scene to load
+#   export XIAO_HEI_TRAJECTORY_JSON_HOST=/abs/path/trajectory.json         # Phase-A coverage walk
+
 services:
   # Challenge simulator (unmodified official image).
   system:
@@ -17,14 +36,23 @@ services:
       - /dev/bus/usb:/dev/bus/usb
     stdin_open: true
     tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  # Our AI module (dummy responder, no GPU needed).
+  # Our AI module — single image, env-driven responder choice. The image
+  # always installs `qwen,perception` (the lightweight HTTP clients for
+  # the two sidecars), so the same build serves dummy / qwen / perception.
   ai_module:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-}
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-qwen,perception}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
@@ -33,10 +61,105 @@ services:
       - PYTHONUNBUFFERED=1
       - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
       - XIAO_HEI_VLM_TICK_HZ
+      - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
+      # Qwen — read only when XIAO_HEI_RESPONDER=qwen.
+      - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
+      - XIAO_HEI_QWEN_MODEL
+      # Perception — used only when XIAO_HEI_RESPONDER=perception (the
+      # wrapper activates --profile perception, which starts the sidecar
+      # below). Ignored otherwise.
+      - XIAO_HEI_PERCEPTION_BASE_URL=${XIAO_HEI_PERCEPTION_BASE_URL:-http://localhost:8001}
+      # Coverage trajectory walked in Phase A. Collapses to an empty
+      # string when the host var is unset (responder then answers from
+      # the start pose). Used by the perception responder.
+      - XIAO_HEI_TRAJECTORY_JSON=${XIAO_HEI_TRAJECTORY_JSON_HOST:+/data/trajectory.json}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
+      - ../vlm_logs:/vlm_logs
+      # Conditional trajectory mount. When the host var is unset, the
+      # mount resolves to /dev/null:/data/...:ro — harmless because the
+      # responder then has no trajectory to read.
+      - ${XIAO_HEI_TRAJECTORY_JSON_HOST:-/dev/null}:/data/trajectory.json:ro
     stdin_open: true
     tty: true
     depends_on:
       - system
     restart: unless-stopped
+
+  # vLLM OpenAI-compatible inference server (sidecar). Only starts when the
+  # `qwen` profile is active — i.e. when XIAO_HEI_RESPONDER=qwen. Other
+  # responders never instantiate this container.
+  vllm:
+    profiles: [qwen]
+    image: vllm/vllm-openai:latest
+    container_name: xiao_hei_vllm
+    network_mode: host
+    environment:
+      - HUGGING_FACE_HUB_TOKEN
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ../models:/models
+    command:
+      - "${XIAO_HEI_QWEN_MODEL:-/models/Qwen3.5-4B}"
+      - "--dtype"
+      - "${XIAO_HEI_QWEN_DTYPE:-bfloat16}"
+      - "--max-model-len"
+      - "${XIAO_HEI_QWEN_MAX_MODEL_LEN:-4096}"
+      - "--gpu-memory-utilization"
+      - "${XIAO_HEI_QWEN_GPU_MEM_UTIL:-0.85}"
+      - "--trust-remote-code"
+      - "--limit-mm-per-prompt"
+      - '{"image": 4}'
+      - "--port"
+      - "8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Perception sidecar — YOLOv8m-World v2 + SAM 2.1 Hiera Tiny.
+  # Only starts under `--profile perception`, i.e. when
+  # XIAO_HEI_RESPONDER=perception. Phase 1 is a FastAPI stub returning
+  # empty detection lists; Phase 2 swaps in the real models.
+  perception:
+    profiles: [perception]
+    build:
+      context: ../perception
+      dockerfile: Dockerfile
+    image: xiao-hei/perception:latest
+    container_name: xiao_hei_perception
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PERCEPTION_HOST=0.0.0.0
+      - PERCEPTION_PORT=8001
+      # Debug mode: when truthy, every /detect dumps per-step images
+      # (equirect → faces → bboxes → masks → reprojected equirect) to the
+      # mounted debug dir below. Enable with `PERCEPTION_DEBUG=1` on the host.
+      - PERCEPTION_DEBUG=${PERCEPTION_DEBUG:-}
+    # Bind-mount the source dir in dev so editing server.py / pipeline.py
+    # takes effect on container restart without rebuilding the image.
+    # rw is required so the model weight cache (baked at /opt/perception/models)
+    # remains accessible after the bind mount overlays the host dir; we
+    # mount with delegated semantics on the source files only.
+    volumes:
+      - ../perception/server.py:/opt/perception/server.py:ro
+      - ../perception/pipeline.py:/opt/perception/pipeline.py:ro
+      - ../perception/geometry.py:/opt/perception/geometry.py:ro
+      # Debug step images land here (host: perception/debug/).
+      - ../perception/debug:/opt/perception/debug
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hf_cache: {}

@@ -1,0 +1,19 @@
+# Phase 2 — real model inference. Heavy GPU deps; the image will be ~6 GB.
+# Torch is pulled from the official CUDA 12.4 wheel index, all other
+# deps from PyPI.
+
+# Web layer (unchanged from Phase 1).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+
+# Image + numerics.
+pillow==11.0.0
+numpy>=1.26,<2.2                  # ultralytics + sam2 don't yet bless numpy 2.2+
+opencv-python-headless==4.10.0.84
+pycocotools==2.0.8                # COCO-style RLE mask encoding
+
+# Models. Pinned conservatively; bump deliberately.
+ultralytics==8.3.45              # YOLOv8x-World v2 lives in `ultralytics.YOLOWorld`
+sam2==1.1.0                       # Meta's segment-anything-2 PyPI release

@@ -8,7 +8,7 @@ and visualization.
 Set `XIAO_HEI_VLM_LOG_DIR` to a directory path:
 
 ```bash
-# In docker-compose (already set in compose_gpu.yml)
+# In docker-compose (already set as the default in docker/compose.yml)
 XIAO_HEI_VLM_LOG_DIR=/vlm_logs
 
 # Locally
@@ -87,18 +87,43 @@ open vlm_logs/session_*/q_001_*/report.html
 
 ### Report contents
 
-1. **Camera playback** — JS slider to scrub through frames at tick rate
-2. **Pose trajectory** — Robot path with waypoint outputs overlaid
-3. **Sensor BEV** — Bird's-eye-view scatter plot of terrain + lidar
-4. **Per-tick I/O table** — Expandable prompts, outputs, evidence
-5. **Latency chart** — Inference time per tick
+1. **Camera playback** — JS slider / play button to scrub through frames at tick rate
+2. **Scene Representation** — per-tick top-down spatial view + three-level scene
+   graph + cumulative Room/Viewpoint/Object tables (see below)
+3. **Pose trajectory** — Robot path with waypoint outputs overlaid
+4. **Sensor BEV** — Bird's-eye-view scatter plot of terrain + lidar
+5. **Per-tick I/O table** — Expandable prompts, outputs, evidence
+6. **Latency chart** — Inference time per tick
+
+### Scene Representation playback
+
+The Scene Representation section renders one frame per logged tick (top-down
+spatial view on the left, scene-graph topology on the right, node tables below).
+
+- **Synchronised with the camera.** When the session has camera frames, the
+  scene view has **no controls of its own** — the camera playback slider / play
+  button drives both, so the video and the scene graph advance together in
+  lock-step. Each step shows the *cumulative* scene state at-or-before the
+  current camera tick. (With no camera frames, the section falls back to its own
+  slider.)
+- **Stationary top-down window.** The top-down boundary is pinned to a single
+  session-wide square window (union of all object/viewpoint/pose positions,
+  padded and squared) so it does **not** zoom or pan between frames — only the
+  objects, viewpoints, and robot marker move within a fixed frame. The LiDAR
+  `scene_bounds` is excluded from the window (it spans the full ~20 m scan
+  radius and would shrink the explored area to a dot); its dashed rectangle
+  simply clips to the window.
+- **Object↔Object edges are not drawn.** Both the top-down view and the scene
+  graph show only the Room→Viewpoint→Object hierarchy. The `near` relation
+  count still appears in the title as a statistic, but the edges themselves are
+  omitted to keep the graph readable.
 
 ## Disabling logging
 
 Unset the environment variable:
 
 ```bash
-XIAO_HEI_VLM_LOG_DIR="" docker compose -f docker/compose_gpu.yml up -d
+XIAO_HEI_VLM_LOG_DIR="" XIAO_HEI_RESPONDER=qwen docker/run up -d
 ```
 
 ## Performance impact

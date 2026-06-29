@@ -7,14 +7,22 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
                         HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
                         Falls back to in-process vLLM when the URL is
                         unset (`pip install .[qwen-local]` + CUDA GPU).
+  - `perception`      — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny via the
+                        perception sidecar (`XIAO_HEI_PERCEPTION_BASE_URL`).
+                        Detects + segments objects per tick, projects
+                        masks through the LiDAR scan to lift to 3D,
+                        and answers from the live scene graph.
 """
 
 from __future__ import annotations
 
 import math
 import os
+from collections.abc import Callable
+from pathlib import Path
 
 from xiao_hei_vln.messages.common import Stamp
+from xiao_hei_vln.scene import SceneRepresentation
 from xiao_hei_vln.sync import LatestCache
 
 TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
@@ -27,7 +35,12 @@ _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
 
 
-def _build_responder(name: str):
+def _build_responder(
+    name: str,
+    scene: SceneRepresentation,
+    *,
+    take_waypoint_reached_signals: Callable[[], int] | None = None,
+):
     if name == "dummy":
         from xiao_hei_vln.dummy import DummyResponder
 
@@ -52,8 +65,71 @@ def _build_responder(name: str):
                 tick_hz=TICK_HZ,
             )
         return QwenResponder(engine, config, logger=logger), logger
+    if name == "perception":
+        from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.perception import PerceptionResponder
+        from xiao_hei_vln.perception.client import (
+            DEFAULT_BASE_URL,
+            HTTPPerceptionClient,
+        )
+        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
+            DEFAULT_SCORE_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.vocab import Vocabulary
+
+        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
+        near_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD",
+            str(PERCEPTION_NEAR_THRESHOLD),
+        ))
+        score_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
+            str(DEFAULT_SCORE_THRESHOLD),
+        ))
+        min_inliers = int(os.environ.get(
+            "XIAO_HEI_PERCEPTION_MIN_INLIERS",
+            str(DEFAULT_MIN_INLIERS),
+        ))
+        traj_str = os.environ.get("XIAO_HEI_TRAJECTORY_JSON", "")
+        traj_path = Path(traj_str) if traj_str else None
+
+        client = HTTPPerceptionClient(base_url=base_url)
+        client.wait_until_ready()       # blocks until /healthz is green
+        lifter = PointLifter(min_inliers=min_inliers)
+        vocab = Vocabulary()
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config={
+                    "perception_base_url": base_url,
+                    "near_threshold_m": near_t,
+                    "score_threshold": score_t,
+                    "min_inliers": min_inliers,
+                    "trajectory_json": traj_str or None,
+                },
+                responder_name="perception",
+                tick_hz=TICK_HZ,
+            )
+        responder = PerceptionResponder(
+            scene,
+            client=client,
+            lifter=lifter,
+            vocabulary=vocab,
+            near_threshold=near_t,
+            score_threshold=score_t,
+            trajectory_path=traj_path,
+            take_waypoint_reached_signals=take_waypoint_reached_signals,
+            logger=logger,
+        )
+        return responder, logger
     raise ValueError(
-        f"Unknown XIAO_HEI_RESPONDER={name!r}; expected one of: dummy, qwen",
+        f"Unknown XIAO_HEI_RESPONDER={name!r}; "
+        "expected one of: dummy, qwen, perception",
     )
 
 
@@ -127,13 +203,52 @@ def main() -> None:
     from xiao_hei_vln.adapters.ros.subscribers import bind_subscribers
 
     rclpy.init()
-    node_name = "xiao_hei_qwen_vlm" if RESPONDER_NAME == "qwen" else "xiao_hei_dummy_vlm"
+    node_name = {
+        "qwen": "xiao_hei_qwen_vlm",
+        "perception": "xiao_hei_perception_vlm",
+    }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
     node: Node = rclpy.create_node(node_name)
 
     cache = LatestCache()
     subs = bind_subscribers(node, cache)
     publisher = VLMOutputPublisher(node)
-    responder, logger = _build_responder(RESPONDER_NAME)
+
+    # /way_point_reached is the autonomy stack's signal that the
+    # *adjusted* waypoint (its safe approximation of our commanded
+    # waypoint) has been reached. We accumulate signals into a
+    # shared mutable counter; the responder polls it once per tick
+    # via `take_waypoint_reached_signals` and advances Phase A on
+    # each new signal. This is the sole advance trigger — distance
+    # to our commanded waypoint can't be used as a fallback because
+    # the autonomy stack often steers to a safer nearby point and
+    # never actually reaches our literal commanded XY.
+    from std_msgs.msg import Float32
+
+    waypoint_reached_count = [0]
+
+    def _on_waypoint_reached(_msg) -> None:
+        waypoint_reached_count[0] += 1
+
+    node.create_subscription(
+        Float32, "/way_point_reached", _on_waypoint_reached, 10,
+    )
+
+    def take_waypoint_reached_signals() -> int:
+        n = waypoint_reached_count[0]
+        waypoint_reached_count[0] = 0
+        return n
+
+    # Scene memory persists across responder.reset() (which fires per question)
+    # because the underlying Unity scene is the same for every question in a
+    # session. Built before the responder so a scene-aware responder (e.g.
+    # PerceptionResponder) can take the same reference at construction time.
+    scene = SceneRepresentation()
+    responder, logger = _build_responder(
+        RESPONDER_NAME, scene,
+        take_waypoint_reached_signals=take_waypoint_reached_signals,
+    )
+    if logger is not None:
+        logger.attach_scene(scene)
 
     explorer = _build_explorer(node)
 
@@ -318,6 +433,7 @@ def main() -> None:
             state["last_question_text"] = snapshot.question.text
             node.get_logger().info(f"Received question: {snapshot.question.text!r}")
 
+        scene.update(snapshot)
         out = responder.respond(snapshot)
         if out is not None:
             publisher.publish(out)

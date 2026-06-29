@@ -23,14 +23,18 @@ uv run pytest -q
 
 No ROS or GPU required — all tests use pure Python with mock engines.
 
-## Run the full stack (GPU)
+## Run the full stack
+
+Pick the responder with one env var; `docker/run` handles compose profiles
+and validates prerequisites.
 
 ```bash
 # Allow X11 forwarding for the simulator GUI
 xhost +local:
 
-# Build and start all containers
-docker compose -f docker/compose_gpu.yml up -d --build
+# Build and start all containers (vllm sidecar auto-starts under
+# XIAO_HEI_RESPONDER=qwen)
+XIAO_HEI_RESPONDER=qwen docker/run up -d --build
 
 # Wait for vLLM to be ready
 docker logs -f xiao_hei_vllm
@@ -51,13 +55,37 @@ docker exec iros2026_system bash -lc \
    std_msgs/msg/String "{data: \"How many chairs are in the room?\"}"'
 ```
 
-## Run dummy mode (no GPU)
+## Run dummy mode (no vllm sidecar)
 
 ```bash
-XIAO_HEI_RESPONDER=dummy docker compose -f docker/compose.yml up -d --build
+XIAO_HEI_RESPONDER=dummy docker/run up -d --build
 ```
 
-The dummy responder always returns a fixed answer — useful for testing the infrastructure without a GPU.
+The dummy responder always returns a fixed answer — useful for testing
+infrastructure without a model. The vllm container never starts because the
+`qwen` profile isn't activated.
+
+## Run the perception responder (real models)
+
+`XIAO_HEI_SCENE_DIR_HOST` drives the simulator (`system`) — it loads the
+Unity scene from the extracted dir — and the perception sidecar
+(YOLOv8x-World v2 + SAM 2.1 Hiera Tiny) runs real detection per tick:
+
+```bash
+SCENES=/path/to/CMU-VLN-Challenge-data/unity_env_models
+unzip -oq $SCENES/arabic_room.zip -d $SCENES/
+
+export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room                # for system (Unity)
+export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json   # optional
+XIAO_HEI_RESPONDER=perception docker/run up -d --build
+```
+
+First boot pulls + builds the perception image (~5 GB, mostly torch +
+CUDA from the `ultralytics/ultralytics` base). The `vllm` sidecar
+does not start under this profile — only `perception` does.
+
+See [Perception (Sidecar + Responder)](../perception-sidecar.md) for the
+full architecture, configuration, and tuning options.
 
 ## Next steps
 

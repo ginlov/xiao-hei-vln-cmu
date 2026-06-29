@@ -112,8 +112,9 @@ export XIAO_HEI_RESPONDER=my_model
 # [project.optional-dependencies]
 # my_model = ["transformers>=4.40", ...]
 
-# Rebuild and start
-docker compose -f docker/compose_gpu.yml up -d --build
+# Rebuild and start. If your model talks to a GPU sidecar (like the qwen
+# path), add it as a profile-gated service in docker/compose.yml.
+XIAO_HEI_RESPONDER=my_model docker/run up -d --build
 ```
 
 ## Tips

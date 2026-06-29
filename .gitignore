@@ -1,8 +1,15 @@
 # Model weights (downloaded locally, not committed)
 models/
+perception/mobileclip_*.pt
+perception/yolov8*-worldv2.pt
+perception/sam2.1_*.pt
+perception/ViT-*.pt
 
 # VLM tick logs (generated at runtime, not committed)
 vlm_logs/
+
+# Perception debug step images (generated when PERCEPTION_DEBUG is on)
+perception/debug/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -256,3 +263,5 @@ dataset_generator/vla-3d/
 # dataset/: regeneratable training corpora + scene splits (generator OUTPUT).
 dataset/
 trajectories/
+
+runs/
