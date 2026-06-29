@@ -154,18 +154,47 @@ docker logs -f xiao_hei_ai_module
 Build / push / drop-into-challenge-compose details are in
 [`docker/README.md`](docker/README.md).
 
+## Offline evaluation
+
+After a live run the session directory contains `predictions.jsonl`.
+Score it against the official challenge questions with:
+
+```bash
+uv run xiao-hei-eval \
+  --gt dataset/challenge_gt.jsonl \
+  --pred vlm_logs/<session>/predictions.jsonl
+```
+
+`challenge_gt.jsonl` (45 entries, one per scoreable challenge question) is
+generated once from the VLA-3D scene graphs:
+
+```bash
+uv run python dataset_generator/challenge_gt_gen.py
+```
+
+See [Evaluation guide](docs/guides/evaluation.md) and
+[Data Generation guide](docs/guides/data-generation.md) for details.
+
 ## Repository layout
 
 ```
 src/xiao_hei_vln/
-├── messages/   pydantic models for every input/output type
-├── sync/       LatestCache + tick snapshot
-├── adapters/   ROS 2 subscribers + publishers (lazy rclpy import)
-├── dummy/      reference responder ported from dummyVLM.cpp
-└── app/        rclpy entry point (xiao-hei-dummy-vlm console script)
-docker/         Dockerfile + compose + README
-docs/           Task-1 phase-1 measurements and I/O spec
-tests/          47 pytest cases (no ROS required)
+├── messages/       pydantic models for every input/output type
+├── sync/           LatestCache + tick snapshot
+├── adapters/       ROS 2 subscribers + publishers (lazy rclpy import)
+├── dummy/          reference responder ported from dummyVLM.cpp
+├── qwen/           Qwen2.5-VL responder (vLLM-backed, separate container)
+├── evaluator/      offline metrics (numerical + object-reference)
+├── eval_sampler/   GT ↔ prediction matcher, GT format converter
+├── eval_pipeline/  CLI entry point (xiao-hei-eval)
+├── trajectory/     waypoint helpers
+├── logger.py       VLMLogger — per-tick log writer + predictions.jsonl
+└── app/            rclpy entry point (xiao-hei-dummy-vlm console script)
+dataset_generator/  GT generation scripts + VLA-3D scene loaders
+dataset/            generated JSONL files (challenge_gt, vla3d_ref, vla3d_num)
+docker/             Dockerfile + compose + README
+docs/               MkDocs site (architecture, guides, API reference)
+tests/              pytest suite (no ROS required)
 ```
 
 ## Working principles
