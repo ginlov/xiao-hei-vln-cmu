@@ -13,8 +13,14 @@ asked for):
 
   CONSUMER  worker thread, pulls a keyframe and runs the offline pipeline
             unchanged -- detect (YOLO-World + SAM2.1, CUDA) -> lift3d ->
-            ObjectMap.add_frame -- maintaining a persistent live object map,
-            and prints / writes /tmp/live_map.json every cycle.
+            ObjectMap.add_frame -- maintaining a persistent live object map.
+            Each cycle it (atomically) writes the comprehensive results the
+            downstream VLM stage consumes, under --result-dir:
+              scene_objects.json        every predicted object (label, 3D centre,
+                                        bbox, score, #observations)
+              scene_gt.json             the GT object map (benchmark mode)
+              detections_2d/<frame>.json  that keyframe's raw 2D detections
+                                        (label, score, equirect bbox, area)
 
 Drive the robot manually meanwhile (rviz waypoint clicks). Run:
     /opt/percep/bin/python perception/live_perception.py --names names.json
@@ -149,6 +155,36 @@ def build_cloud(nodes, node, per_obj_cap=800) -> PointCloud2:
     return pc2.create_cloud(h, _CLOUD_FIELDS, pts)
 
 
+def _atomic_write_json(obj, path):
+    """Write JSON via a temp file + os.replace so a reader (the VLM stage) never
+    sees a half-written file."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp, path)
+
+
+def _dets_to_2d(dets):
+    """Compact 2D records from equirect-mask detections, for the per-keyframe 2D
+    result file: label, score, crop index, equirect bbox (xyxy) and pixel area
+    derived from the mask. Returns (records, (H, W))."""
+    out, hw = [], (None, None)
+    for d in dets:
+        m = d["mask"]
+        hw = m.shape
+        ys, xs = np.where(m)
+        if len(xs) == 0:
+            continue
+        out.append({
+            "label": d["label"],
+            "score": round(float(d["score"]), 4),
+            "crop": int(d.get("crop", -1)),
+            "bbox_xyxy": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+            "area_px": int(m.sum()),
+        })
+    return out, hw
+
+
 class Producer(Node):
     def __init__(self, q, outdir, period, move_min, still_tol,
                  benchmark=False, legend_dir=None):
@@ -277,8 +313,15 @@ class Producer(Node):
                                f"queued ({self.q.qsize()})")
 
 
-def consumer(q, names, device, out_json, stop, node):
+def consumer(q, names, device, out_json, result_dir, stop, node):
     from pathlib import Path
+    # Comprehensive perception results consumed by the downstream VLM stage.
+    scene_json = os.path.join(result_dir, "scene_objects.json")   # predicted map
+    gt_json = os.path.join(result_dir, "scene_gt.json")           # GT map (benchmark)
+    dets2d_dir = os.path.join(result_dir, "detections_2d")        # per-keyframe 2D
+    images_dir = os.path.join(result_dir, "images")               # raw keyframe panoramas
+    os.makedirs(dets2d_dir, exist_ok=True)
+    os.makedirs(images_dir, exist_ok=True)
     omap = ObjectMap()
     gt_omap = ObjectMap()
     n = 0
@@ -294,6 +337,28 @@ def consumer(q, names, device, out_json, stop, node):
             continue
         t0 = time.time()
         dets = dets_from_yolo_sam(fr, names, device=device)
+        # per-keyframe 2D detection result (consumed by the VLM stage / debugging)
+        recs2d, (H2d, W2d) = _dets_to_2d(dets)
+        try:
+            meta2d = json.load(open(fr / "meta.json"))
+        except Exception:
+            meta2d = {}
+        _atomic_write_json({
+            "schema": "detections_2d/v1",
+            "frame": fr.name,
+            "stamp": time.time(),
+            "pose": meta2d.get("pose"),
+            "image_hw": [H2d, W2d] if H2d else None,
+            "n_dets": len(recs2d),
+            "detections": recs2d,
+        }, os.path.join(dets2d_dir, f"{fr.name}.json"))
+        # raw panorama as a viewable JPG (rgb.npy is BGR -> flip to RGB)
+        try:
+            from PIL import Image as _PILImage
+            _PILImage.fromarray(np.load(fr / "rgb.npy")[:, :, ::-1]).save(
+                os.path.join(images_dir, f"{fr.name}.jpg"), quality=90)
+        except Exception as e:
+            print(f"  [warn] image save failed for {fr.name}: {e}", flush=True)
         res = lift_frame(fr, dets, keep_pts=True)
         omap.add_frame(res["objects"])
         n += 1
@@ -301,6 +366,14 @@ def consumer(q, names, device, out_json, stop, node):
         objs = omap.export(min_pts=15)
         node.latest_objs = objs
         json.dump({"frames": n, "objects": objs}, open(out_json, "w"), indent=2)
+        _atomic_write_json({                                      # comprehensive pred map
+            "schema": "scene_objects/v1",
+            "stamp": time.time(),
+            "frames": n,
+            "source": "yolo-world-v2+sam2.1",
+            "n_objects": len(objs),
+            "objects": objs,
+        }, scene_json)
         node.publish_map()                                        # filtered -> rviz
 
         bench = ""
@@ -308,6 +381,14 @@ def consumer(q, names, device, out_json, stop, node):
             gt_omap.add_frame(lift_frame(fr, dets_from_gt(fr), keep_pts=True)["objects"])
             gt_objs = gt_omap.export(min_pts=15)
             node.latest_gt_objs = gt_objs
+            _atomic_write_json({                                  # GT object map
+                "schema": "scene_gt/v1",
+                "stamp": time.time(),
+                "frames": n,
+                "source": "sim-semantic-gt",
+                "n_objects": len(gt_objs),
+                "objects": gt_objs,
+            }, gt_json)
             rep, _ = evaluate(gt_objs, objs, [1.0], [0.25])
             rep["frames"] = n
             node.latest_metrics = rep
@@ -332,6 +413,10 @@ def main() -> int:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--outdir", default="/tmp/live_frames")
     ap.add_argument("--out-json", default="/tmp/live_map.json")
+    ap.add_argument("--result-dir", default="/tmp/percep_out",
+                    help="dir for the comprehensive results consumed by the VLM "
+                         "stage: scene_objects.json (pred), scene_gt.json "
+                         "(benchmark GT), detections_2d/<frame>.json (2D)")
     ap.add_argument("--period", type=float, default=1.0, help="keyframe check period s")
     ap.add_argument("--move-min", type=float, default=0.3, help="min move between keyframes m")
     ap.add_argument("--still-tol", type=float, default=0.05, help="stationary window m")
@@ -346,6 +431,7 @@ def main() -> int:
 
     names = json.load(open(args.names))
     os.makedirs(args.outdir, exist_ok=True)
+    os.makedirs(args.result_dir, exist_ok=True)
     q: queue.Queue = queue.Queue(maxsize=3)
     stop = threading.Event()
 
@@ -353,12 +439,14 @@ def main() -> int:
     prod = Producer(q, args.outdir, args.period, args.move_min, args.still_tol,
                     benchmark=args.benchmark, legend_dir=args.legend_dir)
     worker = threading.Thread(target=consumer,
-                              args=(q, names, args.device, args.out_json, stop, prod),
+                              args=(q, names, args.device, args.out_json,
+                                    args.result_dir, stop, prod),
                               daemon=True)
     worker.start()
     print(f"live perception up: device={args.device}, {len(names)} classes"
           f"{' | BENCHMARK mode (live GT)' if args.benchmark else ''}. "
-          f"Drive via rviz; map -> {args.out_json}", flush=True)
+          f"Drive via rviz; results -> {args.result_dir}/ "
+          f"(scene_objects.json, scene_gt.json, detections_2d/)", flush=True)
     try:
         rclpy.spin(prod)
     except KeyboardInterrupt:

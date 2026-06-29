@@ -18,6 +18,12 @@ set -uo pipefail
 CONTAINER=${CONTAINER:-iros2026_system}
 DEVICE=${DEVICE:-cuda}
 SIM_SH=/home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
+# Comprehensive results for the VLM stage land here (bind-mounted to the host on
+# xiaohei1, so they persist + are readable from the VLM container). BENCHMARK=1
+# also builds the live GT map + scoreboard from /camera/semantic_image.
+RESULT_DIR=${RESULT_DIR:-/percep_out}
+BENCHMARK=${BENCHMARK:-1}
+LEGEND_DIR=${LEGEND_DIR:-/home/docker/autonomy_stack_mecanum_wheel_platform/install/vehicle_simulator/share/vehicle_simulator/mesh/unity/environment}
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # <repo>/dataset_generator/perception
 DG=$(dirname "$HERE")
@@ -69,21 +75,22 @@ fi
 say "3/4  syncing perception code into container"
 docker exec "$CONTAINER" mkdir -p /tmp/percep/perception
 docker cp "$DG/branchA_gt.py" "$CONTAINER":/tmp/percep/branchA_gt.py
-for f in lift3d detect objectmap viz3d live_perception; do
+for f in lift3d detect objectmap eval_objectmap viz3d live_perception; do
   docker cp "$DG/perception/$f.py" "$CONTAINER":/tmp/percep/perception/"$f".py
 done
 docker cp "$DG/perception/names.json" "$CONTAINER":/tmp/percep/names.json
 echo "  synced branchA_gt.py + 5 modules + names.json"
 
 ############################ 4. worker ############################
-say "4/4  (re)starting live perception worker on $DEVICE"
+say "4/4  (re)starting live perception worker on $DEVICE (result-dir=$RESULT_DIR$([ "$BENCHMARK" = 1 ] && echo ', benchmark'))"
 dexec "pkill -f live_perception" >/dev/null 2>&1 || true
 sleep 1
+WORKER_ARGS="--names /tmp/percep/names.json --device $DEVICE --result-dir $RESULT_DIR"
+[ "$BENCHMARK" = 1 ] && WORKER_ARGS="$WORKER_ARGS --benchmark --legend-dir $LEGEND_DIR"
 docker exec -d "$CONTAINER" bash -lc "
   source /opt/ros/jazzy/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
   cd /tmp/percep/perception
-  /opt/percep/bin/python live_perception.py --names /tmp/percep/names.json --device $DEVICE \
-    > /tmp/live_percep.log 2>&1
+  /opt/percep/bin/python live_perception.py $WORKER_ARGS > /tmp/live_percep.log 2>&1
 "
 sleep 4
 dexec "grep -vE 'MiB/s|[0-9]+%' /tmp/live_percep.log | tail -3" 2>/dev/null || true
