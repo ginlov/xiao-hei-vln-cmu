@@ -154,6 +154,49 @@ docker logs -f xiao_hei_ai_module
 Build / push / drop-into-challenge-compose details are in
 [`docker/README.md`](docker/README.md).
 
+### 4b. Run end-to-end with Gemini (Task 1 + Task 2)
+
+The `gemini` responder explores the room with the Phase-A frontier
+planner, then calls the Gemini API for the final answer (Task 1) or
+route plan (Task 2). Reasoning runs in the cloud, so **no local VLM /
+vLLM is needed** — the GPU is only used by the simulator. Use the
+dedicated compose file [`docker/compose_gemini.yml`](docker/compose_gemini.yml)
+(simulator with GPU, no vLLM sidecar, Gemini env vars wired):
+
+```bash
+export XIAO_HEI_GEMINI_API_KEY=<your-key>   # required — see note below
+export XIAO_HEI_VLM_LOG_DIR=/vlm_logs       # write predictions.jsonl for scoring
+xhost +local:
+
+docker compose -f docker/compose_gemini.yml up -d --build
+
+# inside iros2026_system: start the sim
+docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
+
+# ask a question (Task 1 example)
+docker exec iros2026_system bash -lc \
+  'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+   ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many chairs are in the room\"}"'
+
+docker logs -f xiao_hei_ai_module   # "ready (responder=gemini ...)" means it is up
+```
+
+> **The API key must be valid at startup.** `GeminiEngine.warmup()`
+> issues one live `generate_content` call when the container boots, so an
+> invalid/missing key (or no outbound 443 to
+> `generativelanguage.googleapis.com`) makes `ai_module` crash-loop.
+
+Optional knobs (all have defaults; just `export` to override):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `XIAO_HEI_GEMINI_MODEL` | `gemini-2.5-flash` | model id |
+| `XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS` | `120` | Task-1 ticks to explore before asking Gemini |
+| `XIAO_HEI_GEMINI_MAX_TICKS` | `240` | hard per-question safety cap |
+| `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | sampling temperature |
+| `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `1024` | response token cap |
+| `XIAO_HEI_GEMINI_IMAGE_LONG_EDGE` | `1280` | downscale long-edge before send |
+
 ## Offline evaluation
 
 After a live run the session directory contains `predictions.jsonl`.
