@@ -44,6 +44,15 @@ SysNav creates viewpoints by comparing the current observation's voxel coverage 
 **Object level — `add_object()` is the entry point; multiple producers can call it.**
 SysNav runs YOLOv8x + SAM2.1 on every frame to maintain the object graph autonomously. We use the same model family but as a sidecar (`xiao-hei/perception`, see [Perception Sidecar](perception-sidecar.md)) — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny behind a FastAPI service that the upcoming `PerceptionResponder` calls each tick. The `add_object()` method is the single insertion point; the perception path calls it from real detections, with no scene-graph code changes required.
 
+**Object colour — sampled from the detection mask.**
+Each detection also carries an appearance colour: the responder takes the
+median RGB of the camera pixels inside the mask (median, like the point-lifter,
+to resist specular highlights and mask-edge bleed) and labels it with the
+nearest basic colour ("red", "brown", …). This lets the graph answer
+colour-qualified references (*"the red samovar"*) without a second model.
+Stored as `color_rgb` / `color_name` on `ObjectObservation` and refreshed in
+lock-step with `position` when a higher-confidence observation merges in.
+
 **Object detection — perception sidecar (YOLO-World v2 + SAM 2.1).**
 The challenge sensor suite (360° equirectangular RGB + LiDAR) is well-suited to an open-vocabulary detector: YOLO-World accepts class names at inference time, so the same model handles task-specific question vocabulary (e.g. *"the red samovar"*) and generic scene-prior labels. The sidecar unwraps the equirect frame into 4 perspective faces, batches YOLO across them, runs SAM 2.1 per bbox, and reprojects masks back into equirect coordinates — the responder consumes a single equirect mask per detection and projects it through the registered LiDAR scan to lift to 3D.
 
@@ -86,6 +95,8 @@ SceneRepresentation
 │     label: str
 │     position: Vector3                       # map frame, estimated
 │     confidence: float
+│     color_rgb: (int, int, int) | None       # median RGB (0-255) of masked pixels
+│     color_name: str | None                  # nearest basic-colour label ("red", …)
 │     bbox_min / bbox_max: Vector3 | None     # from LiDAR, optional
 │     first_tick_id / last_tick_id: int
 │     observing_viewpoint_ids: list[int]      # ── edge: Viewpoint → Object (visibility, reverse)

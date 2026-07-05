@@ -286,10 +286,13 @@ class PerceptionResponder:
             )
             if result.position is None:
                 continue
+            color_rgb, color_name = _mask_color(bgr, det.mask)
             self._scene.add_object(ObjectObservation(
                 label=det.label,
                 position=result.position,
                 confidence=det.score,
+                color_rgb=color_rgb,      # median RGB of the masked pixels
+                color_name=color_name,    # nearest basic-colour label
                 bbox_min=None,            # AABB from a 2D mask isn't a 3D bbox;
                 bbox_max=None,            # leave None until we estimate it.
             ))
@@ -430,6 +433,62 @@ def _image_frame_to_bgr(image_frame) -> "np.ndarray":  # type: ignore[name-defin
     return arr.reshape(image_frame.height, image_frame.step // 3, 3)[
         :, : image_frame.width, :
     ]
+
+
+# Basic-colour anchors in RGB (0-255). A detection's median colour is
+# labelled by nearest Euclidean anchor. Kept small and perceptually spread
+# so the label is stable — questions ask for coarse colours ("the red
+# samovar"), not exact shades.
+_COLOR_ANCHORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
+    ("black", (0, 0, 0)),
+    ("white", (255, 255, 255)),
+    ("gray", (128, 128, 128)),
+    ("red", (200, 30, 30)),
+    ("orange", (230, 140, 30)),
+    ("yellow", (230, 220, 50)),
+    ("green", (40, 160, 60)),
+    ("blue", (40, 80, 200)),
+    ("purple", (130, 60, 170)),
+    ("pink", (235, 150, 190)),
+    ("brown", (120, 75, 45)),
+)
+
+
+def _mask_color(
+    bgr: "np.ndarray",  # type: ignore[name-defined]
+    mask: "np.ndarray",  # type: ignore[name-defined]
+) -> tuple[tuple[int, int, int] | None, str | None]:
+    """Return ``((r, g, b), name)`` for the pixels under ``mask``.
+
+    The median (per channel) is used — robust to specular highlights and
+    mask-edge bleed, the same reasoning the point-lifter uses for XYZ.
+    Returns ``(None, None)`` when the mask is empty or its shape doesn't
+    line up with the frame, so a colourless detection just carries no
+    colour rather than a bogus one.
+    """
+    import numpy as np
+
+    if bgr.ndim != 3 or bgr.shape[:2] != mask.shape:
+        return None, None
+    pixels = bgr[mask.astype(bool)]           # (K, 3) in BGR order
+    if pixels.shape[0] == 0:
+        return None, None
+    b, g, r = np.median(pixels, axis=0)
+    rgb = (int(r), int(g), int(b))
+    return rgb, _nearest_color_name(rgb)
+
+
+def _nearest_color_name(rgb: tuple[int, int, int]) -> str:
+    """Nearest basic-colour label to ``rgb`` by squared Euclidean distance."""
+    r, g, b = rgb
+    best_name = _COLOR_ANCHORS[0][0]
+    best_d = float("inf")
+    for name, (ar, ag, ab) in _COLOR_ANCHORS:
+        d = (r - ar) ** 2 + (g - ag) ** 2 + (b - ab) ** 2
+        if d < best_d:
+            best_d = d
+            best_name = name
+    return best_name
 
 
 def _word_in(needle: str, haystack: str) -> bool:
