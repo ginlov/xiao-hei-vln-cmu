@@ -33,21 +33,31 @@ graph LR
     ROS --> SIM
 ```
 
-## Container topology (GPU compose)
+## Container topology
 
 ```mermaid
 graph TB
     subgraph Docker Compose
         SYS[iros2026_system<br/>Challenge simulator + ROS]
         AI[xiao_hei_ai_module<br/>Python responder + ROS node]
-        VLLM[xiao_hei_vllm<br/>vLLM OpenAI server]
+        VLLM["xiao_hei_vllm<br/>vLLM OpenAI server<br/>(profile: qwen)"]
+        PERC["xiao_hei_perception<br/>YOLO-World + SAM 2.1<br/>(profile: perception)"]
     end
 
     SYS <-->|ROS 2 DDS<br/>network_mode: host| AI
-    AI -->|HTTP :8000/v1| VLLM
+    AI -.->|HTTP :8000/v1| VLLM
+    AI -.->|HTTP :8001| PERC
 ```
 
-All three containers share `network_mode: host` so ROS 2 DDS discovery and the vLLM HTTP API work without port mapping.
+`system` and `ai_module` always start. The `vllm` and `perception`
+sidecars are profile-gated — the wrapper maps `XIAO_HEI_RESPONDER=qwen`
+to `--profile qwen` and `XIAO_HEI_RESPONDER=perception` to
+`--profile perception`, so only the sidecar the active responder needs
+ever runs. See [Docker setup](getting-started/docker.md) and
+[Perception Sidecar](perception-sidecar.md).
+
+All containers share `network_mode: host` so ROS 2 DDS discovery and
+the sidecar HTTP APIs work without port mapping.
 
 ## Input topics
 
@@ -83,6 +93,9 @@ src/xiao_hei_vln/
 ├── image_utils.py # Shared image conversion helpers
 ├── dummy/         # Reference responder (no GPU)
 ├── qwen/          # Qwen3.5 responder, engine, prompts
+├── scene/         # Three-level scene graph (Room/Viewpoint/Object) + renderer
+├── trajectory/    # Offline coverage-trajectory planner (Task 7)
+├── perception/    # PerceptionResponder + HTTP client + lifter + vocabulary
 ├── evaluator/     # Offline metrics (numerical, object reference)
 ├── eval_sampler/  # Ground-truth ↔ prediction pairing
 └── eval_pipeline/ # End-to-end evaluation CLI

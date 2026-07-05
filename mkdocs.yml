@@ -73,6 +73,8 @@ nav:
       - Qwen Engine: concepts/qwen-engine.md
       - Exploration Phase: concepts/exploration.md
       - Frontier Explorer: concepts/frontier-explorer.md
+      - Scene Representation: scene-representation.md
+      - Perception (Sidecar + Responder): perception-sidecar.md
   - Guides:
       - New Model Integration: guides/new-model.md
       - New Exploration Strategy: guides/new-exploration-strategy.md

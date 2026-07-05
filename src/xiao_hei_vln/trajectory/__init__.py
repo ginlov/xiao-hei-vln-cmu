@@ -50,6 +50,7 @@ def plan_trajectory(
     object_weight: float = 10.0,
     min_floor_coverage: float = 0.95,
     floor_subsample: int = 10,
+    min_waypoint_spacing: float = 0.7,
 ) -> TrajectoryResult:
     """Run the full coverage trajectory pipeline.
 
@@ -107,6 +108,10 @@ def plan_trajectory(
 
     routed = find_collision_free_path(all_nodes, adj, n_wp, order)
     routed = shortcut_path(routed, eroded, protected=sel)
+    n_before_thin = len(routed)
+    routed, coverage_viewpoints_dropped = _enforce_min_spacing(
+        routed, protected=sel, min_spacing=min_waypoint_spacing,
+    )
     headings = compute_headings(routed)
     total_length = path_length(routed)
 
@@ -124,8 +129,12 @@ def plan_trajectory(
             "robot_radius": robot_radius,
             "grid_resolution": grid_resolution,
             "coverage_radius": coverage_radius,
+            "min_waypoint_spacing": min_waypoint_spacing,
             "num_holes": len(hole_polys),
             "num_coverage_viewpoints": len(sel),
+            "num_waypoints_before_spacing_filter": n_before_thin,
+            "num_waypoints_after_spacing_filter": len(routed),
+            "coverage_viewpoints_dropped": coverage_viewpoints_dropped,
         },
     )
 
@@ -150,3 +159,57 @@ def _extract_holes(poly: ShapelyPolygon) -> list[ShapelyPolygon]:
     elif hasattr(poly, "interiors"):
         holes.extend(ShapelyPolygon(h) for h in poly.interiors)
     return holes
+
+
+def _enforce_min_spacing(
+    routed: np.ndarray,
+    *,
+    protected: np.ndarray,
+    min_spacing: float,
+) -> tuple[np.ndarray, int]:
+    """Drop consecutive waypoints that fall within ``min_spacing`` metres
+    of the previously-kept waypoint.
+
+    The challenge's local planner considers a waypoint "reached" when
+    the robot enters its ``goalClearRange`` (0.35 m). Without a
+    spacing floor, the responder can auto-advance through multiple
+    consecutive waypoints in a single tick — the robot never actually
+    navigates to the intermediate ones, and the scene representation
+    misses the observation opportunity.
+
+    The rule is **hard**: any waypoint (including coverage viewpoints
+    picked by the greedy set-cover, and the final waypoint) gets
+    dropped if it lies within ``min_spacing`` of the previous kept
+    point. This can reduce object coverage when two coverage
+    viewpoints were picked close together — the returned counter
+    ``coverage_viewpoints_dropped`` makes that visible. In practice
+    the planner picks viewpoints spaced by ``coverage_radius`` (3 m
+    by default) so this is rare; bump the ``coverage_radius`` if you
+    see frequent drops.
+
+    Only the first waypoint is guaranteed to be kept. The final
+    waypoint is dropped if it violates the spacing — the resulting
+    trajectory ends at the last "well-spaced" point instead of
+    sneaking past the rule on the last step.
+    """
+    if len(routed) <= 1 or min_spacing <= 0:
+        return routed, 0
+
+    protected_set = {(round(p[0], 6), round(p[1], 6)) for p in protected}
+
+    def _is_protected(pt: np.ndarray) -> bool:
+        return (round(float(pt[0]), 6), round(float(pt[1]), 6)) in protected_set
+
+    coverage_dropped = 0
+    kept: list[np.ndarray] = [routed[0]]
+    last = routed[0]
+    for i in range(1, len(routed)):
+        pt = routed[i]
+        dist = float(np.hypot(pt[0] - last[0], pt[1] - last[1]))
+        if dist >= min_spacing:
+            kept.append(pt)
+            last = pt
+        else:
+            if _is_protected(pt):
+                coverage_dropped += 1
+    return np.asarray(kept), coverage_dropped

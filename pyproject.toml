@@ -28,6 +28,15 @@ qwen-local = [
 replay = [
     "matplotlib>=3.8",
     "pillow>=10",
+    "networkx>=3.0",
+]
+# Client side of the perception sidecar (PerceptionResponder). The
+# sidecar itself ships these deps in its own image; this extra is
+# what the ai_module image (or local dev) needs to *talk* to it.
+perception = [
+    "httpx>=0.27",
+    "pillow>=10",
+    "pycocotools>=2.0.8",
 ]
 # Online exploration strategies + debug visualisation.
 exploration = [

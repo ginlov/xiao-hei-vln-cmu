@@ -12,6 +12,9 @@ detailed report at the repo root.
 | 5 | [VLM tick logger](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%205%20-%20VLM%20tick%20logger%20for%20debugging%20and%20visualization.md) | Done |
 | 6 | [Documentation webpage](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%206%20-%20Documentation%20webpage.md) | In progress |
 | 7 | [Data coupling — Coverage trajectory generation](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%207%20-%20Data%20coupling.md) | Done |
+| 8 | [Ref dataset ambiguity audit & label-vocab fix](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%208%20-%20Ref%20dataset%20ambiguity%20audit%20and%20label-vocab%20fix.md) | Done |
+| 9 | [Expand ref corpus & match official phrasing distribution](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%209%20-%20Expand%20ref%20corpus%20and%20match%20official%20phrasing%20distribution.md) | Done |
+| 10 | [Scene representation](https://github.com/ginlov/xiao-hei-vln-cmu/blob/main/TASK%2010%20-%20Scene%20representation.md) | In progress |
 
 ## Design documents
 

@@ -12,14 +12,44 @@
 
 | File | Use case |
 |---|---|
-| `docker/compose.yml` | CPU-only / dummy responder (no GPU) |
-| `docker/compose_gpu.yml` | Full GPU stack with vLLM sidecar |
+| `docker/compose.yml` | Single unified stack. Profile-gated `vllm` (only starts under `--profile qwen`). |
+| `docker/run` | Wrapper that maps `XIAO_HEI_RESPONDER` → the right compose profile. |
+
+## Driving the stack
+
+One env var picks the responder; the wrapper handles profile selection
+and prerequisite validation:
+
+```bash
+XIAO_HEI_RESPONDER=dummy      docker/run up -d    # system + ai_module
+XIAO_HEI_RESPONDER=qwen       docker/run up -d    # + vllm sidecar
+XIAO_HEI_RESPONDER=perception docker/run up -d    # + perception sidecar (YOLO-World + SAM 2.1)
+```
+
+All other args pass through verbatim: `docker/run logs -f ai_module`,
+`docker/run down`, `docker/run build ai_module`.
+
+### Scene selection (any responder)
+
+Setting `XIAO_HEI_SCENE_DIR_HOST` to an extracted scene directory makes
+the wrapper layer `compose.scene.yml`, which bind-mounts
+`<dir>/environment/` over the sim's prebaked Unity environment. The same
+mechanism works for any responder — handy for testing dummy or qwen
+against a specific scene without `docker cp`.
+
+```bash
+SCENES=/path/to/CMU-VLN-Challenge-data/unity_env_models
+unzip -oq $SCENES/arabic_room.zip -d $SCENES/                # one-time
+export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
+XIAO_HEI_RESPONDER=perception docker/run up -d              # sim loads arabic_room
+```
 
 ## Building
 
 ```bash
-# Build the ai_module image
-docker compose -f docker/compose_gpu.yml build ai_module
+# Build the ai_module image (always installs the lightweight `qwen` extra
+# — openai + pillow — so the same image serves all three responders).
+docker/run build ai_module
 ```
 
 The Dockerfile extends `zhangjicmu/ubuntu24_ros:ai_module`, installs
@@ -29,10 +59,19 @@ The Dockerfile extends `zhangjicmu/ubuntu24_ros:ai_module`, installs
 
 ### Sidecar (default, recommended)
 
-The `compose_gpu.yml` stack runs three containers. The `vllm` service uses
-the official `vllm/vllm-openai` image and exposes an OpenAI-compatible API.
-The `ai_module` calls it via HTTP using the lightweight `openai` Python SDK.
-No CUDA dependencies are installed in the ai_module image.
+When `XIAO_HEI_RESPONDER=qwen` or `XIAO_HEI_RESPONDER=perception`, the
+wrapper activates the corresponding compose profile, which brings up
+a sidecar container alongside `system` + `ai_module`. The `ai_module`
+calls each sidecar over HTTP — no CUDA dependencies are installed in
+the ai_module image.
+
+| Responder | Sidecar | Image |
+|---|---|---|
+| `qwen` | `vllm` on `:8000` | `vllm/vllm-openai:latest` |
+| `perception` | `perception` on `:8001` | `xiao-hei/perception:latest` (built from `perception/Dockerfile`, based on `ultralytics/ultralytics:8.4.72`) |
+
+See [Perception Sidecar](../perception-sidecar.md) for the YOLO-World
++ SAM 2.1 setup specifically.
 
 ### In-process (legacy)
 

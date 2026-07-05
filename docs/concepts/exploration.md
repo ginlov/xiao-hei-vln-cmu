@@ -89,17 +89,36 @@ container is up and no question is active — typically within seconds of
 Container starts → first tick with no question → "Exploration started."
 ```
 
+### Scene building on the fly
+
+Exploration is not just movement — the scene graph is built *during* it.
+On every exploration tick the loop also calls `scene.update(snapshot)`
+(maintaining viewpoint and scene-bounds nodes) and, for responders that
+expose it, `responder.ingest(snapshot)`. For the perception responder
+`ingest()` runs the per-tick detect→lift→add_object cycle *without* emitting
+an answer, so objects accumulate into the
+[scene representation](../scene-representation.md) as the robot sweeps the
+space while the explorer alone drives the waypoints. By the time exploration
+completes, the scene graph already reflects everything the sweep saw, and the
+responder answers from it directly (no separate trajectory walk needed).
+
 `/state_estimation` takes 90–190 s to arrive after container start.
 During that window `snapshot.pose` is `None` and the explorer publishes
 its current target each tick without advancing state.
 
-### Pausing for questions
+### Questions do not interrupt exploration
 
-When a challenge question arrives (`snapshot.question is not None`), the
-exploration block is skipped entirely for that tick and all subsequent
-ticks until the question is answered.  The explorer's internal state is
-preserved untouched — it resumes from exactly where it left off once the
-responder clears the question.
+A challenge question arriving mid-exploration (`snapshot.question is not
+None`) does **not** stop the sweep.  Exploration keeps running until the
+strategy completes on its own terms (budget exhausted, consecutive-skip
+hatch, or no frontiers remain).  The answer is **deferred**: the responder
+only takes over once `explorer.is_complete()` is `True`, and by then it
+answers from a scene graph that reflects the whole sweep — not just what
+was visible when the question happened to arrive.
+
+While the question is pending, its text still flows into the perception
+detector's vocabulary (through `responder.ingest()`), so the queried object
+is actively searched for during the remaining ticks.
 
 ### Stopping
 

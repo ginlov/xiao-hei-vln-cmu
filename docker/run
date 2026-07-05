@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# docker/run — ergonomic wrapper around `docker compose` for xiao-hei.
+#
+# Pick the responder with one env var (XIAO_HEI_RESPONDER); the wrapper
+# maps it to the right compose profile and validates prerequisites.
+#
+# Usage:
+#   XIAO_HEI_RESPONDER=dummy   docker/run up -d
+#   XIAO_HEI_RESPONDER=qwen    docker/run up -d
+#
+#   XIAO_HEI_RESPONDER=perception \
+#     XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room \
+#     XIAO_HEI_TRAJECTORY_JSON_HOST=/abs/path/trajectory.json \
+#     docker/run up -d
+#
+#   docker/run down
+#   docker/run logs -f ai_module
+#   docker/run build ai_module
+#
+# All trailing args are forwarded verbatim to `docker compose`.
+
+set -euo pipefail
+
+# Always run from repo root so the relative bind mounts (../src, ../vlm_logs)
+# in docker/compose.yml resolve correctly.
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
+PROFILE_ARGS=()
+
+case "$RESPONDER" in
+  dummy)
+    # No extra profile — vllm/perception stay down.
+    ;;
+  qwen)
+    PROFILE_ARGS=(--profile qwen)
+    ;;
+  perception)
+    PROFILE_ARGS=(--profile perception)
+    ;;
+  *)
+    echo "error: XIAO_HEI_RESPONDER='$RESPONDER' not recognised (use: dummy, qwen, perception)" >&2
+    exit 2
+    ;;
+esac
+
+# When XIAO_HEI_SCENE_DIR_HOST is set, layer docker/compose.scene.yml on
+# top — this bind-mounts the host's extracted scene `environment/` over
+# the sim's prebaked Unity environment, so `system` (Unity) loads that scene.
+COMPOSE_FILES=(-f docker/compose.yml)
+if [ -n "${XIAO_HEI_SCENE_DIR_HOST:-}" ]; then
+  COMPOSE_FILES+=(-f docker/compose.scene.yml)
+fi
+
+export XIAO_HEI_RESPONDER
+
+exec docker compose "${COMPOSE_FILES[@]}" "${PROFILE_ARGS[@]}" "$@"
