@@ -157,6 +157,21 @@ class PerceptionResponder:
 
         return output
 
+    def ingest(self, snapshot: VLMInput) -> None:
+        """Build the scene from this frame *without* answering.
+
+        Runs only the detect → lift → add_object cycle. The exploration
+        phase calls this every tick so the scene graph keeps growing while
+        the explorer drives movement — importantly, it does **not** emit an
+        answer even when a question is already active, so a question that
+        arrives mid-exploration is deferred until exploration completes.
+
+        When a question is present its text still flows into the detector
+        vocabulary (via :meth:`_inject_visible`), so the queried object is
+        actively looked for during the remaining sweep.
+        """
+        self._inject_visible(snapshot)
+
     def is_done(self) -> bool:
         return self._done
 

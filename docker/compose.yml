@@ -62,6 +62,7 @@ services:
       - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
+      - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
       # Qwen — read only when XIAO_HEI_RESPONDER=qwen.
       - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
       - XIAO_HEI_QWEN_MODEL
@@ -76,6 +77,7 @@ services:
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
+      - ../exploration_logs:/exploration_logs
       # Conditional trajectory mount. When the host var is unset, the
       # mount resolves to /dev/null:/data/...:ro — harmless because the
       # responder then has no trajectory to read.

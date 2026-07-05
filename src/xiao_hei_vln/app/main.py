@@ -29,6 +29,9 @@ TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
 RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
+# Exploration is NOT interrupted when a question arrives: it runs until the
+# strategy completes (budget exhausted, consecutive-skip hatch, or no frontiers
+# remain), and only then does the responder answer — from the fully-built scene.
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "100"))
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
@@ -253,7 +256,10 @@ def main() -> None:
     explorer = _build_explorer(node)
 
     # Structured exploration log — survives the container via the mounted volume.
+    # Create the dir if it doesn't exist so a run without a bind-mounted
+    # /exploration_logs (e.g. the non-GPU compose.yml) doesn't crash on startup.
     _log_dir = _EXPLORATION_LOG_DIR or "/exploration_logs"
+    os.makedirs(_log_dir, exist_ok=True)
     _exp_log_file = open(os.path.join(_log_dir, "exploration.log"), "w", buffering=1)
 
     def _exp_log(event: str, **fields) -> None:
@@ -298,8 +304,20 @@ def main() -> None:
         snapshot = cache.snapshot(state["tick_id"], Stamp(sec=now.sec, nanosec=now.nanosec))
         state["tick_id"] += 1
 
-        # Exploration phase: runs only when no question is active.
-        if explorer is not None and not explorer.is_complete() and snapshot.question is None:
+        # Exploration phase: runs until the strategy completes. A question
+        # arriving mid-exploration does NOT interrupt it — exploration keeps
+        # going (still building the scene) and the answer is deferred to the
+        # responder block below once explorer.is_complete() is True.
+        if explorer is not None and not explorer.is_complete():
+            # Build the scene graph on the fly *while* exploring. scene.update()
+            # maintains viewpoint/bounds nodes; responder.ingest() runs the
+            # perception detect→lift→add_object cycle without ever emitting an
+            # answer (so a pending question stays deferred). Responders without
+            # a scene path (dummy/qwen) simply don't expose ingest().
+            scene.update(snapshot)
+            if hasattr(responder, "ingest"):
+                responder.ingest(snapshot)
+
             if not state["exploration_started"]:
                 node.get_logger().info("Exploration started.")
                 state["exploration_started"] = True
