@@ -95,13 +95,26 @@ def _build_responder(
             "XIAO_HEI_PERCEPTION_MIN_INLIERS",
             str(DEFAULT_MIN_INLIERS),
         ))
+        # Opt-in: fuse detections across frames with ObjectMap (converged 3D
+        # boxes + NMS + wall-sheet rejection) instead of per-detection
+        # add_object. Off by default → the pipeline behaves exactly as before.
+        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
+            "1", "true", "yes", "on",
+        )
         traj_str = os.environ.get("XIAO_HEI_TRAJECTORY_JSON", "")
         traj_path = Path(traj_str) if traj_str else None
 
         client = HTTPPerceptionClient(base_url=base_url)
         client.wait_until_ready()       # blocks until /healthz is green
-        lifter = PointLifter(min_inliers=min_inliers)
+        # The ObjectMap path wants the z-buffer occlusion gate so its unioned
+        # clouds are not contaminated by see-through-mask background returns.
+        lifter = PointLifter(min_inliers=min_inliers, enable_zbuffer=use_object_map)
         vocab = Vocabulary()
+
+        object_map = None
+        if use_object_map:
+            from xiao_hei_vln.perception.object_map import ObjectMap
+            object_map = ObjectMap()
 
         logger = None
         log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
@@ -113,6 +126,7 @@ def _build_responder(
                     "near_threshold_m": near_t,
                     "score_threshold": score_t,
                     "min_inliers": min_inliers,
+                    "object_map": use_object_map,
                     "trajectory_json": traj_str or None,
                 },
                 responder_name="perception",
@@ -128,6 +142,7 @@ def _build_responder(
             trajectory_path=traj_path,
             take_waypoint_reached_signals=take_waypoint_reached_signals,
             logger=logger,
+            object_map=object_map,
         )
         return responder, logger
     raise ValueError(

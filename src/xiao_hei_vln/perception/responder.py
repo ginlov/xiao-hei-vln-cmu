@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from xiao_hei_vln.logger import VLMLogger
     from xiao_hei_vln.messages.inputs import VLMInput
     from xiao_hei_vln.messages.outputs import VLMOutput
+    from xiao_hei_vln.perception.object_map import ObjectMap
     from xiao_hei_vln.scene import SceneRepresentation
 
 
@@ -66,6 +67,7 @@ class PerceptionResponder:
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
         take_waypoint_reached_signals: Callable[[], int] | None = None,
         logger: VLMLogger | None = None,
+        object_map: ObjectMap | None = None,
     ) -> None:
         """
         Args:
@@ -97,10 +99,18 @@ class PerceptionResponder:
                 ``trajectory_path``, but Phase A unit tests must
                 inject a stateful counter.
             logger: optional VLMLogger; receives per-tick records.
+            object_map: optional :class:`ObjectMap`. When supplied, each
+                detection's lifted LiDAR cloud is fused here (cross-frame
+                point-cloud union → converged 3D box, NMS, wall-sheet
+                rejection) and the fused snapshot is synced into ``scene``
+                every tick via ``sync_from_object_map`` — instead of the
+                per-detection ``scene.add_object`` path. ``None`` keeps the
+                historical add_object behaviour.
         """
         self._scene = scene
         self._client = client
         self._lifter = lifter
+        self._object_map = object_map
         self._vocab = vocabulary
         self._near_threshold = float(near_threshold)
         self._score_threshold = float(score_threshold)
@@ -287,6 +297,14 @@ class PerceptionResponder:
             if result.position is None:
                 continue
             color_rgb, color_name = _mask_color(bgr, det.mask)
+            if self._object_map is not None:
+                # Fuse this detection's lifted cloud across frames; the scene
+                # object layer is rebuilt from the fused snapshot below.
+                self._object_map.add(
+                    det.label, det.score, result.inlier_points,
+                    color_rgb, color_name,
+                )
+                continue
             self._scene.add_object(ObjectObservation(
                 label=det.label,
                 position=result.position,
@@ -296,6 +314,10 @@ class PerceptionResponder:
                 bbox_min=None,            # AABB from a 2D mask isn't a 3D bbox;
                 bbox_max=None,            # leave None until we estimate it.
             ))
+
+        if self._object_map is not None:
+            # One fused snapshot → scene objects (with real 3D boxes) per tick.
+            self._scene.sync_from_object_map(self._object_map.export())
 
     # ------------------------------------------------------------------
     # Question handlers — read from the live scene graph

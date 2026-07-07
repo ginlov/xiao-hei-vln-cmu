@@ -213,6 +213,69 @@ class TestPoseTransform:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 5. inlier_points payload (for ObjectMap fusion)
+# ---------------------------------------------------------------------------
+
+
+class TestInlierPoints:
+    def test_inlier_points_match_position_and_count(self) -> None:
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS)
+        center = Vector3(x=3.0, y=-1.0, z=0.5)
+        scan = _scatter_around(center, n=100, spread=0.1)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), scan, pose_p, pose_q)
+        assert result.inlier_points is not None
+        assert result.inlier_points.shape == (result.n_inliers, 3)
+        # The committed position is exactly the median of the returned points.
+        med = np.median(result.inlier_points, axis=0)
+        assert result.position.x == pytest.approx(float(med[0]))
+        assert result.position.y == pytest.approx(float(med[1]))
+        assert result.position.z == pytest.approx(float(med[2]))
+
+    def test_inlier_points_none_when_no_position(self) -> None:
+        lifter = PointLifter(min_inliers=20)
+        scan = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=5)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), scan, pose_p, pose_q)
+        assert result.position is None
+        assert result.inlier_points is None
+
+
+# ---------------------------------------------------------------------------
+# 6. z-buffer occlusion gate
+# ---------------------------------------------------------------------------
+
+
+class TestZBuffer:
+    def _two_depth_scan(self):
+        """A near cluster and a far cluster along the SAME +x bearing, so
+        they project onto the same equirect pixels at different ranges."""
+        near = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=100, spread=0.03)
+        far = _scatter_around(Vector3(x=6.0, y=0.0, z=0.0), n=100, spread=0.03)
+        return np.concatenate([near, far], axis=0)
+
+    def test_disabled_keeps_both_surfaces(self) -> None:
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=False)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._two_depth_scan(), pose_p, pose_q)
+        assert result.position is not None
+        # All 200 points project inside the full mask; both clusters
+        # contribute → median sits between 2 and 6.
+        assert result.n_inliers == 200
+        assert result.position.x > 3.5
+
+    def test_enabled_drops_the_occluded_far_surface(self) -> None:
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=True)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._two_depth_scan(), pose_p, pose_q)
+        assert result.position is not None
+        # The near surface occludes much of the far cluster along shared
+        # bearings → fewer inliers and the median snaps to the near cluster.
+        assert result.n_inliers < 200
+        assert result.position.x == pytest.approx(2.0, abs=0.3)
+
+
 class TestValidation:
     def test_wrong_mask_shape_raises(self) -> None:
         lifter = PointLifter()
