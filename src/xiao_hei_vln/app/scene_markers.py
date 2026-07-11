@@ -167,7 +167,9 @@ class ScenePublisher:
 
         r, g, b = _color_for_label(obj.get("label", "?"))
         m.color.r, m.color.g, m.color.b = r, g, b
-        m.color.a = 0.55
+        # Low alpha so a big room-spanning box stays see-through — the robot
+        # and the small-object boxes inside it remain visible.
+        m.color.a = 0.3
         return m
 
     def _label_marker(self, obj: dict, ns: str, oid: int, stamp):
