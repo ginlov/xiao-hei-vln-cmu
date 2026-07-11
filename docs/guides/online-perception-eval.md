@@ -110,6 +110,20 @@ vlm_logs/session_<ts>/
 > `/vlm_logs` (host `./vlm_logs`). Setting it to a host path writes inside
 > the container instead.
 
+### Export a session for offline debugging
+
+Pull a session off the box and build its HTML report (camera playback,
+per-tick VLM I/O table, pose, BEV, latency) in one command:
+
+```bash
+scripts/export_session.sh                    # latest session -> ~/Downloads/percep_out_<ts>/
+scripts/export_session.sh 20260711_052457    # a specific session
+```
+
+Overridable via `REMOTE_HOST` / `REMOTE_REPO` / `OUT_ROOT` / `NO_REPORT=1`.
+Ticks (the VLM I/O) are only logged while a question is active — fire a few
+questions during the run or the session holds just `session.json`.
+
 ## 6. Score the scene graph against ground truth
 
 Extract the final (fullest) scene from the last tick, then score it:
