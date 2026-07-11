@@ -14,7 +14,7 @@ Two ground-truth sources feed the SAME evaluator:
   actually saw (our ``objectmap.py`` ``--source gt`` output). Decouples perception
   quality from coverage. Pass such a JSON via ``--gt``.
 
-Metrics (ported verbatim from ``dataset_generator/perception/eval_objectmap.py``)
+Metrics (ported verbatim from our offline eval prototype)
 --------------------------------------------------------------------------------
 Primary  : mAP @ center-distance (nuScenes-style; AABB boxes + thin objects make
            3D IoU brutally strict, so centre distance is the fairer primary).

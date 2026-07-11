@@ -22,7 +22,7 @@ median and no 3D box.
 Each node carries a stable ``node_id`` (monotonic, never reused) so the scene
 graph can upsert observations across ticks by identity.
 
-This is a self-contained port of ``dataset_generator/perception/objectmap.py``
+This is a self-contained port of our offline ObjectMap prototype
 (``robust_center`` + the ``LIDAR_GATE_M`` gate are inlined so the package has no
 dependency on ``dataset_generator``).
 """

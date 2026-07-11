@@ -280,6 +280,40 @@ def main() -> None:
     if logger is not None:
         logger.attach_scene(scene)
 
+    # Live rviz view of the fused scene graph (3D boxes + labels on
+    # /perception/objects), so the perception map can be watched while
+    # driving. Perception responder only — the scene is empty otherwise.
+    # Opt out with XIAO_HEI_PUBLISH_MARKERS=0.
+    if RESPONDER_NAME == "perception" and os.environ.get(
+        "XIAO_HEI_PUBLISH_MARKERS", "1",
+    ).lower() not in ("0", "false", "no", "off"):
+        from xiao_hei_vln.app.scene_markers import ScenePublisher, Scoreboard
+
+        _scene_pub = ScenePublisher(node)
+        # Optional dev scoreboard: live metrics vs the scene's object_list.txt
+        # (GT is not available at test time). Enabled by mounting the GT file
+        # and pointing XIAO_HEI_GT_OBJECT_LIST at it.
+        _scoreboard = None
+        _gt_path = os.environ.get("XIAO_HEI_GT_OBJECT_LIST", "")
+        if _gt_path and os.path.exists(_gt_path):
+            try:
+                _scoreboard = Scoreboard(_gt_path)
+                node.get_logger().info(f"Scoreboard enabled (GT: {_gt_path})")
+            except Exception:  # noqa: BLE001 — never let the scoreboard break bringup
+                node.get_logger().exception("Scoreboard init failed; disabling")
+
+        def _publish_markers() -> None:
+            snap = scene.to_dict()
+            text = None
+            if _scoreboard is not None:
+                try:
+                    text = _scoreboard.text(snap)
+                except Exception:  # noqa: BLE001
+                    text = None
+            _scene_pub.publish(snap, scoreboard_text=text)
+
+        node.create_timer(0.5, _publish_markers)
+
     explorer = _build_explorer(node)
 
     # Structured exploration log — survives the container via the mounted volume.

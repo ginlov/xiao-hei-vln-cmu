@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 DEFAULT_MIN_INLIERS: int = 10
 # A scan return is "front" (not occluded) if its range is within this margin of
 # the nearest range seen at its equirect pixel. Matches the z-buffer tolerance
-# used by the offline lifter (dataset_generator/perception/lift3d.py).
+# from the offline lifter prototype the gate was ported from.
 ZBUF_TOL_M: float = 0.2
 
 

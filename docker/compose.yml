@@ -79,6 +79,9 @@ services:
       # string when the host var is unset (responder then answers from
       # the start pose). Used by the perception responder.
       - XIAO_HEI_TRAJECTORY_JSON=${XIAO_HEI_TRAJECTORY_JSON_HOST:+/data/trajectory.json}
+      # Dev-only perception scoreboard: point at a scene's object_list.txt on
+      # the host to score the live map vs GT in rviz. Empty → scoreboard off.
+      - XIAO_HEI_GT_OBJECT_LIST=${XIAO_HEI_GT_OBJECT_LIST_HOST:+/data/gt_object_list.txt}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
@@ -87,6 +90,7 @@ services:
       # mount resolves to /dev/null:/data/...:ro — harmless because the
       # responder then has no trajectory to read.
       - ${XIAO_HEI_TRAJECTORY_JSON_HOST:-/dev/null}:/data/trajectory.json:ro
+      - ${XIAO_HEI_GT_OBJECT_LIST_HOST:-/dev/null}:/data/gt_object_list.txt:ro
     stdin_open: true
     tty: true
     depends_on:
