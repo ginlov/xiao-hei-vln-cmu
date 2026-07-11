@@ -79,6 +79,7 @@ nav:
       - New Model Integration: guides/new-model.md
       - New Exploration Strategy: guides/new-exploration-strategy.md
       - Evaluation: guides/evaluation.md
+      - Online Perception + Scoring: guides/online-perception-eval.md
       - Data Generation: guides/data-generation.md
       - Dataset EDA: eda_report.md
       - VLM Logging & Replay: guides/vlm-logging.md
