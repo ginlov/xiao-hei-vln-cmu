@@ -80,6 +80,7 @@ def _build_responder(
             DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
             DEFAULT_SCORE_THRESHOLD,
         )
+        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
         from xiao_hei_vln.perception.vocab import Vocabulary
 
         base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
@@ -106,9 +107,19 @@ def _build_responder(
 
         client = HTTPPerceptionClient(base_url=base_url)
         client.wait_until_ready()       # blocks until /healthz is green
-        # The ObjectMap path wants the z-buffer occlusion gate so its unioned
-        # clouds are not contaminated by see-through-mask background returns.
-        lifter = PointLifter(min_inliers=min_inliers, enable_zbuffer=use_object_map)
+        # The z-buffer occlusion gate is always on: a camera can't see
+        # through a foreground object, so background returns falling inside
+        # a mask must be rejected (default in PointLifter). Independent of
+        # whether ObjectMap fusion is enabled.
+        lifter = PointLifter(min_inliers=min_inliers)
+        # Densify the sparse single sweep before lifting so small objects
+        # clear min_inliers with genuine on-surface returns (env-tunable).
+        scan_accum = ScanAccumulator(
+            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
+            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
+            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+        )
         vocab = Vocabulary()
 
         object_map = None
@@ -143,6 +154,7 @@ def _build_responder(
             take_waypoint_reached_signals=take_waypoint_reached_signals,
             logger=logger,
             object_map=object_map,
+            scan_accumulator=scan_accum,
         )
         return responder, logger
     raise ValueError(

@@ -74,7 +74,7 @@ class PointLifter:
         *,
         min_inliers: int = DEFAULT_MIN_INLIERS,
         max_depth_m: float | None = None,
-        enable_zbuffer: bool = False,
+        enable_zbuffer: bool = True,
     ) -> None:
         """
         Args:
@@ -91,9 +91,12 @@ class PointLifter:
                 bearing — at each equirect pixel only the nearest surface
                 ±``ZBUF_TOL_M`` survives. Prevents a far wall/background
                 seen through the mask from contaminating the object's
-                cloud. Defaults to ``False`` so the plain mask-inlier
-                median (the pipeline's historical behaviour) is unchanged;
-                the ObjectMap fusion path opts in with ``True``.
+                cloud. **Defaults to ``True``**: a camera cannot see
+                through a foreground object, so background returns that
+                fall inside a small object's mask must be rejected or the
+                lifted position is pulled onto the wall behind it. Kept as
+                a flag only so tests can exercise the raw (no-occlusion)
+                projection with ``False``.
         """
         self._min_inliers = int(min_inliers)
         self._max_depth_m = max_depth_m

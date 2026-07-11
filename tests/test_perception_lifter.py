@@ -109,7 +109,10 @@ class TestLiftMedian:
         assert result.position.x == pytest.approx(center.x, abs=0.05)
         assert result.position.y == pytest.approx(center.y, abs=0.05)
         assert result.position.z == pytest.approx(center.z, abs=0.05)
-        assert result.n_inliers == 100
+        # With the z-buffer on by default, a handful of far-edge points of
+        # the cluster fall beyond ZBUF_TOL_M of the nearest return at their
+        # pixel and are culled — so the count is at most 100, not exactly it.
+        assert DEFAULT_MIN_INLIERS <= result.n_inliers <= 100
 
     def test_empty_mask_returns_none(self) -> None:
         lifter = PointLifter()
