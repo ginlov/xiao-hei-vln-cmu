@@ -261,3 +261,5 @@ pred_*.jsonl
 *_trace.jsonl
 trace_*.jsonl
 debug_*/
+samples*.jsonl
+*report*.html

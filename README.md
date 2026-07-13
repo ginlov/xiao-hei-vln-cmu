@@ -256,6 +256,20 @@ together. Question texts come from the GT, so they align exactly.
 | `--trace-file FILE` | – | append a full-fidelity JSONL trace of every Gemini call (see below) |
 | `--near-threshold M` | `2.0` | XY radius for `near` edges in the reconstructed graph |
 
+### Visual eval report
+
+For a human-readable view of the results, `xiao_hei_vln.gemini.eval_report`
+renders a **self-contained `report.html`** (no server, no external
+assets) — one card per question with a pass/fail badge, Gemini's answer +
+rationale next to the ground truth, and, for object-reference, a top-down
+scene plot with Gemini's box (red) vs the ground-truth box (green) so a
+wrong pick is obvious at a glance:
+
+```bash
+uv run python -m xiao_hei_vln.gemini.eval_report \
+  --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl --out report.html
+```
+
 ### Debugging Gemini calls
 
 `GeminiTracer` (`xiao_hei_vln.gemini.trace`) records **every** Gemini call
