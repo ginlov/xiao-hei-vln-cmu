@@ -13,7 +13,8 @@ class TestDefaults:
         assert c.api_key == "abc"
         assert c.model == "gemini-2.5-flash"
         assert c.temperature == 0.2
-        assert c.max_output_tokens == 1024
+        assert c.max_output_tokens == 2048
+        assert c.thinking_budget == 0
         assert c.image_long_edge == 1280
         assert c.max_explore_ticks == 120
         assert c.max_ticks_per_question == 240

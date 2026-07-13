@@ -71,12 +71,15 @@ DEFAULT_MAX_RETRIES = 5
 
 
 class ThrottledEngine:
-    """Wrap a Gemini engine with request throttling + 429 backoff-retry.
+    """Wrap a Gemini engine with request throttling + backoff-retry.
 
-    The free API tier limits requests-per-minute (RPM), so we (a) space
-    calls at least ``60/rpm`` seconds apart, and (b) on a rate-limit error
-    sleep for the server-suggested ``retryDelay`` (or a floor) and retry.
-    Non-rate-limit errors propagate immediately. Implements
+    The free API tier limits both requests/minute and input-tokens/minute,
+    and the service occasionally 503s under load. We (a) space calls at
+    least ``60/rpm`` seconds apart, and (b) on a *retryable* error
+    (429 rate-limit or 5xx transient) sleep — honouring the server's
+    ``retryDelay`` but flooring with exponential backoff, and waiting a
+    full minute window for input-token-quota errors — then retry.
+    Permanent errors propagate immediately. Implements
     :class:`GeminiEngineProtocol` so it drops into ``predict_entry``.
     """
 
@@ -106,16 +109,16 @@ class ThrottledEngine:
                 return self._inner.infer_multimodal(
                     system=system, user_text=user_text, images=images
                 )
-            except Exception as exc:  # noqa: BLE001 — inspect for rate-limit
-                delay = _retry_delay_from_exc(exc)
-                if delay is None or attempt >= self._max_retries:
+            except Exception as exc:  # noqa: BLE001 — inspect for retryability
+                wait = _retry_wait(exc, attempt, min_backoff=self._min_backoff_s)
+                if wait is None or attempt >= self._max_retries:
                     raise
-                wait = max(delay, self._min_backoff_s)
                 log.warning(
-                    "rate-limited (attempt %d/%d); retrying in %.1fs",
+                    "retryable error (attempt %d/%d); waiting %.1fs: %s",
                     attempt + 1,
                     self._max_retries,
                     wait,
+                    _short_error(exc),
                 )
                 time.sleep(wait)
         raise RuntimeError("unreachable: retry loop exhausted")  # pragma: no cover
@@ -129,30 +132,65 @@ class ThrottledEngine:
         self._last_call = time.monotonic()
 
 
-def _retry_delay_from_exc(exc: Exception) -> float | None:
-    """Seconds to wait before retrying, or ``None`` if not a rate-limit error.
+_RATE_MARKERS = ("429", "RESOURCE_EXHAUSTED")
+_TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "500", "INTERNAL", "overloaded", "high demand")
+_MAX_BACKOFF_S = 120.0
 
-    Returns ``0.0`` when it *is* a 429 but no explicit delay is parseable
-    (the caller then falls back to its minimum backoff).
-    """
-    text = str(exc)
-    if "429" not in text and "RESOURCE_EXHAUSTED" not in text:
-        return None
+
+def _parse_retry_delay(text: str) -> float | None:
+    """Extract a server-suggested retry delay (seconds) from an error string."""
     m = re.search(r"[Rr]etry[Dd]elay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", text)
     if m:
         return float(m.group(1))
-    m = re.search(r"retry in (\d+(?:\.\d+)?)s", text)
+    m = re.search(r"retry in (\d+(?:\.\d+)?)s\b", text)
     if m:
         return float(m.group(1))
-    return 0.0
+    return None
+
+
+def _retry_wait(exc: Exception, attempt: int, *, min_backoff: float) -> float | None:
+    """Seconds to wait before retrying, or ``None`` if not retryable.
+
+    Retries 429 rate-limits and 5xx transient errors. The wait is the
+    server ``retryDelay`` floored by exponential backoff
+    (``min_backoff * 2**attempt``, capped). Input-token-per-minute quota
+    errors get at least a 60 s window — their ``retryDelay`` is
+    misleadingly short (often 0 s) yet the window only clears each minute,
+    and each retry re-sends the whole prompt.
+
+    A **per-day** quota (``...PerDay...``) is *not* retried: it won't clear
+    within any retry window (it resets at midnight Pacific), so retrying
+    just wastes minutes per entry. Fail fast instead.
+    """
+    text = str(exc)
+    if "PerDay" in text or "per_day" in text:
+        return None
+    rate = any(m in text for m in _RATE_MARKERS)
+    transient = any(m in text for m in _TRANSIENT_MARKERS)
+    if not (rate or transient):
+        return None
+    server = _parse_retry_delay(text) or 0.0
+    wait = max(server, min_backoff * (2 ** attempt))
+    if rate and "input_token" in text:
+        wait = max(wait, 60.0)
+    return min(wait, _MAX_BACKOFF_S)
+
+
+def _short_error(exc: Exception) -> str:
+    """One-line, truncated error text (the 429 body is huge)."""
+    return str(exc).replace("\n", " ")[:160]
 
 
 @dataclass(frozen=True)
 class EntryPrediction:
-    """A scoreable entry's prediction plus the full request for debugging."""
+    """A scoreable entry's prediction plus the full request for debugging.
+
+    ``output`` is ``None`` when the Gemini call or JSON parse failed; the
+    error is then recorded in ``debug['error']``.
+    """
 
     question: str
-    output: VLMOutput
+    output: VLMOutput | None
     debug: dict
 
 
@@ -166,15 +204,15 @@ OFFLINE_SYSTEM_NUMERICAL = """\
 You are answering a NUMERICAL question ("How many <target>...?") for the
 CMU Vision-Language-Navigation Challenge.
 
-You are given the COMPLETE scene graph of the room as JSON: every object
-the robot mapped, each with a stable ``object_id``, a ``label``, a 3D
-``position`` and axis-aligned bounding box (``bbox_min`` / ``bbox_max``),
-and ``spatial_relations`` to nearby objects. Treat this graph as the full
-and authoritative record of the scene — there is nothing unobserved.
+You are given the COMPLETE list of objects in the room as a JSON array:
+each object has an ``id``, a ``label``, a 3D ``center`` [x, y, z] and a
+``size`` [x, y, z] (axis-aligned extent, metres), and sometimes a
+``color``. Treat this list as the full and authoritative record of the
+scene — there is nothing unobserved. Spatial relations (near, closest,
+between, above/below) are computed from the centers and sizes.
 
 Count the objects that satisfy the question, reasoning over the labels,
-positions, bounding boxes, and spatial relations in the graph. Return
-EXACTLY one JSON object:
+centers, sizes, and colours. Return EXACTLY one JSON object:
 
   {"kind": "numerical", "value": <non-negative int>, "rationale": "<=200 chars>"}
 
@@ -188,15 +226,16 @@ OFFLINE_SYSTEM_OBJECT_REFERENCE = """\
 You are answering an OBJECT-REFERENCE question ("Find the <referring
 expression>") for the CMU Vision-Language-Navigation Challenge.
 
-You are given the COMPLETE scene graph of the room as JSON: every object
-the robot mapped, each with a stable ``object_id``, a ``label``, a 3D
-``position`` and axis-aligned bounding box (``bbox_min`` / ``bbox_max``),
-and ``spatial_relations`` to nearby objects. Treat this graph as the full
-and authoritative record of the scene.
+You are given the COMPLETE list of objects in the room as a JSON array:
+each object has an ``id``, a ``label``, a 3D ``center`` [x, y, z] and a
+``size`` [x, y, z] (axis-aligned extent, metres), and sometimes a
+``color``. Treat this list as the full and authoritative record of the
+scene. Spatial relations (near, closest, between, above/below) are
+computed from the centers and sizes.
 
 Identify the single object the expression refers to, using the labels,
-positions, bounding boxes, and spatial relations. Then return that
-object's bounding box. EXACTLY one JSON object:
+centers, sizes, and colours. Then return that object's bounding box.
+EXACTLY one JSON object:
 
   {"kind": "object_reference",
    "label": "<the object's label from the graph>",
@@ -207,10 +246,10 @@ object's bounding box. EXACTLY one JSON object:
    "rationale": "<=200 chars>"}
 
 Rules:
-  - ``center`` MUST be the midpoint of the chosen object's ``bbox_min``
-    and ``bbox_max``; ``size`` MUST be ``bbox_max - bbox_min`` per axis.
-    Copy the geometry of the object you picked from the graph — do NOT
-    invent dimensions.
+  - ``center`` MUST equal the chosen object's ``center`` and ``size`` MUST
+    equal its ``size`` from the list — copy them verbatim (as {x, y, z});
+    do NOT invent dimensions. Set ``object_id`` to the chosen object's
+    ``id``.
   - Pick exactly one object. If the expression is ambiguous, choose the
     best match and explain briefly in ``rationale``.
   - Do not include any text outside the JSON object.
@@ -257,17 +296,50 @@ def build_scene(object_list: list[str], *, near_threshold: float = 2.0) -> Scene
     return scene
 
 
-def scene_to_text(scene: SceneRepresentation) -> str:
-    """Serialise the scene graph to the JSON text block sent to Gemini.
+def _compact_objects(scene: SceneRepresentation) -> list[dict]:
+    """Token-lean per-object view: id, label, center, size, colour.
 
-    Mirrors the scene-graph portion of
-    :func:`xiao_hei_vln.gemini.scene_rep.serialize_for_gemini` so the
-    offline prompt matches the live one.
+    The full ``SceneRepresentation.to_dict`` is ~20x larger — it repeats
+    each bbox as min+max, plus confidence, viewpoint ids, tick ids, and
+    pre-derived ``near`` edges. For a 70-object scene that is ~37k input
+    tokens per call, which overruns the free-tier per-minute input-token
+    quota. We drop everything Gemini can infer from the coordinates.
     """
+    items: list[dict] = []
+    for o in scene.objects:
+        item: dict = {
+            "id": o.object_id,
+            "label": o.label,
+            "center": [round(o.position.x, 2), round(o.position.y, 2), round(o.position.z, 2)],
+        }
+        if o.bbox_min is not None and o.bbox_max is not None:
+            item["size"] = [
+                round(o.bbox_max.x - o.bbox_min.x, 2),
+                round(o.bbox_max.y - o.bbox_min.y, 2),
+                round(o.bbox_max.z - o.bbox_min.z, 2),
+            ]
+        # `color_name` only exists on the color-enabled scene rep (live
+        # perception path); the offline GT never carries colour. getattr
+        # keeps this working on both scene-representation variants.
+        color = getattr(o, "color_name", None)
+        if color:
+            item["color"] = color
+        items.append(item)
+    return items
+
+
+def scene_to_text(scene: SceneRepresentation) -> str:
+    """Serialise a compact object list for the prompt (token-lean).
+
+    Compact JSON (no indentation, tight separators); each object carries
+    only ``id``, ``label``, ``center`` [x,y,z], ``size`` [x,y,z], and an
+    optional ``color``.
+    """
+    objects = _compact_objects(scene)
     return (
-        "Complete scene graph (JSON from SceneRepresentation.to_dict) — every "
-        "object mapped in the room, with 3D bounding boxes and spatial relations:\n"
-        f"```json\n{json.dumps(scene.to_dict(), indent=2)}\n```"
+        "Scene objects (JSON array; each has id, label, center [x,y,z], "
+        "size [x,y,z] in metres, optional color):\n"
+        f"```json\n{json.dumps(objects, separators=(',', ':'))}\n```"
     )
 
 
@@ -294,9 +366,11 @@ def predict_entry(
     """Turn one GT entry into an :class:`EntryPrediction`.
 
     Returns ``None`` for entries that are not scoreable (wrong type,
-    empty question). Raises whatever the engine raises so the caller can
-    count failures. The returned ``debug`` dict captures the exact scene
-    graph + prompts + parsed prediction handed to / from Gemini.
+    empty question). A failed Gemini call / JSON parse is captured, not
+    raised: the returned ``EntryPrediction`` has ``output=None`` and
+    ``debug['error']`` set, so the failing entry is still inspectable via
+    ``--debug-dir``. The ``debug`` dict always captures the exact scene
+    graph + prompts handed to Gemini.
     """
     qtype_str = entry.get("type", "")
     if qtype_str not in SCOREABLE_TYPES:
@@ -310,20 +384,26 @@ def predict_entry(
     object_list = raw_list if isinstance(raw_list, list) else []
 
     scene = build_scene(object_list, near_threshold=near_threshold)
-    scene_dict = scene.to_dict()
     scene_text = scene_to_text(scene)
     system = offline_system_prompt(qtype)
     user_text = build_user_message(question, qtype, scene_text)
-
-    output = engine.infer_multimodal(system=system, user_text=user_text, images=[])
-    debug = {
+    debug: dict = {
         "question": question,
         "type": qtype.value,
-        "scene_graph": scene_dict,
+        "scene_graph": scene.to_dict(),
         "system_prompt": system,
         "user_text": user_text,
-        "prediction": output.model_dump(),
+        "prediction": None,
+        "error": None,
     }
+
+    try:
+        output = engine.infer_multimodal(system=system, user_text=user_text, images=[])
+    except Exception as exc:  # noqa: BLE001 — record the failure, don't crash the run
+        debug["error"] = repr(exc)
+        return EntryPrediction(question=question, output=None, debug=debug)
+
+    debug["prediction"] = output.model_dump()
     return EntryPrediction(question=question, output=output, debug=debug)
 
 
@@ -354,18 +434,24 @@ def run(
         for lineno, line in enumerate(_iter_jsonl(gt_path, limit), 1):
             try:
                 result = predict_entry(engine, line, near_threshold=near_threshold)
-            except Exception as exc:  # network blip, malformed JSON, etc.
-                log.warning("entry %d: Gemini call failed: %s", lineno, exc)
+            except Exception as exc:  # unexpected (e.g. scene build) — keep going
+                log.warning("entry %d: %s", lineno, exc)
                 errors += 1
                 continue
             if result is None:
                 skipped += 1
                 continue
+            # Dump debug for *every* processed entry — including failures,
+            # which are exactly the ones worth inspecting.
+            if debug_dir is not None:
+                _write_debug(debug_dir, lineno, result)
+            if result.output is None:
+                errors += 1
+                log.warning("entry %d: Gemini call failed: %s", lineno, result.debug["error"])
+                continue
             record = {"question": result.question, "prediction": result.output.model_dump()}
             out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
-            if debug_dir is not None:
-                _write_debug(debug_dir, lineno, result)
             if written % 10 == 0:
                 print(f"  ... {written} predictions", file=sys.stderr)
 

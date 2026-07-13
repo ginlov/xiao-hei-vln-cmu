@@ -95,11 +95,24 @@ def test_build_scene_sets_scene_bounds() -> None:
     assert mn.x <= 0.70 and mx.x >= 2.10
 
 
-def test_scene_to_text_embeds_json_graph() -> None:
+def test_scene_to_text_is_compact_object_list() -> None:
     text = batch.scene_to_text(batch.build_scene(OBJECT_LIST))
     assert "```json" in text
-    assert '"objects"' in text
     assert "chair" in text
+    assert '"center"' in text and '"size"' in text
+    # Compact: no pretty-print indentation, and none of the verbose fields.
+    assert "\n  " not in text
+    assert "bbox_min" not in text
+    assert "observing_viewpoint_ids" not in text
+
+
+def test_compact_objects_prunes_fields() -> None:
+    objs = batch._compact_objects(batch.build_scene(OBJECT_LIST))
+    assert len(objs) == 2
+    keys = set(objs[0])
+    assert keys <= {"id", "label", "center", "size", "color"}
+    assert "center" in keys and "size" in keys
+    assert len(objs[0]["center"]) == 3 and len(objs[0]["size"]) == 3
 
 
 # --- prompt dispatch -------------------------------------------------------
@@ -124,10 +137,11 @@ def test_predict_entry_numerical() -> None:
     assert result is not None
     assert result.question == "How many chairs?"
     assert isinstance(result.output, NumericalResponse) and result.output.value == 2
-    # Offline path sends the scene graph, no images.
+    # Offline path sends the compact scene objects, no images.
     call = engine.calls[0]
     assert call["images"] == []
-    assert "scene graph" in call["user_text"].lower()
+    assert "scene objects" in call["user_text"].lower()
+    assert "chair" in call["user_text"]
     assert "NUMERICAL" in call["system"]
 
 
@@ -228,14 +242,32 @@ def test_run_survives_engine_errors(tmp_path: Path) -> None:
 # --- rate limiting + retry -------------------------------------------------
 
 
-def test_retry_delay_from_exc_parsing() -> None:
-    assert batch._retry_delay_from_exc(RuntimeError("plain error")) is None
-    assert batch._retry_delay_from_exc(RuntimeError("429 ... 'retryDelay': '9s'")) == 9.0
-    assert batch._retry_delay_from_exc(
-        RuntimeError("429 RESOURCE_EXHAUSTED. Please retry in 3.5s")
-    ) == 3.5
-    # A 429 with no parseable delay → 0.0 (caller applies its floor).
-    assert batch._retry_delay_from_exc(RuntimeError("429 RESOURCE_EXHAUSTED")) == 0.0
+def test_parse_retry_delay() -> None:
+    assert batch._parse_retry_delay("plain error") is None
+    assert batch._parse_retry_delay("429 ... 'retryDelay': '9s'") == 9.0
+    assert batch._parse_retry_delay("Please retry in 3.5s") == 3.5
+
+
+def test_retry_wait_classifies_errors() -> None:
+    # Non-retryable → None.
+    assert batch._retry_wait(ValueError("bad json"), 0, min_backoff=2.0) is None
+    # 429 rate-limit → retryable; server delay floored by exponential backoff.
+    w = batch._retry_wait(RuntimeError("429 RESOURCE_EXHAUSTED 'retryDelay': '1s'"), 0, min_backoff=2.0)
+    assert w == 2.0  # max(1, 2*2**0)
+    # 503 transient → retryable even without a retryDelay.
+    assert batch._retry_wait(RuntimeError("503 UNAVAILABLE high demand"), 0, min_backoff=2.0) == 2.0
+    # Input-token-per-minute quota → at least a 60s window despite short delay.
+    w = batch._retry_wait(
+        RuntimeError("429 free_tier_input_token_count ... 'retryDelay': '0s'"), 0, min_backoff=2.0,
+    )
+    assert w == 60.0
+    # Exponential backoff grows with attempt.
+    assert batch._retry_wait(RuntimeError("503 UNAVAILABLE"), 3, min_backoff=2.0) == 16.0
+    # Per-DAY quota won't clear in-window → not retryable (fail fast).
+    assert batch._retry_wait(
+        RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+        0, min_backoff=2.0,
+    ) is None
 
 
 def test_throttled_engine_retries_on_429(monkeypatch) -> None:
@@ -316,3 +348,44 @@ def test_run_debug_dir_writes_full_request(tmp_path: Path) -> None:
     assert payload["system_prompt"]
     assert payload["user_text"]
     assert payload["prediction"]["kind"] == "numerical"
+    assert payload["error"] is None
+
+
+def test_throttled_engine_retries_on_503(monkeypatch) -> None:
+    monkeypatch.setattr(batch.time, "sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    class Flaky503:
+        def infer_multimodal(self, *, system, user_text, images):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("503 UNAVAILABLE: model overloaded")
+            return NumericalResponse(value=9)
+
+        def warmup(self):
+            pass
+
+    eng = batch.ThrottledEngine(Flaky503(), rpm=0, max_retries=5)
+    out = eng.infer_multimodal(system="s", user_text="u", images=[])
+    assert isinstance(out, NumericalResponse) and out.value == 9
+    assert calls["n"] == 2  # 503 is retried, not treated as permanent
+
+
+def test_run_debug_dir_captures_failures(tmp_path: Path) -> None:
+    gt = tmp_path / "gt.jsonl"
+    out = tmp_path / "pred.jsonl"
+    dbg = tmp_path / "debug"
+    _write_jsonl(
+        gt, [{"type": "numerical", "question": "How many chairs?", "object_list": OBJECT_LIST}]
+    )
+
+    written = batch.run(gt, out, BoomEngine(), debug_dir=dbg)
+
+    assert written == 0
+    assert out.read_text() == ""  # no prediction line for a failed call
+    # ...but the failure IS captured for inspection, with the error recorded.
+    (fp,) = list(dbg.glob("*.json"))
+    payload = json.loads(fp.read_text())
+    assert payload["prediction"] is None
+    assert payload["error"] is not None
+    assert payload["user_text"]  # the exact prompt that failed is preserved

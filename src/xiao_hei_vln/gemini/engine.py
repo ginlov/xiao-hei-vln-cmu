@@ -240,12 +240,18 @@ class GeminiEngine:
         plus the strict JSON-shape contract in the system prompt —
         Gemini is already very reliable in that mode, and
         :func:`parse_vlm_output` handles the discriminator on our side.
+
+        ``thinking_config`` disables (or bounds) the model's reasoning
+        tokens. gemini-2.5-flash otherwise spends most of
+        ``max_output_tokens`` on hidden thinking and truncates the JSON
+        answer; a structured-output task doesn't need it.
         """
         return {
             "system_instruction": system,
             "temperature": self._config.temperature,
             "max_output_tokens": self._config.max_output_tokens,
             "response_mime_type": "application/json",
+            "thinking_config": {"thinking_budget": self._config.thinking_budget},
         }
 
 

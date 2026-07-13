@@ -259,4 +259,5 @@ trajectories/
 # Offline Gemini evaluator outputs (regeneratable — see README "Offline evaluation").
 pred_*.jsonl
 *_trace.jsonl
+trace_*.jsonl
 debug_*/

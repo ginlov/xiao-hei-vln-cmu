@@ -194,7 +194,8 @@ Optional knobs (all have defaults; just `export` to override):
 | `XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS` | `120` | Task-1 ticks to explore before asking Gemini |
 | `XIAO_HEI_GEMINI_MAX_TICKS` | `240` | hard per-question safety cap |
 | `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | sampling temperature |
-| `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `1024` | response token cap |
+| `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `2048` | response token cap |
+| `XIAO_HEI_GEMINI_THINKING_BUDGET` | `0` | thinking tokens; `0` disables (keeps the JSON answer from being truncated), `-1` = dynamic |
 | `XIAO_HEI_GEMINI_IMAGE_LONG_EDGE` | `1280` | downscale long-edge before send |
 
 ## Offline evaluation
