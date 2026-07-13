@@ -22,7 +22,7 @@ graph LR
     end
 
     SIM --> ROS
-    ROS -->|7 topics| SUB
+    ROS -->|challenge topics| SUB
     SUB -->|overwrite latest| CACHE
     TICK -->|snapshot| CACHE
     CACHE -->|VLMInput| RESP
@@ -33,33 +33,44 @@ graph LR
     ROS --> SIM
 ```
 
-## Container topology (GPU compose)
+## Container topology
 
 ```mermaid
 graph TB
     subgraph Docker Compose
         SYS[iros2026_system<br/>Challenge simulator + ROS]
         AI[xiao_hei_ai_module<br/>Python responder + ROS node]
-        VLLM[xiao_hei_vllm<br/>vLLM OpenAI server]
+        VLLM["xiao_hei_vllm<br/>vLLM OpenAI server<br/>(profile: qwen)"]
+        PERC["xiao_hei_perception<br/>YOLO-World + SAM 2.1<br/>(profile: perception)"]
     end
 
     SYS <-->|ROS 2 DDS<br/>network_mode: host| AI
-    AI -->|HTTP :8000/v1| VLLM
+    AI -.->|HTTP :8000/v1| VLLM
+    AI -.->|HTTP :8001| PERC
 ```
 
-All three containers share `network_mode: host` so ROS 2 DDS discovery and the vLLM HTTP API work without port mapping.
+`system` and `ai_module` always start. The `vllm` and `perception`
+sidecars are profile-gated — the wrapper maps `XIAO_HEI_RESPONDER=qwen`
+to `--profile qwen` and `XIAO_HEI_RESPONDER=perception` to
+`--profile perception`, so only the sidecar the active responder needs
+ever runs. See [Docker setup](getting-started/docker.md) and
+[Perception Sidecar](perception-sidecar.md).
+
+All containers share `network_mode: host` so ROS 2 DDS discovery and
+the sidecar HTTP APIs work without port mapping.
 
 ## Input topics
 
 | ROS topic | Rate | Python type | Description |
 |---|---|---|---|
 | `/camera/image` | ~10 Hz | `ImageFrame` | 1920x640 BGR8 panoramic |
-| `/registered_scan` | ~10 Hz | `LidarScan` | (x,y,z,intensity) in map frame |
-| `/sensor_scan` | ~10 Hz | `LidarScan` | (x,y,z) in sensor frame |
-| `/terrain_map` | ~10 Hz | `TerrainMap` | Local 5m traversability |
-| `/terrain_map_ext` | ~10 Hz | `TerrainMap` | Extended 20m traversability |
-| `/state_estimation` | ~200 Hz | `OdomPose` | Robot pose in map frame |
+| `/registered_scan` | ~5 Hz | `LidarScan` | (x,y,z,intensity) in map frame |
+| `/sensor_scan` | ~5 Hz | `LidarScan` | (x,y,z) in sensor frame |
+| `/terrain_map` | ~5 Hz | `TerrainMap` | Local 5m traversability |
+| `/terrain_map_ext` | ~5 Hz | `TerrainMap` | Extended 20m traversability |
+| `/state_estimation` | 100–200 Hz | `OdomPose` | Robot pose in map frame |
 | `/challenge_question` | 1 Hz | `ChallengeQuestion` | Natural language question |
+| `/way_point_reached` | continuous | `Float32` | Nav stack distance to current waypoint (exploration only) |
 
 ## Output topics
 
@@ -76,11 +87,15 @@ src/xiao_hei_vln/
 ├── messages/      # Pydantic models for all I/O types
 ├── sync/          # LatestCache — thread-safe sensor buffer
 ├── adapters/      # ROS 2 subscribers + publishers
-├── app/           # rclpy entry point, tick loop, responder factory
+├── app/           # rclpy entry point, tick loop, explorer + responder factory
+├── exploration/   # Exploration strategies (FrontierExplorer + protocol)
 ├── logger.py      # VLM tick logger (model-agnostic)
 ├── image_utils.py # Shared image conversion helpers
 ├── dummy/         # Reference responder (no GPU)
 ├── qwen/          # Qwen3.5 responder, engine, prompts
+├── scene/         # Three-level scene graph (Room/Viewpoint/Object) + renderer
+├── trajectory/    # Offline coverage-trajectory planner (Task 7)
+├── perception/    # PerceptionResponder + HTTP client + lifter + vocabulary
 ├── evaluator/     # Offline metrics (numerical, object reference)
 ├── eval_sampler/  # Ground-truth ↔ prediction pairing
 └── eval_pipeline/ # End-to-end evaluation CLI
@@ -88,23 +103,33 @@ src/xiao_hei_vln/
 
 ## Tick lifecycle
 
+The tick loop runs in two phases.  Exploration runs first; the responder
+only runs once exploration is complete or a question is active.
+
 ```mermaid
 sequenceDiagram
     participant Timer as 2 Hz Timer
     participant Cache as LatestCache
+    participant Exp as Explorer
     participant Resp as Responder
     participant Engine as HTTPQwenEngine
     participant vLLM as vLLM Server
 
     Timer->>Cache: snapshot(tick_id, timestamp)
     Cache-->>Timer: VLMInput
-    Timer->>Resp: respond(VLMInput)
-    Resp->>Resp: build prompts (system + user)
-    Resp->>Engine: infer(system, user_text, image)
-    Engine->>vLLM: POST /v1/chat/completions
-    vLLM-->>Engine: JSON response
-    Engine-->>Resp: VLMOutput
-    Resp->>Resp: update evidence, check done
-    Resp-->>Timer: VLMOutput
-    Timer->>Timer: publisher.publish(output)
+
+    alt exploration active (no question + not complete)
+        Timer->>Exp: update(VLMInput)
+        Exp-->>Timer: Waypoint | None
+        Timer->>Timer: publisher.publish(WaypointPathResponse)
+    else question active or exploration done
+        Timer->>Resp: respond(VLMInput)
+        Resp->>Resp: build prompts (system + user)
+        Resp->>Engine: infer(system, user_text, image)
+        Engine->>vLLM: POST /v1/chat/completions
+        vLLM-->>Engine: JSON response
+        Engine-->>Resp: VLMOutput
+        Resp-->>Timer: VLMOutput
+        Timer->>Timer: publisher.publish(output)
+    end
 ```

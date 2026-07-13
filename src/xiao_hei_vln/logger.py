@@ -75,12 +75,25 @@ class VLMLogger:
         self._images_dir: Path | None = None
         self._pointclouds_dir: Path | None = None
         self._jsonl_fh: IO[str] | None = None
+        self._attached_scene: Any = None
 
         log.info("VLMLogger session started: %s", self._session_dir)
 
     @property
     def session_dir(self) -> Path:
         return self._session_dir
+
+    def attach_scene(self, scene: Any) -> None:
+        """Bind a scene object whose ``.to_dict()`` is logged per tick.
+
+        Once attached, callers can omit the ``scene`` kwarg from
+        :meth:`log_tick`; the logger pulls a fresh snapshot via
+        ``scene.to_dict()`` for every record. Pass an explicit
+        ``scene`` to ``log_tick`` to override on a per-call basis.
+        Duck-typed — any object exposing a ``to_dict() -> dict``
+        method works (no import of :class:`SceneRepresentation` here).
+        """
+        self._attached_scene = scene
 
     def new_question(self, question_text: str) -> None:
         """Open a new per-question subdirectory and JSONL file."""
@@ -107,6 +120,7 @@ class VLMLogger:
         output: VLMOutput | None,
         inference_ms: float,
         evidence: list[str],
+        scene: dict[str, Any] | None = None,
     ) -> None:
         if self._jsonl_fh is None or self._question_dir is None:
             return
@@ -136,6 +150,10 @@ class VLMLogger:
             "image_path": image_path,
             "pointclouds": pc_paths,
         }
+        if scene is None and self._attached_scene is not None:
+            scene = self._attached_scene.to_dict()
+        if scene is not None:
+            record["scene"] = scene
         self._jsonl_fh.write(
             json.dumps(record, separators=(",", ":")) + "\n",
         )

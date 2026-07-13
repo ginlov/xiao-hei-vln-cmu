@@ -104,6 +104,14 @@ class ObjectObservation:
     label: str
     position: Vector3
     confidence: float = 1.0
+    # Appearance colour, sampled from the pixels inside the detection mask.
+    # ``color_rgb`` is the median (R, G, B) in 0-255; ``color_name`` is the
+    # nearest basic-colour label (e.g. "red", "brown"). Both are ``None``
+    # when no producer supplied a colour (e.g. LiDAR-only observations).
+    # Refreshed in lock-step with ``position`` when a higher-confidence
+    # observation of the same object arrives.
+    color_rgb: tuple[int, int, int] | None = None
+    color_name: str | None = None
     bbox_min: Vector3 | None = None
     bbox_max: Vector3 | None = None
     object_id: int = 0
@@ -214,6 +222,12 @@ class SceneRepresentation:
                     existing.bbox_min = obs.bbox_min
                     existing.bbox_max = obs.bbox_max
                     existing.last_tick_id = self._tick_id
+                    # Keep colour in step with position — only overwrite when
+                    # the new observation actually carries one, so a colourless
+                    # (e.g. LiDAR-only) update doesn't wipe a known colour.
+                    if obs.color_rgb is not None:
+                        existing.color_rgb = obs.color_rgb
+                        existing.color_name = obs.color_name
                     if vp_id is not None and (
                         not existing.observing_viewpoint_ids
                         or existing.observing_viewpoint_ids[-1] != vp_id
@@ -339,6 +353,8 @@ class SceneRepresentation:
                     "label": o.label,
                     "position": _v3(o.position),
                     "confidence": o.confidence,
+                    "color_rgb": list(o.color_rgb) if o.color_rgb is not None else None,
+                    "color_name": o.color_name,
                     "bbox_min": _v3(o.bbox_min),
                     "bbox_max": _v3(o.bbox_max),
                     "first_tick_id": o.first_tick_id,

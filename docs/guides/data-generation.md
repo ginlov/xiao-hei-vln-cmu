@@ -1,45 +1,50 @@
 # Data Generation
 
-The project uses VLA-3D generated datasets for offline evaluation and
-prompt development.
+The project generates three ground-truth datasets from VLA-3D scene data.
+All scripts live in `dataset_generator/` and write output to `dataset/`.
 
-## Dataset pipeline
+## Dataset overview
+
+| File | Questions | Type | Script |
+|---|---|---|---|
+| `dataset/challenge_gt.jsonl` | 45 | official challenge questions | `challenge_gt_gen.py` |
+| `dataset/vla3d_ref.jsonl` | 7 708 | VLA-3D object-reference | `vla3d_ref_to_qa.py` |
+| `dataset/vla3d_num.jsonl` | 591 | VLA-3D numerical | `vla3d_num_gen.py` |
+
+Use `challenge_gt.jsonl` when scoring real challenge runs.  Use the VLA-3D
+files for training, ablations, and development evaluation.
+
+## Pipeline diagram
 
 ```mermaid
-graph LR
-    VLA3D[VLA-3D Scenes] --> GEN[dataset_generator]
-    GEN --> GT[Ground Truth JSONL]
-    GT --> SAMPLER[eval_sampler]
-    SAMPLER --> EVAL[Evaluator]
+graph TD
+    VLA3D[VLA-3D scene graphs] --> REF[vla3d_ref_to_qa.py]
+    VLA3D --> NUM[vla3d_num_gen.py]
+    VLA3D --> NEST[vla3d_nested_gen.py]
+    QJSON[questions/questions.json] --> CGT[challenge_gt_gen.py]
+    VLA3D --> CGT
+    REF --> REF_OUT[dataset/vla3d_ref.jsonl]
+    NUM --> NUM_OUT[dataset/vla3d_num.jsonl]
+    NEST -->|auto-merged| REF_OUT
+    NEST -->|auto-merged| NUM_OUT
+    CGT --> GT_OUT[dataset/challenge_gt.jsonl]
+    GT_OUT --> EVAL[eval_pipeline]
 ```
 
-## Ground truth format
+## Regenerating VLA-3D datasets
 
-Each line in the ground-truth JSONL contains:
+Use the one-shot driver:
 
-```json
-{
-  "question": "How many chairs are in the room?",
-  "question_type": "numerical",
-  "answer": {"kind": "numerical", "value": 4}
-}
+```bash
+bash dataset_generator/regen.sh
 ```
 
-For object references:
+This runs all four steps (ref → num → nested → type-check) and prints a
+summary.  Individual scripts can also be run directly:
 
-```json
-{
-  "question": "Find the red cup",
-  "question_type": "object_reference",
-  "answer": {
-    "kind": "object_reference",
-    "label": "red_cup",
-    "object_id": 7,
-    "center": {"x": 2.1, "y": -0.5, "z": 0.8},
-    "size": {"x": 0.1, "y": 0.1, "z": 0.15}
-  }
-}
-```
+```bash
+# Object-reference Q&A
+uv run python dataset_generator/vla3d_ref_to_qa.py
 
 ## Generating the corpus
 

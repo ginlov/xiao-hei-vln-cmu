@@ -1,0 +1,36 @@
+# Scene-mount overlay for the simulator container.
+#
+# Layered automatically by docker/run when XIAO_HEI_SCENE_DIR_HOST is set.
+# Bind-mounts the host's extracted scene over the sim image's prebaked mesh
+# directory, so a single env var picks which scene the sim uses (e.g.
+# arabic_room for the perception responder).
+#
+# Expected layout under XIAO_HEI_SCENE_DIR_HOST (matches what unzip
+# produces from any unity_env_models/<scene>.zip):
+#
+#   <scene_dir>/
+#     environment/          # Unity player — sensor sim (camera + LiDAR)
+#       Model.x86_64
+#       Model_Data/
+#       UnityPlayer.so
+#       …
+#     map.ply               # world point cloud — RViz mesh visualization
+#     map.jpg               # top-down map image
+#     traversable_area.ply  # ground-truth traversable region
+#     object_list.txt       # scene object list
+#
+# IMPORTANT: `environment/` alone is NOT enough. The vehicle_simulator loads
+# `map.ply` as the RViz visualization mesh and `traversable_area.ply` for the
+# traversable region — both live at the `mesh/unity/` level, NOT inside
+# `environment/`. Overlaying only `environment/` swaps what the robot *senses*
+# (Unity) but leaves RViz showing the default scene's `map.ply`. So we overlay
+# every per-scene file here to keep the whole sim consistent.
+
+services:
+  system:
+    volumes:
+      - ${XIAO_HEI_SCENE_DIR_HOST:?set XIAO_HEI_SCENE_DIR_HOST to the extracted scene directory on the host (e.g. /path/to/unity_env_models/arabic_room)}/environment:/home/docker/autonomy_stack_mecanum_wheel_platform/src/base_autonomy/vehicle_simulator/mesh/unity/environment:ro
+      - ${XIAO_HEI_SCENE_DIR_HOST}/map.ply:/home/docker/autonomy_stack_mecanum_wheel_platform/src/base_autonomy/vehicle_simulator/mesh/unity/map.ply:ro
+      - ${XIAO_HEI_SCENE_DIR_HOST}/map.jpg:/home/docker/autonomy_stack_mecanum_wheel_platform/src/base_autonomy/vehicle_simulator/mesh/unity/map.jpg:ro
+      - ${XIAO_HEI_SCENE_DIR_HOST}/traversable_area.ply:/home/docker/autonomy_stack_mecanum_wheel_platform/src/base_autonomy/vehicle_simulator/mesh/unity/traversable_area.ply:ro
+      - ${XIAO_HEI_SCENE_DIR_HOST}/object_list.txt:/home/docker/autonomy_stack_mecanum_wheel_platform/src/base_autonomy/vehicle_simulator/mesh/unity/object_list.txt:ro

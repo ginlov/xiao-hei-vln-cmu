@@ -31,6 +31,13 @@ from pathlib import Path
 
 import numpy as np
 
+from xiao_hei_vln.scene.render import (
+    SCENE_TABLE_CSS,
+    render_graph_png,
+    render_node_tables,
+    render_topdown_png,
+)
+
 
 def _require_matplotlib():
     try:
@@ -257,6 +264,201 @@ def load_camera_frames(q_dir: Path, ticks: list[dict]) -> list[dict]:
     return frames
 
 
+# --- scene section ---
+
+
+def build_scene_section(
+    ticks: list[dict], *, has_camera: bool = False,
+) -> tuple[str, bool]:
+    """Return ``(html, ok)`` for the per-tick scene visualisation.
+
+    ``ok`` is False (and the section is empty) when no tick in ``ticks``
+    carries a ``scene`` field, so the caller can warn and skip cleanly.
+
+    When ``has_camera`` is True the scene view has no controls of its
+    own — it is driven by the camera playback above via the global
+    ``syncSceneToTick(tickId)`` hook, so the video and the scene graph
+    advance together. With no camera frames, the section keeps its own
+    slider so the graph build-up can still be scrubbed standalone.
+    """
+    scene_ticks = [t for t in ticks if isinstance(t.get("scene"), dict)]
+    if not scene_ticks:
+        return "", False
+
+    # One window for the whole session so the top-down boundary is
+    # stationary — it doesn't zoom/pan as objects/viewpoints accumulate.
+    view_bounds = _compute_view_bounds(scene_ticks)
+
+    scene_frames = [
+        {
+            "tick_id": t["tick_id"],
+            "topdown": "data:image/png;base64," + render_topdown_png(
+                t["scene"],
+                current_pose=_pose_dict(t.get("pose")),
+                view_bounds=view_bounds,
+            ),
+            "graph": "data:image/png;base64," + render_graph_png(t["scene"]),
+            "tables": render_node_tables(t["scene"]),
+        }
+        for t in scene_ticks
+    ]
+
+    last_idx = len(scene_frames) - 1
+    frames_json = json.dumps(scene_frames)
+
+    if has_camera:
+        controls_html = ""
+        sync_desc = (
+            "The scene graph is <b>synchronised with the camera playback "
+            "above</b> — use the camera slider / play button to advance the "
+            "video and the scene state together. Tables show the cumulative "
+            "Room / Viewpoint / Object state at the current tick."
+        )
+        # Camera script runs first (it appears above), so `frames`/`idx`
+        # exist by the time this init runs; sync to the camera's frame.
+        init_js = (
+            "if (typeof frames !== 'undefined' && frames.length > 0) "
+            "{ syncSceneToTick(frames[idx].tick_id); } "
+            f"else {{ showSceneFrame({last_idx}); }}"
+        )
+    else:
+        controls_html = f"""
+          <div style="margin-top:8px">
+            <button onclick="prevSceneFrame()">&#9664;</button>
+            <button onclick="nextSceneFrame()">&#9654;</button>
+            <input id="scene-slider" type="range" min="0"
+                   max="{last_idx}" value="{last_idx}"
+                   oninput="showSceneFrame(this.value)"
+                   style="width:300px;vertical-align:middle">
+            <span id="scene-frame-label"
+                  style="font-family:monospace;margin-left:8px"></span>
+          </div>"""
+        sync_desc = (
+            "Top-down spatial view (left) and three-level topology (right). "
+            "Scrub with the slider to watch the graph build up; tables show "
+            "the cumulative Room / Viewpoint / Object state."
+        )
+        init_js = f"if (sceneFrames.length > 0) showSceneFrame({last_idx});"
+
+    html = f"""
+        <h2>Scene Representation</h2>
+        <p style="font-size:12px;color:#666">{sync_desc}</p>
+        <div id="scene-player">
+          <div class="scene-views">
+            <div>
+              <h3>Top-down (spatial)</h3>
+              <img id="scene-topdown" style="max-width:100%;
+                   border:1px solid #ddd">
+            </div>
+            <div>
+              <h3>Scene graph (topology)</h3>
+              <img id="scene-graph" style="max-width:100%;
+                   border:1px solid #ddd">
+            </div>
+          </div>
+          {controls_html}
+          <div id="scene-tables" style="margin-top:16px"></div>
+        </div>
+        <script>
+        const sceneFrames = {frames_json};
+        let sceneIdx = 0;
+        function renderSceneFrame(i) {{
+          sceneIdx = i;
+          const f = sceneFrames[i];
+          document.getElementById('scene-topdown').src = f.topdown;
+          document.getElementById('scene-graph').src = f.graph;
+          document.getElementById('scene-tables').innerHTML = f.tables;
+          const lbl = document.getElementById('scene-frame-label');
+          if (lbl) lbl.textContent =
+            'tick ' + f.tick_id + ' (' + (i + 1) + ' / ' +
+            sceneFrames.length + ')';
+        }}
+        // Cumulative state: the latest scene frame at-or-before this tick.
+        function sceneIdxForTick(tickId) {{
+          let best = 0;
+          for (let i = 0; i < sceneFrames.length; i++) {{
+            if (sceneFrames[i].tick_id <= tickId) best = i; else break;
+          }}
+          return best;
+        }}
+        function syncSceneToTick(tickId) {{
+          renderSceneFrame(sceneIdxForTick(tickId));
+          const s = document.getElementById('scene-slider');
+          if (s) s.value = sceneIdx;
+        }}
+        function showSceneFrame(i) {{
+          renderSceneFrame(parseInt(i));
+          const s = document.getElementById('scene-slider');
+          if (s) s.value = sceneIdx;
+        }}
+        function nextSceneFrame() {{
+          showSceneFrame(Math.min(sceneIdx + 1, sceneFrames.length - 1));
+        }}
+        function prevSceneFrame() {{
+          showSceneFrame(Math.max(sceneIdx - 1, 0));
+        }}
+        {init_js}
+        </script>
+        """
+    return html, True
+
+
+def _compute_view_bounds(
+    scene_ticks: list[dict], *, margin: float = 0.5,
+) -> tuple[float, float, float, float] | None:
+    """Session-wide ``(xmin, xmax, ymin, ymax)`` square window.
+
+    Unions every tick's object/viewpoint positions and robot pose across
+    the whole run, pads by ``margin``, then squares it (equal
+    width/height) so the same fixed, undistorted window can be reused for
+    every frame. The LiDAR ``scene_bounds`` is deliberately excluded — it
+    spans the full ~20 m scan radius and would shrink the actual
+    explored area to a dot; its dashed rectangle simply clips to this
+    window instead. Returns ``None`` when there's nothing to bound.
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for t in scene_ticks:
+        sc = t.get("scene", {}) or {}
+        for o in sc.get("objects", []) or []:
+            xs.append(o["position"][0])
+            ys.append(o["position"][1])
+        for v in sc.get("viewpoints", []) or []:
+            xs.append(v["position"][0])
+            ys.append(v["position"][1])
+        pose = t.get("pose")
+        if pose:
+            xs.append(pose["position"]["x"])
+            ys.append(pose["position"]["y"])
+
+    if not xs:
+        return None
+
+    xmin, xmax = min(xs) - margin, max(xs) + margin
+    ymin, ymax = min(ys) - margin, max(ys) + margin
+    side = max(xmax - xmin, ymax - ymin)
+    cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+    return (cx - side / 2, cx + side / 2, cy - side / 2, cy + side / 2)
+
+
+def _pose_dict(pose: dict | None) -> dict[str, float] | None:
+    """Translate a logger pose record into the small dict the renderer wants."""
+    if pose is None:
+        return None
+    pos = pose.get("position") or {}
+    orient = pose.get("orientation") or {}
+    # Yaw from quaternion (z-rotation only — see scene.representation).
+    qx, qy, qz, qw = (
+        float(orient.get("x", 0.0)), float(orient.get("y", 0.0)),
+        float(orient.get("z", 0.0)), float(orient.get("w", 1.0)),
+    )
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    import math as _m
+    yaw = _m.atan2(siny_cosp, cosy_cosp)
+    return {"x": float(pos.get("x", 0.0)), "y": float(pos.get("y", 0.0)), "yaw": yaw}
+
+
 # --- HTML rendering ---
 
 
@@ -323,6 +525,8 @@ def generate_html(
     q_name: str,
     ticks: list[dict],
     q_dir: Path,
+    *,
+    with_scene: bool = True,
 ) -> str:
     q_text = ticks[0].get("question_text", "?") if ticks else "?"
     q_type = ticks[0].get("question_type", "?") if ticks else "?"
@@ -355,6 +559,20 @@ def generate_html(
     pose_b64 = render_pose_chart(ticks)
     latency_b64 = render_latency_chart(ticks)
     bev_b64 = render_bev_chart(q_dir, ticks)
+
+    # Scene section (optional; default-on)
+    scene_section = ""
+    scene_has_data = False
+    if with_scene:
+        scene_section, scene_has_data = build_scene_section(
+            ticks, has_camera=bool(frames),
+        )
+        if not scene_has_data:
+            print(
+                f"  {q_name}: no tick has a 'scene' field; "
+                "skipping Scene Representation section",
+                file=sys.stderr,
+            )
 
     # Tick table
     tick_rows = render_tick_rows(ticks)
@@ -399,6 +617,9 @@ def generate_html(
           document.getElementById('frame-label').textContent =
             'tick ' + frames[idx].tick_id +
             ' | ' + frames[idx].time.toFixed(2) + 's';
+          // Keep the scene representation in lock-step with the video.
+          if (typeof syncSceneToTick === 'function')
+            syncSceneToTick(frames[idx].tick_id);
         }}
         function nextFrame() {{
           showFrame(Math.min(idx + 1, frames.length - 1));
@@ -464,6 +685,10 @@ def generate_html(
   .answer {{ font-size: 20px; font-weight: bold; color: #1b5e20;
              background: #e8f5e9; padding: 8px 16px;
              border-radius: 6px; display: inline-block; }}
+  .scene-views {{ display: flex; gap: 16px; flex-wrap: wrap; }}
+  .scene-views > div {{ flex: 1; min-width: 380px; }}
+  .scene-views img {{ display: block; max-width: 100%; }}
+  {SCENE_TABLE_CSS}
 </style>
 </head>
 <body>
@@ -486,6 +711,8 @@ def generate_html(
 {"<div class='answer'>" + escape(final_answer) + "</div>" if final_answer else ""}
 
 {camera_section}
+
+{scene_section}
 
 <h2>Pose Trajectory + Waypoints</h2>
 <img src="data:image/png;base64,{pose_b64}" style="max-width:100%">
@@ -550,6 +777,10 @@ def main() -> None:
         "-q", "--question", type=str, default=None,
         help="Filter questions by substring (e.g. '001' or 'chairs')",
     )
+    parser.add_argument(
+        "--no-scene", action="store_true",
+        help="Skip the Scene Representation section even if tick records carry it",
+    )
     args = parser.parse_args()
 
     session_dir, q_dirs = find_question_dirs(args.path, args.question)
@@ -565,7 +796,10 @@ def main() -> None:
             print(f"  {q_dir.name}: no ticks, skipping")
             continue
 
-        html = generate_html(session_meta, q_dir.name, ticks, q_dir)
+        html = generate_html(
+            session_meta, q_dir.name, ticks, q_dir,
+            with_scene=not args.no_scene,
+        )
         out_path = q_dir / "report.html"
         out_path.write_text(html)
         print(f"  {out_path}")

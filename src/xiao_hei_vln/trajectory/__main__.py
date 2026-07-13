@@ -151,6 +151,15 @@ def main() -> None:
     parser.add_argument("--robot-radius", type=float, default=0.3)
     parser.add_argument("--grid-resolution", type=float, default=0.25)
     parser.add_argument("--hull-ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--min-waypoint-spacing", type=float, default=0.7,
+        help=(
+            "Minimum distance (m) between consecutive non-coverage "
+            "waypoints. Set above the local planner's goalClearRange "
+            "(0.35 m) so the robot doesn't auto-advance through "
+            "intermediates without observing. Default 0.7 m."
+        ),
+    )
     args = parser.parse_args()
 
     kwargs = {
@@ -158,6 +167,7 @@ def main() -> None:
         "robot_radius": args.robot_radius,
         "grid_resolution": args.grid_resolution,
         "hull_ratio": args.hull_ratio,
+        "min_waypoint_spacing": args.min_waypoint_spacing,
     }
     out_dir = Path(args.out)
 

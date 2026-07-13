@@ -136,8 +136,9 @@ class. Run with `uv run pytest -q`.
 uv sync
 xhost +local:
 
-# bring up the challenge sim + our VLM container
-docker compose -f docker/compose_gpu.yml up -d --build
+# bring up the challenge sim + our VLM container (vllm sidecar auto-starts
+# because XIAO_HEI_RESPONDER=qwen activates the `qwen` compose profile)
+XIAO_HEI_RESPONDER=qwen docker/run up -d --build
 
 # inside iros2026_system: start the sim
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh

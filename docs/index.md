@@ -19,6 +19,9 @@ A typed Python framework that sits between the challenge's ROS 2 sensor topics a
 |---|---|
 | Run the system for the first time | [Quickstart](getting-started/quickstart.md) |
 | Understand the architecture | [Architecture](architecture.md) |
+| Understand the exploration phase | [Exploration Phase](concepts/exploration.md) |
+| Understand the frontier algorithm | [FrontierExplorer](concepts/frontier-explorer.md) |
+| Add a new exploration strategy | [New Exploration Strategy](guides/new-exploration-strategy.md) |
 | Plug in a new VLM | [New Model Guide](guides/new-model.md) |
 | Configure parameters | [Configuration](getting-started/configuration.md) |
 | Run evaluation | [Evaluation Guide](guides/evaluation.md) |

@@ -1,12 +1,16 @@
-"""Persistent perception state shared across VLM ticks.
+"""Perception-responder package.
 
-Currently exposes ``GlobalMap`` — a 2D occupancy grid that stitches
-``terrain_ext`` snapshots together using the provided pose. Future
-modules (object detector, localizer, scene memory) will live here as
-well; see the plan in ``docs/task1_io_spec.md`` and the related
-architecture notes.
+Talks HTTP to the perception sidecar (YOLOv8x-World v2 + SAM 2.1 Hiera
+Tiny, see `perception/` at the repo root), projects each returned
+equirect mask through the LiDAR scan to lift to 3D, and pushes the
+detections into the shared :class:`SceneRepresentation` via
+:meth:`add_object`.
+
+The :class:`PerceptionResponder` runs a Phase A (walk coverage
+trajectory) / Phase B (answer question) split, integrated with the
+report tooling and logger wiring.
 """
 
-from xiao_hei_vln.perception.global_map import FrontierCluster, GlobalMap
+from xiao_hei_vln.perception.responder import PerceptionResponder
 
-__all__ = ["FrontierCluster", "GlobalMap"]
+__all__ = ["PerceptionResponder"]

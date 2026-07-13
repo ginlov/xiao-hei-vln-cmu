@@ -141,3 +141,13 @@ This challenge is good to decouple to 2 phases: exploration and reasoning. To pr
 - Design a new responder to take in the trajectory and help robot to go around the scenes to collect data.
 - Implement responder.
 - Execute robot to get data.
+- 
+## Task 10 — Scene representation
+
+To help VLM understand the scene better, a logical representation for scene is necessary. Following SysNav: Multi-Level Systematic Cooperation Enables Real-World, Cross-Embodiment Object Navigation, I want to build a representation class from the VLMInput.
+
+This task can be divided into 3 phases:
+
+* Understand the paper and required input to build scene representation.
+* Revisit the challenge to see what information is available.
+* Implementation and testing (data structure itself and how to integrate it to VLMs).
