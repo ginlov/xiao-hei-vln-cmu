@@ -225,21 +225,32 @@ To measure Gemini directly — **without the simulator** —
 `xiao_hei_vln.gemini.batch` reconstructs the scene graph from each GT
 entry's `object_list` (the same `SceneRepresentation.to_dict()` JSON the
 live responder feeds Gemini), asks Gemini for the answer, and writes an
-evaluator-ready predictions JSONL:
+evaluator-ready predictions JSONL.
+
+The workflow is **three steps** — generate predictions once, then score
+and/or visualise from that same `pred_ref.jsonl`:
 
 ```bash
 export XIAO_HEI_GEMINI_API_KEY=<your-key>
 
-# Task 2 — object_reference (scored by 3D bbox IoU)
-uv run python -m xiao_hei_vln.gemini.batch \
-  --gt dataset/vla3d_ref.jsonl --out pred_ref.jsonl --limit 50
+# 1. Generate predictions (Task 2 / object_reference here).
+#    --debug-dir and --trace-file are optional debug logs (see below).
+XIAO_HEI_GEMINI_MODEL=gemini-2.5-flash uv run python -m xiao_hei_vln.gemini.batch \
+  --gt   dataset/vla3d_ref.jsonl \
+  --out  pred_ref.jsonl \
+  --limit 10 --rpm 4 \
+  --debug-dir debug_ref --trace-file trace_ref.jsonl
+
+# 2. Score it — metrics to the terminal (mean IoU, SR@IoU, challenge score).
 uv run xiao-hei-eval --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl
 
-# Task 1 — numerical (scored by exact-match accuracy)
-uv run python -m xiao_hei_vln.gemini.batch \
-  --gt dataset/vla3d_num.jsonl --out pred_num.jsonl --limit 50
-uv run xiao-hei-eval --gt dataset/vla3d_num.jsonl --pred pred_num.jsonl
+# 3. Render the human-readable HTML report, then open it in a browser.
+uv run python -m xiao_hei_vln.gemini.eval_report \
+  --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl --out eval_report.html
 ```
+
+Task 1 (numerical) is the identical flow with `dataset/vla3d_num.jsonl`
+(scored by exact-match accuracy instead of IoU).
 
 This isolates Gemini's reasoning over the scene graph (perception assumed
 perfect); the live stack (§4b) measures perception + exploration + Gemini
@@ -258,17 +269,14 @@ together. Question texts come from the GT, so they align exactly.
 
 ### Visual eval report
 
-For a human-readable view of the results, `xiao_hei_vln.gemini.eval_report`
-renders a **self-contained `report.html`** (no server, no external
-assets) — one card per question with a pass/fail badge, Gemini's answer +
-rationale next to the ground truth, and, for object-reference, a top-down
-scene plot with Gemini's box (red) vs the ground-truth box (green) so a
-wrong pick is obvious at a glance:
-
-```bash
-uv run python -m xiao_hei_vln.gemini.eval_report \
-  --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl --out report.html
-```
+Step 3 above (`xiao_hei_vln.gemini.eval_report`) renders a
+**self-contained `eval_report.html`** — no server, no external assets, so
+just open it in a browser. It shows one card per question: a pass/fail
+badge, Gemini's answer + rationale next to the ground truth, and — for
+object-reference — a top-down scene plot with Gemini's box (red) vs the
+ground-truth box (green), so a wrong pick is obvious at a glance.
+Numerical questions get a predicted-vs-truth card. Add `--limit N` to
+cap how many predictions are included.
 
 ### Debugging Gemini calls
 
