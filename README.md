@@ -290,11 +290,23 @@ text incl. the scene graph, image sizes, sampling knobs), `response`
 `latency_ms`, and `error`:
 
 ```bash
-uv run python -m xiao_hei_vln.gemini.batch ... --trace-file gemini_trace.jsonl
+uv run python -m xiao_hei_vln.gemini.batch ... --trace-file trace_ref.jsonl
 
-jq -r 'select(.error != null)' gemini_trace.jsonl        # failed calls (with raw output)
-jq -r '.response.usage.total_tokens' gemini_trace.jsonl  # token cost per call
-jq -r '.parsed // .response.raw_text' gemini_trace.jsonl # parsed result, else raw text
+jq -r 'select(.error != null)' trace_ref.jsonl        # failed calls (with raw output)
+jq -r '.response.usage.total_tokens' trace_ref.jsonl  # token cost per call
+jq -r '.parsed // .response.raw_text' trace_ref.jsonl # parsed result, else raw text
+```
+
+The trace file is **append-only** — it accumulates across runs, so only
+the tail belongs to the latest run (or `rm trace_ref.jsonl` before a run).
+
+`--debug-dir` instead writes **one JSON per prediction** (named by the
+question), carrying the full scene graph, prompts, and parsed output —
+and, for failures, the `error` too (exactly the ones worth inspecting):
+
+```bash
+jq '.error'    debug_ref/*.json   # which entries failed, and why
+jq -r '.question, .prediction.rationale' debug_ref/00004_*.json   # one entry's reasoning
 ```
 
 For the **live** ROS run, per-tick logs (system prompt, user text, output,
