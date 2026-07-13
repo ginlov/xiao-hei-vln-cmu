@@ -4690,7 +4690,7 @@ dev = [
 requires-dist = [
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "huggingface-hub", marker = "extra == 'qwen-local'", specifier = ">=0.24" },
-    { name = "matplotlib", marker = "extra == 'gemini'", specifier = ">=3.8" },
+    { name = "matplotlib", marker = "extra == 'gemini'", specifier = ">=3.6" },
     { name = "matplotlib", marker = "extra == 'replay'", specifier = ">=3.8" },
     { name = "matplotlib", marker = "extra == 'trajectory'", specifier = ">=3.8" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
