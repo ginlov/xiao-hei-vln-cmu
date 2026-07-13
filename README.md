@@ -238,7 +238,7 @@ export XIAO_HEI_GEMINI_API_KEY=<your-key>
 XIAO_HEI_GEMINI_MODEL=gemini-2.5-flash uv run python -m xiao_hei_vln.gemini.batch \
   --gt   dataset/vla3d_ref.jsonl \
   --out  pred_ref.jsonl \
-  --limit 10 --rpm 4 \
+  --task2 10 --rpm 4 \
   --debug-dir debug_ref --trace-file trace_ref.jsonl
 
 # 2. Score it — metrics to the terminal (mean IoU, SR@IoU, challenge score).
@@ -260,12 +260,17 @@ together. Question texts come from the GT, so they align exactly.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--limit N` | all | cap GT entries processed (controls API cost) |
+| `--task1 N` | all | evaluate N Task 1 (numerical) examples — counts real scoreable entries, not raw GT lines |
+| `--task2 M` | all | evaluate M Task 2 (object_reference) examples |
 | `--rpm N` | `5` | throttle to N requests/min — `5` matches the free tier, raise on a paid plan, `0` disables |
 | `--max-retries N` | `5` | retries on a 429 rate-limit (honours the server `retryDelay`) |
 | `--debug-dir DIR` | – | dump one JSON per prediction (scene graph + prompts + parsed output) |
 | `--trace-file FILE` | – | append a full-fidelity JSONL trace of every Gemini call (see below) |
 | `--near-threshold M` | `2.0` | XY radius for `near` edges in the reconstructed graph |
+
+Passing **either** `--task1` or `--task2` restricts the run to those task
+type(s) — e.g. `--task2 10` evaluates 10 object-reference examples and no
+numerical ones. With neither set, every scoreable entry is processed.
 
 ### Visual eval report
 

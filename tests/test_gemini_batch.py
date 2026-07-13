@@ -212,19 +212,57 @@ def test_run_writes_evaluator_ready_predictions(tmp_path: Path) -> None:
     assert lines[0]["prediction"]["value"] == 1
 
 
-def test_run_respects_limit(tmp_path: Path) -> None:
+def test_task1_cap_counts_scoreable_numerical_only(tmp_path: Path) -> None:
+    gt = tmp_path / "gt.jsonl"
+    out = tmp_path / "pred.jsonl"
+    # Interleave non-scoreable entries — they must NOT consume the budget.
+    rows: list[dict] = []
+    for i in range(5):
+        rows.append({"type": "instruction_following", "question": f"go{i}", "object_list": []})
+        rows.append({"type": "numerical", "question": f"n{i}", "object_list": OBJECT_LIST})
+    _write_jsonl(gt, rows)
+    engine = FakeEngine(NumericalResponse(value=0))
+
+    written = batch.run(gt, out, engine, task1=3)
+    # Exactly 3 numerical examples, regardless of the interleaved skips.
+    assert written == 3
+
+
+def test_task2_flag_restricts_to_object_reference(tmp_path: Path) -> None:
+    # Mixed file: only --task2 given → numerical entries are excluded.
+    gt = tmp_path / "gt.jsonl"
+    out = tmp_path / "pred.jsonl"
+    rows: list[dict] = []
+    for i in range(4):
+        rows.append({"type": "numerical", "question": f"n{i}", "object_list": OBJECT_LIST})
+        rows.append({"type": "object_reference", "question": f"find{i}", "object_list": OBJECT_LIST})
+    _write_jsonl(gt, rows)
+    engine = FakeEngine(
+        ObjectReferenceResponse(
+            label="chair", object_id=0,
+            center=Vector3(x=1, y=2, z=0.5), size=Vector3(x=0.6, y=0.6, z=1.0),
+        )
+    )
+    written = batch.run(gt, out, engine, task2=2)
+    assert written == 2  # 2 object_reference, zero numerical
+    kinds = {json.loads(ln)["prediction"]["kind"] for ln in out.read_text().splitlines()}
+    assert kinds == {"object_reference"}
+
+
+def test_no_caps_processes_all_scoreable(tmp_path: Path) -> None:
     gt = tmp_path / "gt.jsonl"
     out = tmp_path / "pred.jsonl"
     _write_jsonl(
         gt,
         [
-            {"type": "numerical", "question": f"q{i}", "object_list": OBJECT_LIST}
-            for i in range(5)
+            {"type": "numerical", "question": "n0", "object_list": OBJECT_LIST},
+            {"type": "object_reference", "question": "r0", "object_list": OBJECT_LIST},
+            {"type": "instruction_following", "question": "go", "object_list": []},
         ],
     )
-    engine = FakeEngine(NumericalResponse(value=0))
-    written = batch.run(gt, out, engine, limit=2)
-    assert written == 2
+    engine = FakeEngine(NumericalResponse(value=1))
+    written = batch.run(gt, out, engine)  # no caps
+    assert written == 2  # both scoreable types, instruction_following skipped
 
 
 def test_run_survives_engine_errors(tmp_path: Path) -> None:

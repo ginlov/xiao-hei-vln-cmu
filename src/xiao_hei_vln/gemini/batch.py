@@ -410,28 +410,59 @@ def predict_entry(
 # --- driver ----------------------------------------------------------------
 
 
+# GT ``type`` -> Task number, for the per-task caps.
+_TYPE_FOR_TASK = {1: "numerical", 2: "object_reference"}
+
+
 def run(
     gt_path: Path,
     out_path: Path,
     engine: GeminiEngineProtocol,
     *,
-    limit: int | None = None,
+    task1: int | None = None,
+    task2: int | None = None,
     near_threshold: float = 2.0,
     debug_dir: Path | None = None,
 ) -> int:
-    """Generate predictions for every scoreable GT entry and write JSONL.
+    """Generate predictions and write an evaluator-ready JSONL.
 
-    When ``debug_dir`` is set, also dumps one JSON file per prediction
-    (scene graph + prompts + parsed output) for offline inspection.
+    ``task1`` / ``task2`` cap how many *scoreable* examples of each type
+    are attempted — Task 1 = ``numerical``, Task 2 = ``object_reference``
+    — counting only real scoreable entries (non-scoreable / duplicate GT
+    lines don't consume the budget). Specifying **either** flag restricts
+    the run to those task type(s): e.g. ``task2=50`` evaluates 50
+    object-reference examples and no numerical ones. With **neither** set,
+    every scoreable entry is processed. When ``debug_dir`` is set, dumps
+    one JSON per attempted prediction (including failures).
 
     Returns the number of predictions written.
     """
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
+    caps: dict[str, int] = {}
+    if task1 is not None:
+        caps[_TYPE_FOR_TASK[1]] = task1
+    if task2 is not None:
+        caps[_TYPE_FOR_TASK[2]] = task2
+    # A type is collected if it was explicitly requested; with no caps at
+    # all, both scoreable types are collected.
+    requested = set(caps) if caps else set(SCOREABLE_TYPES)
+    attempted: dict[str, int] = {"numerical": 0, "object_reference": 0}
+
     written = skipped = errors = 0
     with out_path.open("w") as out_f:
-        for lineno, line in enumerate(_iter_jsonl(gt_path, limit), 1):
+        for lineno, line in enumerate(_iter_jsonl(gt_path), 1):
+            # Early stop once every requested per-task cap is filled.
+            if caps and all(attempted[t] >= c for t, c in caps.items()):
+                break
+            qtype = line.get("type", "")
+            # Not a requested type, or its budget is spent — skip, no Gemini.
+            if qtype not in requested:
+                skipped += 1
+                continue
+            if qtype in caps and attempted[qtype] >= caps[qtype]:
+                continue
             try:
                 result = predict_entry(engine, line, near_threshold=near_threshold)
             except Exception as exc:  # unexpected (e.g. scene build) — keep going
@@ -441,7 +472,8 @@ def run(
             if result is None:
                 skipped += 1
                 continue
-            # Dump debug for *every* processed entry — including failures,
+            attempted[qtype] = attempted.get(qtype, 0) + 1
+            # Dump debug for *every* attempted entry — including failures,
             # which are exactly the ones worth inspecting.
             if debug_dir is not None:
                 _write_debug(debug_dir, lineno, result)
@@ -457,27 +489,25 @@ def run(
 
     print(
         f"Wrote {written} predictions to {out_path}  "
-        f"(skipped {skipped} non-scoreable, {errors} errors)",
+        f"(task1/numerical={attempted['numerical']}, "
+        f"task2/object_reference={attempted['object_reference']}; "
+        f"skipped {skipped} non-scoreable, {errors} errors)",
         file=sys.stderr,
     )
     return written
 
 
-def _iter_jsonl(path: Path, limit: int | None):
-    n = 0
+def _iter_jsonl(path: Path):
     with path.open() as f:
         for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
-            if limit is not None and n >= limit:
-                return
             try:
                 yield json.loads(line)
             except json.JSONDecodeError as exc:
                 print(f"[warn] {path}:{lineno}: {exc}", file=sys.stderr)
                 continue
-            n += 1
 
 
 # --- helpers ---------------------------------------------------------------
@@ -531,7 +561,18 @@ def main() -> None:
     )
     parser.add_argument("--gt", type=Path, required=True, help="VLA-3D GT JSONL file.")
     parser.add_argument("--out", type=Path, required=True, help="Output predictions JSONL path.")
-    parser.add_argument("--limit", type=int, default=None, help="Max GT entries to process.")
+    parser.add_argument(
+        "--task1",
+        type=int,
+        default=None,
+        help="Max Task 1 (numerical) examples to evaluate. Default: all in the file.",
+    )
+    parser.add_argument(
+        "--task2",
+        type=int,
+        default=None,
+        help="Max Task 2 (object_reference) examples to evaluate. Default: all in the file.",
+    )
     parser.add_argument(
         "--near-threshold",
         type=float,
@@ -600,7 +641,8 @@ def main() -> None:
         gt_path=args.gt,
         out_path=args.out,
         engine=engine,
-        limit=args.limit,
+        task1=args.task1,
+        task2=args.task2,
         near_threshold=args.near_threshold,
         debug_dir=args.debug_dir,
     )
