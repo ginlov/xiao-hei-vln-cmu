@@ -256,6 +256,35 @@ This isolates Gemini's reasoning over the scene graph (perception assumed
 perfect); the live stack (§4b) measures perception + exploration + Gemini
 together. Question texts come from the GT, so they align exactly.
 
+#### How the prompt is composed
+
+The batch does **not** send Gemini the raw `SceneRepresentation.to_dict()`
+— that graph is ~20–25× larger (it repeats each bbox as min+max, plus
+confidence, viewpoint/tick ids, and pre-derived `near` edges) and
+overruns the free-tier input-token/minute quota. Each call is **text
+only** (no images), built as:
+
+- **System prompt** (`offline_system_prompt`, one per task type) — the
+  role, the object-list schema, and the exact `VLMOutput` JSON to return.
+- **User message** (`build_user_message`) — three blocks:
+  1. `Question (type=object_reference): Find the pillow closest to the book.`
+  2. the **scene objects** as compact JSON — one entry per object, only
+     the fields Gemini needs (proximity / relations are inferred from the
+     coordinates, not pre-listed):
+     ```json
+     [{"id":0,"label":"window","center":[-6.4,-1.56,2.12],"size":[0.12,6.1,4.17]},
+      {"id":2,"label":"pillow","center":[1.94,-2.09,0.41],"size":[0.42,0.21,0.36]}]
+     ```
+  3. `Respond now with the JSON object — no prose around it.`
+
+So an object-reference answer is essentially "pick the right `id` and copy
+its `center` / `size`". The `--debug-dir` JSON stores the *full*
+`scene_graph` for inspection, but the prompt itself uses the compact form
+above — see `request.user_text` in the `--trace-file`.
+
+> The **live** responder differs: it sends the full `to_dict()` graph plus
+> a panorama JPEG and an occupancy-map PNG (`gemini/scene_rep.py`).
+
 `gemini.batch` flags:
 
 | Flag | Default | Purpose |
