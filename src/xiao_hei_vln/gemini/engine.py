@@ -146,7 +146,7 @@ class GeminiEngine:
                 config=gen_config,
             )
             text = _extract_text(response)
-            return parse_vlm_output(json.loads(text))
+            return parse_vlm_output(_loads_lenient(text))
 
         return self._traced_call(
             system=system, user_text=user_text, images=images,
@@ -184,7 +184,7 @@ class GeminiEngine:
                 config=gen_config,
             )
             text = _extract_text(response)
-            parsed = parse_vlm_output(json.loads(text))
+            parsed = parse_vlm_output(_loads_lenient(text))
         except Exception as exc:
             self._tracer.record(
                 request=request,
@@ -269,6 +269,32 @@ def _sniff_mime(blob: bytes) -> str:
     if blob[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
     return "image/jpeg"
+
+
+def _loads_lenient(text: str) -> Any:
+    """Parse the first JSON object from a model response, tolerating slop.
+
+    gemini models occasionally wrap the JSON in a ```json fence or emit a
+    stray trailing character (e.g. an extra ``}``) after a valid object,
+    which trips ``json.loads`` ("Extra data"). We strip a fence, seek the
+    first ``{``, and use ``raw_decode`` so anything after the first
+    complete object is ignored.
+    """
+    s = text.strip()
+    if s.startswith("```"):
+        # ```json\n{...}\n``` — take the fenced body.
+        s = s[3:]
+        if s[:4].lower() == "json":
+            s = s[4:]
+        end = s.rfind("```")
+        if end != -1:
+            s = s[:end]
+        s = s.strip()
+    start = s.find("{")
+    if start > 0:
+        s = s[start:]
+    obj, _end = json.JSONDecoder().raw_decode(s)
+    return obj
 
 
 def _response_meta(response: Any, text: str | None) -> dict[str, Any] | None:

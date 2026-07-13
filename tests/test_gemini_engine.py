@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from xiao_hei_vln.gemini.config import GeminiConfig
-from xiao_hei_vln.gemini.engine import GeminiEngine, _sniff_mime
+from xiao_hei_vln.gemini.engine import GeminiEngine, _loads_lenient, _sniff_mime
 from xiao_hei_vln.messages import NumericalResponse, WaypointPathResponse
 
 
@@ -153,3 +153,29 @@ class TestExtractTextFallback:
         out = engine.infer_multimodal(system="s", user_text="u", images=[])
         assert isinstance(out, NumericalResponse)
         assert out.value == 7
+
+
+class TestLoadsLenient:
+    def test_plain_json(self) -> None:
+        assert _loads_lenient('{"kind": "numerical", "value": 7}')["value"] == 7
+
+    def test_trailing_stray_brace(self) -> None:
+        # The real gemini-2.0-flash failure: valid object + extra '}'.
+        raw = '{\n  "kind": "object_reference",\n  "label": "lamp"\n}\n}'
+        assert _loads_lenient(raw)["label"] == "lamp"
+
+    def test_markdown_fenced(self) -> None:
+        assert _loads_lenient('```json\n{"kind": "numerical", "value": 3}\n```')["value"] == 3
+
+    def test_leading_prose(self) -> None:
+        assert _loads_lenient('Here you go: {"kind": "numerical", "value": 5}')["value"] == 5
+
+    def test_end_to_end_through_engine(self) -> None:
+        # A trailing-brace response must now parse cleanly end-to-end.
+        client = _fake_client_returning({"kind": "numerical", "value": 2})
+        client.models.generate_content.return_value.text = (
+            '{"kind": "numerical", "value": 2}\n}'
+        )
+        engine = GeminiEngine(_config(), client=client)
+        out = engine.infer_multimodal(system="s", user_text="u", images=[])
+        assert isinstance(out, NumericalResponse) and out.value == 2
