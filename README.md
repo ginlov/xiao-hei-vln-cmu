@@ -218,6 +218,66 @@ uv run python dataset_generator/challenge_gt_gen.py
 See [Evaluation guide](docs/guides/evaluation.md) and
 [Data Generation guide](docs/guides/data-generation.md) for details.
 
+### Offline Gemini evaluator (Task 1 + Task 2)
+
+To measure Gemini directly — **without the simulator** —
+`xiao_hei_vln.gemini.batch` reconstructs the scene graph from each GT
+entry's `object_list` (the same `SceneRepresentation.to_dict()` JSON the
+live responder feeds Gemini), asks Gemini for the answer, and writes an
+evaluator-ready predictions JSONL:
+
+```bash
+export XIAO_HEI_GEMINI_API_KEY=<your-key>
+
+# Task 2 — object_reference (scored by 3D bbox IoU)
+uv run python -m xiao_hei_vln.gemini.batch \
+  --gt dataset/vla3d_ref.jsonl --out pred_ref.jsonl --limit 50
+uv run xiao-hei-eval --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl
+
+# Task 1 — numerical (scored by exact-match accuracy)
+uv run python -m xiao_hei_vln.gemini.batch \
+  --gt dataset/vla3d_num.jsonl --out pred_num.jsonl --limit 50
+uv run xiao-hei-eval --gt dataset/vla3d_num.jsonl --pred pred_num.jsonl
+```
+
+This isolates Gemini's reasoning over the scene graph (perception assumed
+perfect); the live stack (§4b) measures perception + exploration + Gemini
+together. Question texts come from the GT, so they align exactly.
+
+`gemini.batch` flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--limit N` | all | cap GT entries processed (controls API cost) |
+| `--rpm N` | `5` | throttle to N requests/min — `5` matches the free tier, raise on a paid plan, `0` disables |
+| `--max-retries N` | `5` | retries on a 429 rate-limit (honours the server `retryDelay`) |
+| `--debug-dir DIR` | – | dump one JSON per prediction (scene graph + prompts + parsed output) |
+| `--trace-file FILE` | – | append a full-fidelity JSONL trace of every Gemini call (see below) |
+| `--near-threshold M` | `2.0` | XY radius for `near` edges in the reconstructed graph |
+
+### Debugging Gemini calls
+
+`GeminiTracer` (`xiao_hei_vln.gemini.trace`) records **every** Gemini call
+— full request + raw response + token usage + latency + errors — as
+append-only JSONL. It hooks `GeminiEngine`, so it covers both the offline
+batch (`--trace-file`) and the live responder (pass `tracer=` to
+`GeminiEngine`). Each line carries `request` (model, system prompt, user
+text incl. the scene graph, image sizes, sampling knobs), `response`
+(`raw_text` *before* parsing, `finish_reason`, `usage`), `parsed`,
+`latency_ms`, and `error`:
+
+```bash
+uv run python -m xiao_hei_vln.gemini.batch ... --trace-file gemini_trace.jsonl
+
+jq -r 'select(.error != null)' gemini_trace.jsonl        # failed calls (with raw output)
+jq -r '.response.usage.total_tokens' gemini_trace.jsonl  # token cost per call
+jq -r '.parsed // .response.raw_text' gemini_trace.jsonl # parsed result, else raw text
+```
+
+For the **live** ROS run, per-tick logs (system prompt, user text, output,
+camera frames, point clouds) instead go to `vlm_logs/` via `VLMLogger` —
+see the [VLM logging guide](docs/guides/vlm-logging.md).
+
 ## Repository layout
 
 ```
@@ -227,6 +287,7 @@ src/xiao_hei_vln/
 ├── adapters/       ROS 2 subscribers + publishers (lazy rclpy import)
 ├── dummy/          reference responder ported from dummyVLM.cpp
 ├── qwen/           Qwen2.5-VL responder (vLLM-backed, separate container)
+├── gemini/         Gemini responder + offline batch evaluator + call tracer
 ├── evaluator/      offline metrics (numerical + object-reference)
 ├── eval_sampler/   GT ↔ prediction matcher, GT format converter
 ├── eval_pipeline/  CLI entry point (xiao-hei-eval)

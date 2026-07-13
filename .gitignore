@@ -256,3 +256,7 @@ dataset_generator/vla-3d/
 # dataset/: regeneratable training corpora + scene splits (generator OUTPUT).
 dataset/
 trajectories/
+# Offline Gemini evaluator outputs (regeneratable — see README "Offline evaluation").
+pred_*.jsonl
+*_trace.jsonl
+debug_*/

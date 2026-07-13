@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 from xiao_hei_vln.gemini.config import GeminiConfig
 from xiao_hei_vln.messages import VLMOutput, parse_vlm_output
 
 if TYPE_CHECKING:  # pragma: no cover
-    pass
+    from xiao_hei_vln.gemini.trace import GeminiTracer
 
 log = logging.getLogger(__name__)
 
@@ -84,8 +85,12 @@ class GeminiEngine:
         config: GeminiConfig,
         *,
         client: GeminiClientProtocol | None = None,
+        tracer: GeminiTracer | None = None,
     ) -> None:
         self._config = config
+        # Optional debug tracer: records the full request + raw response +
+        # usage + latency + errors of every call. See gemini.trace.
+        self._tracer = tracer
         if client is not None:
             self._client = client
         else:
@@ -134,13 +139,69 @@ class GeminiEngine:
         contents = self._build_contents(user_text=user_text, images=images)
         gen_config = self._build_generation_config(system=system)
 
-        response = self._client.models.generate_content(
-            model=self._config.model,
-            contents=contents,
-            config=gen_config,
+        if self._tracer is None:
+            response = self._client.models.generate_content(
+                model=self._config.model,
+                contents=contents,
+                config=gen_config,
+            )
+            text = _extract_text(response)
+            return parse_vlm_output(json.loads(text))
+
+        return self._traced_call(
+            system=system, user_text=user_text, images=images,
+            contents=contents, gen_config=gen_config,
         )
-        text = _extract_text(response)
-        return parse_vlm_output(json.loads(text))
+
+    def _traced_call(
+        self,
+        *,
+        system: str,
+        user_text: str,
+        images: list[bytes],
+        contents: list[Any],
+        gen_config: Any,
+    ) -> VLMOutput:
+        """`infer_multimodal` body with full-fidelity tracing around it."""
+        assert self._tracer is not None
+        request = {
+            "model": self._config.model,
+            "system": system,
+            "user_text": user_text,
+            "num_images": len(images),
+            "image_bytes": [len(b) for b in images],
+            "images": self._tracer.save_images(images),
+            "temperature": self._config.temperature,
+            "max_output_tokens": self._config.max_output_tokens,
+        }
+        t0 = time.perf_counter()
+        response: Any = None
+        text: str | None = None
+        try:
+            response = self._client.models.generate_content(
+                model=self._config.model,
+                contents=contents,
+                config=gen_config,
+            )
+            text = _extract_text(response)
+            parsed = parse_vlm_output(json.loads(text))
+        except Exception as exc:
+            self._tracer.record(
+                request=request,
+                response=_response_meta(response, text),
+                parsed=None,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+                error=repr(exc),
+            )
+            raise
+        self._tracer.record(
+            request=request,
+            response=_response_meta(response, text),
+            parsed=parsed.model_dump(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            error=None,
+        )
+        return parsed
 
     # --- internals -----------------------------------------------------
 
@@ -202,6 +263,30 @@ def _sniff_mime(blob: bytes) -> str:
     if blob[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
     return "image/jpeg"
+
+
+def _response_meta(response: Any, text: str | None) -> dict[str, Any] | None:
+    """Best-effort structured view of a Gemini response for the trace log.
+
+    Pulls the raw text, finish reason, and token usage when present.
+    Every field is guarded — a fake/partial response (or ``None`` after a
+    failed call) degrades to whatever is available.
+    """
+    if response is None and text is None:
+        return None
+    meta: dict[str, Any] = {"raw_text": text}
+    try:
+        meta["finish_reason"] = str(response.candidates[0].finish_reason)
+    except Exception:  # noqa: BLE001 — optional field
+        pass
+    usage = getattr(response, "usage_metadata", None)
+    if usage is not None:
+        meta["usage"] = {
+            "prompt_tokens": getattr(usage, "prompt_token_count", None),
+            "candidates_tokens": getattr(usage, "candidates_token_count", None),
+            "total_tokens": getattr(usage, "total_token_count", None),
+        }
+    return meta
 
 
 def _extract_text(response: Any) -> str:
