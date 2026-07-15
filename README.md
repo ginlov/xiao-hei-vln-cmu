@@ -155,6 +155,50 @@ docker logs -f xiao_hei_ai_module
 Build / push / drop-into-challenge-compose details are in
 [`docker/README.md`](docker/README.md).
 
+### 4b. Run end-to-end with Gemini (Task 1 + Task 2)
+
+The `gemini` responder explores the room with the Phase-A frontier
+planner, then calls the Gemini API for the final answer (Task 1) or
+route plan (Task 2). Reasoning runs in the cloud, so **no local VLM /
+vLLM is needed** — the GPU is only used by the simulator. Use the
+dedicated compose file [`docker/compose_gemini.yml`](docker/compose_gemini.yml)
+(simulator with GPU, no vLLM sidecar, Gemini env vars wired):
+
+```bash
+export XIAO_HEI_GEMINI_API_KEY=<your-key>   # required — see note below
+export XIAO_HEI_VLM_LOG_DIR=/vlm_logs       # write predictions.jsonl for scoring
+xhost +local:
+
+docker compose -f docker/compose_gemini.yml up -d --build
+
+# inside iros2026_system: start the sim
+docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
+
+# ask a question (Task 1 example)
+docker exec iros2026_system bash -lc \
+  'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+   ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many chairs are in the room\"}"'
+
+docker logs -f xiao_hei_ai_module   # "ready (responder=gemini ...)" means it is up
+```
+
+> **The API key must be valid at startup.** `GeminiEngine.warmup()`
+> issues one live `generate_content` call when the container boots, so an
+> invalid/missing key (or no outbound 443 to
+> `generativelanguage.googleapis.com`) makes `ai_module` crash-loop.
+
+Optional knobs (all have defaults; just `export` to override):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `XIAO_HEI_GEMINI_MODEL` | `gemini-2.5-flash` | model id |
+| `XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS` | `120` | Task-1 ticks to explore before asking Gemini |
+| `XIAO_HEI_GEMINI_MAX_TICKS` | `240` | hard per-question safety cap |
+| `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | sampling temperature |
+| `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `2048` | response token cap |
+| `XIAO_HEI_GEMINI_THINKING_BUDGET` | `0` | thinking tokens; `0` disables (keeps the JSON answer from being truncated), `-1` = dynamic |
+| `XIAO_HEI_GEMINI_IMAGE_LONG_EDGE` | `1280` | downscale long-edge before send |
+
 ## Offline evaluation
 
 After a live run the session directory contains `predictions.jsonl`.
@@ -176,6 +220,134 @@ uv run python dataset_generator/challenge_gt_gen.py
 See [Evaluation guide](docs/guides/evaluation.md) and
 [Data Generation guide](docs/guides/data-generation.md) for details.
 
+### Offline Gemini evaluator (Task 1 + Task 2)
+
+To measure Gemini directly — **without the simulator** —
+`xiao_hei_vln.gemini.batch` reconstructs the scene graph from each GT
+entry's `object_list` (the same `SceneRepresentation.to_dict()` JSON the
+live responder feeds Gemini), asks Gemini for the answer, and writes an
+evaluator-ready predictions JSONL.
+
+The workflow is **three steps** — generate predictions once, then score
+and/or visualise from that same `pred_ref.jsonl`:
+
+```bash
+export XIAO_HEI_GEMINI_API_KEY=<your-key>
+
+# 1. Generate predictions (Task 2 / object_reference here).
+#    --debug-dir and --trace-file are optional debug logs (see below).
+XIAO_HEI_GEMINI_MODEL=gemini-2.5-flash uv run python -m xiao_hei_vln.gemini.batch \
+  --gt   dataset/vla3d_ref.jsonl \
+  --out  pred_ref.jsonl \
+  --task2 10 --rpm 4 \
+  --debug-dir debug_ref --trace-file trace_ref.jsonl
+
+# 2. Score it — metrics to the terminal (mean IoU, SR@IoU, challenge score).
+uv run xiao-hei-eval --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl
+
+# 3. Render the human-readable HTML report, then open it in a browser.
+uv run python -m xiao_hei_vln.gemini.eval_report \
+  --gt dataset/vla3d_ref.jsonl --pred pred_ref.jsonl --out eval_report.html
+```
+
+Task 1 (numerical) is the identical flow with `dataset/vla3d_num.jsonl`
+(scored by exact-match accuracy instead of IoU).
+
+This isolates Gemini's reasoning over the scene graph (perception assumed
+perfect); the live stack (§4b) measures perception + exploration + Gemini
+together. Question texts come from the GT, so they align exactly.
+
+#### How the prompt is composed
+
+The batch does **not** send Gemini the raw `SceneRepresentation.to_dict()`
+— that graph is ~20–25× larger (it repeats each bbox as min+max, plus
+confidence, viewpoint/tick ids, and pre-derived `near` edges) and
+overruns the free-tier input-token/minute quota. Each call is **text
+only** (no images), built as:
+
+- **System prompt** (`offline_system_prompt`, one per task type) — the
+  role, the object-list schema, and the exact `VLMOutput` JSON to return.
+- **User message** (`build_user_message`) — three blocks:
+  1. `Question (type=object_reference): Find the pillow closest to the book.`
+  2. the **scene objects** as compact JSON — one entry per object, only
+     the fields Gemini needs (proximity / relations are inferred from the
+     coordinates, not pre-listed):
+     ```json
+     [{"id":0,"label":"window","center":[-6.4,-1.56,2.12],"size":[0.12,6.1,4.17]},
+      {"id":2,"label":"pillow","center":[1.94,-2.09,0.41],"size":[0.42,0.21,0.36]}]
+     ```
+  3. `Respond now with the JSON object — no prose around it.`
+
+So an object-reference answer is essentially "pick the right `id` and copy
+its `center` / `size`". The `--debug-dir` JSON stores the *full*
+`scene_graph` for inspection, but the prompt itself uses the compact form
+above — see `request.user_text` in the `--trace-file`.
+
+> The **live** responder differs: it sends the full `to_dict()` graph plus
+> a panorama JPEG and an occupancy-map PNG (`gemini/scene_rep.py`).
+
+`gemini.batch` flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--task1 N` | all | evaluate N Task 1 (numerical) examples — counts real scoreable entries, not raw GT lines |
+| `--task2 M` | all | evaluate M Task 2 (object_reference) examples |
+| `--rpm N` | `5` | throttle to N requests/min — `5` matches the free tier, raise on a paid plan, `0` disables |
+| `--max-retries N` | `5` | retries on a 429 rate-limit (honours the server `retryDelay`) |
+| `--debug-dir DIR` | – | dump one JSON per prediction (scene graph + prompts + parsed output) |
+| `--trace-file FILE` | – | append a full-fidelity JSONL trace of every Gemini call (see below) |
+| `--near-threshold M` | `2.0` | XY radius for `near` edges in the reconstructed graph |
+
+Passing **either** `--task1` or `--task2` restricts the run to those task
+type(s) — e.g. `--task2 10` evaluates 10 object-reference examples and no
+numerical ones. With neither set, every scoreable entry is processed.
+
+### Visual eval report
+
+Step 3 above (`xiao_hei_vln.gemini.eval_report`) renders a
+**self-contained `eval_report.html`** — no server, no external assets, so
+just open it in a browser. It shows one card per question: a pass/fail
+badge, Gemini's answer + rationale next to the ground truth, and — for
+object-reference — a top-down scene plot with Gemini's box (red) vs the
+ground-truth box (green), so a wrong pick is obvious at a glance.
+Numerical questions get a predicted-vs-truth card. Add `--limit N` to
+cap how many predictions are included.
+
+### Debugging Gemini calls
+
+`GeminiTracer` (`xiao_hei_vln.gemini.trace`) records **every** Gemini call
+— full request + raw response + token usage + latency + errors — as
+append-only JSONL. It hooks `GeminiEngine`, so it covers both the offline
+batch (`--trace-file`) and the live responder (pass `tracer=` to
+`GeminiEngine`). Each line carries `request` (model, system prompt, user
+text incl. the scene graph, image sizes, sampling knobs), `response`
+(`raw_text` *before* parsing, `finish_reason`, `usage`), `parsed`,
+`latency_ms`, and `error`:
+
+```bash
+uv run python -m xiao_hei_vln.gemini.batch ... --trace-file trace_ref.jsonl
+
+jq -r 'select(.error != null)' trace_ref.jsonl        # failed calls (with raw output)
+jq -r '.response.usage.total_tokens' trace_ref.jsonl  # token cost per call
+jq -r '.parsed // .response.raw_text' trace_ref.jsonl # parsed result, else raw text
+```
+
+The trace file is **append-only** — it accumulates across runs, so only
+the tail belongs to the latest run (or `rm trace_ref.jsonl` before a run).
+
+`--debug-dir` instead writes **one JSON per prediction** (named by the
+question), carrying the full scene graph, prompts, and parsed output —
+and, for failures, the `error` too (exactly the ones worth inspecting):
+
+```bash
+jq '.error'    debug_ref/*.json   # which entries failed, and why
+jq -r '.question, .prediction.rationale' debug_ref/00004_*.json   # one entry's reasoning
+```
+
+For the **live** ROS run, per-tick logs (system prompt, user text, output,
+camera frames, point clouds) instead go to `vlm_logs/` via `VLMLogger` —
+see the [VLM logging guide](docs/guides/vlm-logging.md).
+
 ## Repository layout
 
 ```
@@ -185,6 +357,7 @@ src/xiao_hei_vln/
 ├── adapters/       ROS 2 subscribers + publishers (lazy rclpy import)
 ├── dummy/          reference responder ported from dummyVLM.cpp
 ├── qwen/           Qwen2.5-VL responder (vLLM-backed, separate container)
+├── gemini/         Gemini responder + offline batch evaluator + call tracer
 ├── evaluator/      offline metrics (numerical + object-reference)
 ├── eval_sampler/   GT ↔ prediction matcher, GT format converter
 ├── eval_pipeline/  CLI entry point (xiao-hei-eval)

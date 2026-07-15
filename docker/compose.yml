@@ -74,6 +74,11 @@ services:
       # string when the host var is unset (responder then answers from
       # the start pose). Used by the perception responder.
       - XIAO_HEI_TRAJECTORY_JSON=${XIAO_HEI_TRAJECTORY_JSON_HOST:+/data/trajectory.json}
+      # Gemini — read only when XIAO_HEI_RESPONDER=gemini. Build with
+      # XIAO_HEI_EXTRA=gemini to install the SDK into the image.
+      - XIAO_HEI_GEMINI_API_KEY
+      - XIAO_HEI_GEMINI_MODEL
+      - XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
