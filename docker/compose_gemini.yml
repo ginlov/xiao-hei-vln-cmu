@@ -28,12 +28,16 @@ services:
 
   # Our AI module — Gemini responder. Reasoning runs in the cloud, so this
   # container needs no GPU and no vLLM sidecar; it only needs the API key.
+  # It DOES depend on the perception sidecar below: the live Gemini path
+  # builds the scene graph with YOLO+SAM detections during the frontier
+  # sweep, then answers over that graph. The image therefore installs the
+  # perception HTTP-client extra alongside gemini.
   ai_module:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-gemini}
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-gemini,perception}
     image: xiao-hei/ai_module:gemini
     container_name: xiao_hei_ai_module
     network_mode: host
@@ -50,12 +54,46 @@ services:
       - XIAO_HEI_GEMINI_IMAGE_LONG_EDGE
       - XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS
       - XIAO_HEI_GEMINI_MAX_TICKS
+      # Perception sidecar the scene-building ingestor talks to.
+      - XIAO_HEI_PERCEPTION_BASE_URL=${XIAO_HEI_PERCEPTION_BASE_URL:-http://localhost:8001}
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
+      - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
+      - ../exploration_logs:/exploration_logs
     stdin_open: true
     tty: true
     depends_on:
       - system
+      - perception
+    restart: unless-stopped
+
+  # Perception sidecar — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny. Detects and
+  # segments objects per tick; the ai_module lifts masks to 3D and adds them
+  # to the shared scene graph during the frontier sweep. Needs the GPU.
+  perception:
+    build:
+      context: ../perception
+      dockerfile: Dockerfile
+    image: xiao-hei/perception:latest
+    container_name: xiao_hei_perception
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PERCEPTION_HOST=0.0.0.0
+      - PERCEPTION_PORT=8001
+      - PERCEPTION_DEBUG=${PERCEPTION_DEBUG:-}
+    volumes:
+      - ../perception/server.py:/opt/perception/server.py:ro
+      - ../perception/pipeline.py:/opt/perception/pipeline.py:ro
+      - ../perception/geometry.py:/opt/perception/geometry.py:ro
+      - ../perception/debug:/opt/perception/debug
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped

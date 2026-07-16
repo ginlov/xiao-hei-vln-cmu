@@ -56,17 +56,42 @@ class GeminiResponder:
         engine: GeminiEngineProtocol,
         config: GeminiConfig,
         *,
+        scene: SceneRepresentation | None = None,
+        perception_ingestor: object | None = None,
         perception: PerceptionResponder | None = None,
         global_map: GlobalMap | None = None,
         logger: VLMLogger | None = None,
     ) -> None:
         self._engine = engine
         self._config = config
-        # Reuse a single GlobalMap between PerceptionResponder and our
+        # Reuse a single GlobalMap between the exploration feed and our
         # scene-bundle renderer so they always agree on what's been seen.
         self._map = global_map if global_map is not None else GlobalMap()
-        self._perception = perception or PerceptionResponder(global_map=self._map)
-        self._scene = SceneRepresentation()
+
+        # Two operating modes:
+        #
+        # * **External-scene** (production, app/main.py) — the app-level
+        #   frontier explorer drives navigation and calls ``ingest()`` every
+        #   tick, so by the time ``respond()`` is first called the sweep is
+        #   already complete and the shared ``scene`` is fully populated with
+        #   objects (via ``perception_ingestor``, a YOLO+SAM
+        #   ``perception.responder.PerceptionResponder``). ``respond()`` then
+        #   answers immediately over that graph — no second exploration.
+        # * **Self-paced** (unit tests / callers without an app explorer) —
+        #   no shared scene is passed, so this responder owns a private scene
+        #   and delegates one waypoint per tick to an internal frontier
+        #   ``perception`` responder until the ``max_explore_ticks`` trigger.
+        self._external_scene = scene is not None
+        self._scene = scene if scene is not None else SceneRepresentation()
+        # Duck-typed (``.ingest(snapshot)``): the YOLO+SAM perception
+        # responder bound to the shared scene. Only used in external mode.
+        self._ingestor = perception_ingestor
+        # Internal frontier fallback — only built in self-paced mode.
+        self._perception = (
+            None
+            if self._external_scene
+            else (perception or PerceptionResponder(global_map=self._map))
+        )
         self._logger = logger
 
         # Cross-tick state.
@@ -91,30 +116,59 @@ class GeminiResponder:
         if self._tick_count == 1 and self._logger is not None:
             self._logger.new_question(snapshot.question.text)
 
-        # Update cross-tick state from this snapshot — both the scene
-        # graph and our local trajectory ring.
-        self._scene.update(snapshot)
-        if snapshot.pose is not None:
-            p = snapshot.pose.position
-            self._trajectory_xy.append((p.x, p.y))
-            # Cap the trajectory so prompts stay bounded.
-            if len(self._trajectory_xy) > 200:
-                self._trajectory_xy = self._trajectory_xy[-200:]
+        # Self-paced mode owns scene + trajectory upkeep here. In external
+        # mode the app loop calls ``scene.update()`` and our ``ingest()``
+        # every exploration tick, so we must not double-count them.
+        if not self._external_scene:
+            self._scene.update(snapshot)
+            self._track_trajectory(snapshot)
 
         if snapshot.question.type is QuestionType.INSTRUCTION_FOLLOWING:
             return self._respond_task2(snapshot)
         return self._respond_task1(snapshot)
 
+    def ingest(self, snapshot: VLMInput) -> None:
+        """Grow the scene during the app-level frontier sweep, without answering.
+
+        Called every exploration tick by ``app/main.py`` (external mode only).
+        Keeps the occupancy :class:`GlobalMap` and trajectory current for the
+        Gemini spatial-coverage image, then delegates object detection to the
+        wrapped YOLO+SAM perception ingestor. Emits no answer, so a question
+        arriving mid-sweep stays deferred until exploration completes.
+        """
+        if snapshot.pose is not None and snapshot.terrain_ext is not None:
+            self._map.update(snapshot.terrain_ext.points, snapshot.pose)
+        self._track_trajectory(snapshot)
+        if self._ingestor is not None:
+            self._ingestor.ingest(snapshot)
+
+    def _track_trajectory(self, snapshot: VLMInput) -> None:
+        if snapshot.pose is None:
+            return
+        p = snapshot.pose.position
+        self._trajectory_xy.append((p.x, p.y))
+        # Cap the trajectory so prompts stay bounded.
+        if len(self._trajectory_xy) > 200:
+            self._trajectory_xy = self._trajectory_xy[-200:]
+
     def is_done(self) -> bool:
         return self._done
 
     def reset(self) -> None:
-        """Wipe everything that's persistent across ticks."""
-        self._perception.reset()
-        self._map.reset()
-        self._scene = SceneRepresentation()
+        """Clear per-question answer state on question change.
+
+        In external-scene mode the shared scene / occupancy map / trajectory
+        are built once during the single app-level sweep and must survive
+        across questions, so they are *not* wiped here (the app loop owns
+        them). In self-paced mode this responder owns them, so they are.
+        """
+        if self._perception is not None:
+            self._perception.reset()
+        if not self._external_scene:
+            self._map.reset()
+            self._scene = SceneRepresentation()
+            self._trajectory_xy = []
         self._tick_count = 0
-        self._trajectory_xy = []
         self._committed_answer = None
         self._planned_waypoints = []
         self._planned_wp_idx = 0
@@ -122,6 +176,14 @@ class GeminiResponder:
         self._done = False
 
     def close(self) -> None:
+        # Release the perception sidecar client (external mode only). The
+        # ingestor carries no logger of its own, so this just closes the
+        # HTTP connection.
+        if self._ingestor is not None and hasattr(self._ingestor, "close"):
+            try:
+                self._ingestor.close()
+            except Exception:  # noqa: BLE001
+                log.exception("perception ingestor close failed; continuing")
         if self._logger is not None:
             self._logger.close()
 
@@ -158,13 +220,24 @@ class GeminiResponder:
             exploration_summary=self._exploration_summary(),
         )
         if result is None:
-            return self._perception.respond(snapshot)
+            # Gemini failed. In self-paced mode, re-emit a perception
+            # waypoint and let the next tick re-fire the trigger. In
+            # external mode the sweep is already done and there is no
+            # frontier fallback — emit nothing and retry next tick.
+            if self._perception is not None:
+                return self._perception.respond(snapshot)
+            return None
         self._committed_answer = result
         self._done = True
         return self._committed_answer
 
     def _should_commit(self, snapshot: VLMInput) -> bool:
         """Has the explore phase produced enough coverage to commit?"""
+        # External-scene mode: the app-level frontier sweep has already run to
+        # completion before ``respond()`` is ever called, so commit on the
+        # first tick — the scene graph is as built as it will get.
+        if self._external_scene:
+            return True
         # Soft cap: keep exploring until the perception responder declares
         # exhaustion. We watch its rationale (set by `_stand_still`).
         if self._last_perception_rationale and self._last_perception_rationale.startswith(

@@ -82,6 +82,8 @@ def _build_responder(
         from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
         from xiao_hei_vln.perception.responder import (
             DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.responder import (
             DEFAULT_SCORE_THRESHOLD,
         )
         from xiao_hei_vln.perception.vocab import Vocabulary
@@ -139,10 +141,52 @@ def _build_responder(
 
         from xiao_hei_vln.gemini import GeminiConfig, GeminiEngine, GeminiResponder
         from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.perception import PerceptionResponder
+        from xiao_hei_vln.perception.client import (
+            DEFAULT_BASE_URL,
+            HTTPPerceptionClient,
+        )
+        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_SCORE_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.vocab import Vocabulary
 
         config = GeminiConfig.from_env()
         engine = GeminiEngine(config)
         engine.warmup()
+
+        # Build the YOLO+SAM perception ingestor bound to the SHARED scene.
+        # The app-level frontier explorer drives navigation and calls
+        # responder.ingest() -> ingestor.ingest() each tick, so the scene
+        # graph fills with detected objects during the sweep. Gemini then
+        # answers over that fully-built graph once exploration completes.
+        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
+        near_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD",
+            str(PERCEPTION_NEAR_THRESHOLD),
+        ))
+        score_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
+            str(DEFAULT_SCORE_THRESHOLD),
+        ))
+        min_inliers = int(os.environ.get(
+            "XIAO_HEI_PERCEPTION_MIN_INLIERS",
+            str(DEFAULT_MIN_INLIERS),
+        ))
+        client = HTTPPerceptionClient(base_url=base_url)
+        client.wait_until_ready()       # blocks until /healthz is green
+        ingestor = PerceptionResponder(
+            scene,
+            client=client,
+            lifter=PointLifter(min_inliers=min_inliers),
+            vocabulary=Vocabulary(),
+            near_threshold=near_t,
+            score_threshold=score_t,
+        )
 
         logger = None
         log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
@@ -153,7 +197,13 @@ def _build_responder(
                 responder_name="gemini",
                 tick_hz=TICK_HZ,
             )
-        return GeminiResponder(engine, config, logger=logger), logger
+        responder = GeminiResponder(
+            engine, config,
+            scene=scene,
+            perception_ingestor=ingestor,
+            logger=logger,
+        )
+        return responder, logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; "
         "expected one of: dummy, qwen, perception, gemini",
@@ -219,6 +269,34 @@ def _maybe_save_png(explorer, node) -> None:
         node.get_logger().info(f"Exploration plot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save exploration plot: {exc}")
+
+
+def _maybe_dump_scene(scene: SceneRepresentation, node) -> None:
+    """Persist the built scene graph when XIAO_HEI_SCENE_DUMP_PATH is set.
+
+    Called once, on exploration completion. Writes ``scene.to_dict()`` as
+    JSON so an explore-only run produces a clean per-scene artifact for
+    downstream (e.g. Gemini/QA) development — the scene graph is otherwise
+    only embedded per-tick inside the VLM logs during answering.
+
+    Parent dirs are created; failures are logged, never fatal.
+    """
+    dump_path = os.environ.get("XIAO_HEI_SCENE_DUMP_PATH", "")
+    if not dump_path:
+        return
+    try:
+        import json
+        from pathlib import Path
+
+        out = Path(dump_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(scene.to_dict(), indent=2), encoding="utf-8")
+        node.get_logger().info(
+            f"Scene graph dumped to {out} "
+            f"({len(scene.viewpoints)} viewpoints, {len(scene.objects)} objects)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        node.get_logger().warn(f"Could not dump scene graph: {exc}")
 
 
 def main() -> None:
@@ -291,8 +369,8 @@ def main() -> None:
         parts = "  ".join(f"{k}={v}" for k, v in fields.items())
         _exp_log_file.write(f"[{now_s:.3f}] {event}  {parts}\n")
 
+    from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from std_msgs.msg import Float32
-    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
     _nav_qos = QoSProfile(
         depth=5,
@@ -464,6 +542,7 @@ def main() -> None:
                     f"skipped={explorer.skipped_count} reason={reason}"
                 )
                 _maybe_save_png(explorer, node)
+                _maybe_dump_scene(scene, node)
             return
 
         # New question → reset the responder so it handles it from scratch.

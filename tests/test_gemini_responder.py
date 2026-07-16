@@ -15,6 +15,7 @@ import pytest
 
 from xiao_hei_vln.gemini.config import GeminiConfig
 from xiao_hei_vln.gemini.responder import GeminiResponder
+from xiao_hei_vln.scene import SceneRepresentation
 from xiao_hei_vln.messages import (
     ChallengeQuestion,
     Header,
@@ -388,6 +389,121 @@ class TestEngineFailureFallback:
         assert not responder.is_done()
         # Falls back to a perception waypoint.
         assert isinstance(out, WaypointPathResponse)
+
+
+class FakeIngestor:
+    """Stand-in for the YOLO+SAM perception ingestor in external mode.
+
+    Records ingest/reset/close calls; never touches the scene (the real
+    ingestor would add_object, but we only assert the wiring here).
+    """
+
+    def __init__(self) -> None:
+        self.ingest_calls = 0
+        self.reset_calls = 0
+        self.closed = False
+
+    def ingest(self, snapshot: VLMInput) -> None:
+        self.ingest_calls += 1
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestExternalSceneMode:
+    """Production path: app-level explorer drives ingest(), Gemini answers after."""
+
+    def test_ingest_grows_scene_without_answering_then_commits_on_respond(self) -> None:
+        engine = FakeGeminiEngine(
+            response=NumericalResponse(value=3, rationale="counted 3"),
+        )
+        scene = SceneRepresentation()
+        ingestor = FakeIngestor()
+        responder = GeminiResponder(
+            engine, _config(),
+            scene=scene,
+            perception_ingestor=ingestor,
+        )
+
+        # Exploration phase — the app loop calls ingest() every tick. No
+        # Gemini call, no answer, even though a question is already active.
+        for t in range(3):
+            responder.ingest(
+                _snapshot(tick_id=t, question_text="How many cups", pose=_pose(t * 0.1, 0)),
+            )
+        assert ingestor.ingest_calls == 3
+        assert not engine.calls
+        assert not responder.is_done()
+
+        # Exploration complete → first respond() commits Gemini immediately
+        # over the fully-built shared scene (no second exploration).
+        out = responder.respond(
+            _snapshot(tick_id=3, question_text="How many cups", pose=_pose(0.3, 0)),
+        )
+        assert isinstance(out, NumericalResponse)
+        assert out.value == 3
+        assert len(engine.calls) == 1
+        assert responder.is_done()
+
+    def test_uses_the_shared_scene_instance(self) -> None:
+        scene = SceneRepresentation()
+        responder = GeminiResponder(
+            FakeGeminiEngine(), _config(),
+            scene=scene,
+            perception_ingestor=FakeIngestor(),
+        )
+        assert responder._scene is scene
+
+    def test_reset_preserves_shared_scene(self) -> None:
+        # Scene is built once during the single sweep and must survive the
+        # per-question reset in external mode.
+        scene = SceneRepresentation()
+        responder = GeminiResponder(
+            FakeGeminiEngine(response=NumericalResponse(value=1, rationale="ok")),
+            _config(),
+            scene=scene,
+            perception_ingestor=FakeIngestor(),
+        )
+        scene.update(_snapshot(tick_id=0, question_text="q", pose=_pose(0, 0)))
+        n_vps = len(scene.viewpoints)
+
+        responder.reset()
+        assert responder._scene is scene           # not replaced
+        assert len(scene.viewpoints) == n_vps       # not wiped
+
+    def test_close_releases_ingestor(self) -> None:
+        ingestor = FakeIngestor()
+        responder = GeminiResponder(
+            FakeGeminiEngine(), _config(),
+            scene=SceneRepresentation(),
+            perception_ingestor=ingestor,
+        )
+        responder.close()
+        assert ingestor.closed is True
+
+    def test_gemini_failure_in_external_mode_returns_none_no_fallback(self) -> None:
+        class FlakyEngine:
+            def infer_multimodal(self, **_kwargs):
+                raise RuntimeError("network blip")
+
+            def warmup(self) -> None:
+                pass
+
+        responder = GeminiResponder(
+            FlakyEngine(), _config(),
+            scene=SceneRepresentation(),
+            perception_ingestor=FakeIngestor(),
+        )
+        # There is no frontier fallback in external mode — respond() returns
+        # None and stays not-done so the next tick can retry Gemini.
+        out = responder.respond(
+            _snapshot(tick_id=0, question_text="How many cups", pose=_pose(0, 0)),
+        )
+        assert out is None
+        assert not responder.is_done()
 
 
 class TestLifecycle:
