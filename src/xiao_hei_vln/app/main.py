@@ -84,6 +84,7 @@ def _build_responder(
             DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
             DEFAULT_SCORE_THRESHOLD,
         )
+        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
         from xiao_hei_vln.perception.vocab import Vocabulary
 
         base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
@@ -99,13 +100,36 @@ def _build_responder(
             "XIAO_HEI_PERCEPTION_MIN_INLIERS",
             str(DEFAULT_MIN_INLIERS),
         ))
+        # Opt-in: fuse detections across frames with ObjectMap (converged 3D
+        # boxes + NMS + wall-sheet rejection) instead of per-detection
+        # add_object. Off by default → the pipeline behaves exactly as before.
+        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
+            "1", "true", "yes", "on",
+        )
         traj_str = os.environ.get("XIAO_HEI_TRAJECTORY_JSON", "")
         traj_path = Path(traj_str) if traj_str else None
 
         client = HTTPPerceptionClient(base_url=base_url)
         client.wait_until_ready()       # blocks until /healthz is green
+        # The z-buffer occlusion gate is always on: a camera can't see
+        # through a foreground object, so background returns falling inside
+        # a mask must be rejected (default in PointLifter). Independent of
+        # whether ObjectMap fusion is enabled.
         lifter = PointLifter(min_inliers=min_inliers)
+        # Densify the sparse single sweep before lifting so small objects
+        # clear min_inliers with genuine on-surface returns (env-tunable).
+        scan_accum = ScanAccumulator(
+            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
+            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
+            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+        )
         vocab = Vocabulary()
+
+        object_map = None
+        if use_object_map:
+            from xiao_hei_vln.perception.object_map import ObjectMap
+            object_map = ObjectMap()
 
         logger = None
         log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
@@ -117,6 +141,7 @@ def _build_responder(
                     "near_threshold_m": near_t,
                     "score_threshold": score_t,
                     "min_inliers": min_inliers,
+                    "object_map": use_object_map,
                     "trajectory_json": traj_str or None,
                 },
                 responder_name="perception",
@@ -132,6 +157,8 @@ def _build_responder(
             trajectory_path=traj_path,
             take_waypoint_reached_signals=take_waypoint_reached_signals,
             logger=logger,
+            object_map=object_map,
+            scan_accumulator=scan_accum,
         )
         return responder, logger
     if name == "gemini":
@@ -276,6 +303,40 @@ def main() -> None:
     )
     if logger is not None:
         logger.attach_scene(scene)
+
+    # Live rviz view of the fused scene graph (3D boxes + labels on
+    # /perception/objects), so the perception map can be watched while
+    # driving. Perception responder only — the scene is empty otherwise.
+    # Opt out with XIAO_HEI_PUBLISH_MARKERS=0.
+    if RESPONDER_NAME == "perception" and os.environ.get(
+        "XIAO_HEI_PUBLISH_MARKERS", "1",
+    ).lower() not in ("0", "false", "no", "off"):
+        from xiao_hei_vln.app.scene_markers import ScenePublisher, Scoreboard
+
+        _scene_pub = ScenePublisher(node)
+        # Optional dev scoreboard: live metrics vs the scene's object_list.txt
+        # (GT is not available at test time). Enabled by mounting the GT file
+        # and pointing XIAO_HEI_GT_OBJECT_LIST at it.
+        _scoreboard = None
+        _gt_path = os.environ.get("XIAO_HEI_GT_OBJECT_LIST", "")
+        if _gt_path and os.path.exists(_gt_path):
+            try:
+                _scoreboard = Scoreboard(_gt_path)
+                node.get_logger().info(f"Scoreboard enabled (GT: {_gt_path})")
+            except Exception:  # noqa: BLE001 — never let the scoreboard break bringup
+                node.get_logger().exception("Scoreboard init failed; disabling")
+
+        def _publish_markers() -> None:
+            snap = scene.to_dict()
+            text = None
+            if _scoreboard is not None:
+                try:
+                    text = _scoreboard.text(snap)
+                except Exception:  # noqa: BLE001
+                    text = None
+            _scene_pub.publish(snap, scoreboard_text=text)
+
+        node.create_timer(0.5, _publish_markers)
 
     explorer = _build_explorer(node)
 

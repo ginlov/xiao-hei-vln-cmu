@@ -272,3 +272,10 @@ samples*.jsonl
 *report*.html
 
 runs/
+# Model weights — auto-downloaded by ultralytics on first run (too big for GitHub)
+*.pt
+weights/
+# Captured perception datasets / sample frames + live run artifacts (large, regenerable)
+dataset_generator/captures/
+dataset_generator/branchA_sample/
+dataset_generator/live_frames/

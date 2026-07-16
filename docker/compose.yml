@@ -60,6 +60,11 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - PYTHONUNBUFFERED=1
       - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
+      - XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-}
+      - XIAO_HEI_PERCEPTION_MIN_INLIERS
+      - XIAO_HEI_PERCEPTION_SCORE_THRESHOLD
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
@@ -74,6 +79,9 @@ services:
       # string when the host var is unset (responder then answers from
       # the start pose). Used by the perception responder.
       - XIAO_HEI_TRAJECTORY_JSON=${XIAO_HEI_TRAJECTORY_JSON_HOST:+/data/trajectory.json}
+      # Dev-only perception scoreboard: point at a scene's object_list.txt on
+      # the host to score the live map vs GT in rviz. Empty → scoreboard off.
+      - XIAO_HEI_GT_OBJECT_LIST=${XIAO_HEI_GT_OBJECT_LIST_HOST:+/data/gt_object_list.txt}
       # Gemini — read only when XIAO_HEI_RESPONDER=gemini. Build with
       # XIAO_HEI_EXTRA=gemini to install the SDK into the image.
       - XIAO_HEI_GEMINI_API_KEY
@@ -87,6 +95,7 @@ services:
       # mount resolves to /dev/null:/data/...:ro — harmless because the
       # responder then has no trajectory to read.
       - ${XIAO_HEI_TRAJECTORY_JSON_HOST:-/dev/null}:/data/trajectory.json:ro
+      - ${XIAO_HEI_GT_OBJECT_LIST_HOST:-/dev/null}:/data/gt_object_list.txt:ro
     stdin_open: true
     tty: true
     depends_on:

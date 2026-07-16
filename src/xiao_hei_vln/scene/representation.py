@@ -164,6 +164,10 @@ class SceneRepresentation:
         # future sweeper removes objects, ids stay unique across the
         # scene's lifetime.
         self._next_object_id: int = 1
+        # Stable ObjectMap node_id -> scene object_id, so the fused-map sync
+        # path (sync_from_object_map) keeps object identity across ticks even
+        # as the export is rebuilt each tick.
+        self._node_object_ids: dict[int, int] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -242,6 +246,59 @@ class SceneRepresentation:
         obs.object_id = self._next_object_id
         self._next_object_id += 1
         self._objects.append(obs)
+
+    def sync_from_object_map(self, nodes: list[dict]) -> None:
+        """Replace the object layer with a fused ``ObjectMap`` export.
+
+        This is the alternative to per-detection :meth:`add_object`: instead
+        of merging one median point at a time, the responder accumulates each
+        detection's LiDAR cloud in an :class:`ObjectMap`, then hands the fused
+        snapshot here every tick. Each ``nodes`` entry is a dict from
+        ``ObjectMap.export()`` (``node_id``, ``label``, ``score``,
+        ``center_3d``, ``bbox_aabb``, ``color_rgb``, ``color_name``).
+
+        Unlike ``add_object``, fused nodes carry a real 3D box, so
+        ``bbox_min``/``bbox_max`` are populated. ``object_id`` is kept stable
+        per ``node_id`` across ticks (via :attr:`_node_object_ids`), and the
+        current viewpoint is recorded as an observing edge. Spatial relations
+        already attached to a surviving object are preserved.
+        """
+        vp_id = self._current_viewpoint_id()
+        prev = {o.object_id: o for o in self._objects}
+        new_objects: list[ObjectObservation] = []
+        for nd in nodes:
+            nid = int(nd["node_id"])
+            oid = self._node_object_ids.get(nid)
+            if oid is None:
+                oid = self._next_object_id
+                self._next_object_id += 1
+                self._node_object_ids[nid] = oid
+
+            center = nd["center_3d"]
+            bmin = nd["bbox_aabb"]["min"]
+            bmax = nd["bbox_aabb"]["max"]
+            color = nd.get("color_rgb")
+            existing = prev.get(oid)
+
+            vp_ids = list(existing.observing_viewpoint_ids) if existing else []
+            if vp_id is not None and (not vp_ids or vp_ids[-1] != vp_id):
+                vp_ids.append(vp_id)
+
+            new_objects.append(ObjectObservation(
+                label=nd["label"],
+                position=Vector3(x=center[0], y=center[1], z=center[2]),
+                confidence=float(nd["score"]),
+                color_rgb=tuple(color) if color is not None else None,
+                color_name=nd.get("color_name"),
+                bbox_min=Vector3(x=bmin[0], y=bmin[1], z=bmin[2]),
+                bbox_max=Vector3(x=bmax[0], y=bmax[1], z=bmax[2]),
+                object_id=oid,
+                first_tick_id=existing.first_tick_id if existing else self._tick_id,
+                last_tick_id=self._tick_id,
+                observing_viewpoint_ids=vp_ids,
+                spatial_relations=list(existing.spatial_relations) if existing else [],
+            ))
+        self._objects = new_objects
 
     def add_spatial_relation_by_index(
         self, idx_a: int, idx_b: int, relation: str,
