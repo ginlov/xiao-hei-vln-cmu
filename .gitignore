@@ -263,6 +263,13 @@ dataset_generator/vla-3d/
 # dataset/: regeneratable training corpora + scene splits (generator OUTPUT).
 dataset/
 trajectories/
+# Offline Gemini evaluator outputs (regeneratable — see README "Offline evaluation").
+pred_*.jsonl
+*_trace.jsonl
+trace_*.jsonl
+debug_*/
+samples*.jsonl
+*report*.html
 
 runs/
 # Model weights — auto-downloaded by ultralytics on first run (too big for GitHub)

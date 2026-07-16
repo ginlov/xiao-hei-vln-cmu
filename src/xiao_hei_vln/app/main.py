@@ -12,6 +12,10 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
                         Detects + segments objects per tick, projects
                         masks through the LiDAR scan to lift to 3D,
                         and answers from the live scene graph.
+  - `gemini`          — Phase A frontier exploration *plus* Gemini for the
+                        final answer (Task 1) or route plan (Task 2).
+                        Requires `XIAO_HEI_GEMINI_API_KEY`.
+                        `pip install .[gemini]`.
 """
 
 from __future__ import annotations
@@ -157,9 +161,29 @@ def _build_responder(
             scan_accumulator=scan_accum,
         )
         return responder, logger
+    if name == "gemini":
+        from dataclasses import asdict
+
+        from xiao_hei_vln.gemini import GeminiConfig, GeminiEngine, GeminiResponder
+        from xiao_hei_vln.logger import VLMLogger
+
+        config = GeminiConfig.from_env()
+        engine = GeminiEngine(config)
+        engine.warmup()
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config=asdict(config),
+                responder_name="gemini",
+                tick_hz=TICK_HZ,
+            )
+        return GeminiResponder(engine, config, logger=logger), logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; "
-        "expected one of: dummy, qwen, perception",
+        "expected one of: dummy, qwen, perception, gemini",
     )
 
 

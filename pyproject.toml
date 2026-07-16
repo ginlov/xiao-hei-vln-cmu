@@ -24,6 +24,21 @@ qwen-local = [
     "pillow>=10",
     "huggingface-hub>=0.24",
 ]
+# Gemini API responder — explores via the perception pipeline, then asks
+# Gemini for the final answer / route. Lazy-imported so test/CI environments
+# without the SDK installed can still import `xiao_hei_vln.gemini` for typing.
+gemini = [
+    # The SDK had a major reshape at 1.0 — `client.models.generate_content`
+    # only exists post-1.0. Pinning >=1.0 keeps us on the supported API.
+    "google-genai>=1.0",
+    "pillow>=10",
+    # The challenge docker base ships matplotlib 3.6.3 via apt (RECORD-less,
+    # so pip cannot uninstall it). scene_rep only uses the ancient Agg API
+    # (subplots/imshow/savefig/ListedColormap), so floor at the system
+    # version: this lets the apt package satisfy the dep and stops pip from
+    # trying (and failing) to upgrade kiwisolver/matplotlib during the build.
+    "matplotlib>=3.6",
+]
 # HTML report generation from VLM tick logs (scripts/generate_report.py).
 replay = [
     "matplotlib>=3.8",
