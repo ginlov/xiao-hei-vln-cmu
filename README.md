@@ -199,6 +199,38 @@ Optional knobs (all have defaults; just `export` to override):
 | `XIAO_HEI_GEMINI_THINKING_BUDGET` | `0` | thinking tokens; `0` disables (keeps the JSON answer from being truncated), `-1` = dynamic |
 | `XIAO_HEI_GEMINI_IMAGE_LONG_EDGE` | `1280` | downscale long-edge before send |
 
+### 4c. Receiving the response
+
+The VLM never replies on `/challenge_question`. It routes the answer to
+**one** of three topics depending on the question type (the
+[Outputs](#outputs-vlm--challenge-system) discriminated union):
+
+| Question type | Answer topic | ROS type |
+|---|---|---|
+| Numerical (`How many …`) | `/numerical_response` | `std_msgs/Int32` |
+| Object reference (`Find …`) | `/selected_object_marker` | `visualization_msgs/Marker` |
+| Instruction following (else) | `/way_point_with_heading` | `geometry_msgs/Pose2D` |
+
+Start the `echo` **before** you `pub` the question, otherwise you miss the
+message (responses are latched at ~2 Hz, not replayed on subscribe). If you
+don't know the type ahead of time, listen on all three:
+
+```bash
+# subscribe first — leave this running in its own terminal
+docker exec iros2026_system bash -lc \
+  'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+   ros2 topic echo /selected_object_marker'        # or /numerical_response, /way_point_with_heading
+
+# …then pub the question (§4 / §4b) in another terminal.
+```
+
+The response is **not immediate**: the VLM ticks at 2 Hz and explores for
+several ticks before committing an answer (Gemini mode:
+`XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS`, capped by `XIAO_HEI_GEMINI_MAX_TICKS`),
+so keep the `echo` attached and watch `docker logs -f xiao_hei_ai_module`
+for progress. `WaypointPathResponse` emits one `Pose2D` per waypoint, so
+`/way_point_with_heading` prints a burst of messages, one per path point.
+
 ## Offline evaluation
 
 After a live run the session directory contains `predictions.jsonl`.
