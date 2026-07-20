@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from xiao_hei_vln.detected_dataset.builder import (
+    _DEFAULT_VLA3D_DIR,
     build_dataset,
     extract_scene_graph_from_session,
 )
@@ -49,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scene", required=True, help="scene name (matches the QA 'scene' field)")
     ap.add_argument("--qa", nargs="+", default=_DEFAULT_QA, help="Q&A JSONL files")
     ap.add_argument("--out-dir", type=Path, default=Path("dataset/detected"))
+    ap.add_argument(
+        "--vla3d-dir",
+        default=_DEFAULT_VLA3D_DIR,
+        help="VLA-3D Unity dir holding <scene>/<scene>_object_result.csv "
+        "for GT object colours; pass '' to skip GT-colour join.",
+    )
     args = ap.parse_args(argv)
 
     if args.session is not None:
@@ -56,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         scene_graph = json.loads(Path(args.scene_graph).read_text())
 
-    spliced, truth, detected = build_dataset(scene_graph, args.scene, args.qa)
+    spliced, truth, detected = build_dataset(
+        scene_graph, args.scene, args.qa, vla3d_dir=args.vla3d_dir or None
+    )
     if not spliced:
         print(
             f"WARNING: no Q&A records for scene {args.scene!r} in {args.qa}",

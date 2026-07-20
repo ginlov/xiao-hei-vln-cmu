@@ -159,3 +159,57 @@ def test_build_dataset_end_to_end(tmp_path: Path):
     parsed = parse_object_list(spliced[0]["detected_object_list"])
     assert {e.label for e in parsed.values()} == {"sofa", "vase"}
     assert truth[0]["answer"] == 1
+
+
+# ── colour ─────────────────────────────────────────────────────────────────────
+
+def test_scene_graph_to_object_list_emits_color():
+    scene = {"objects": [{
+        "label": "sofa", "position": [1.0, 2.0, 0.5],
+        "bbox_min": [0.6, 1.7, 0.1], "bbox_max": [1.4, 2.3, 0.9],
+        "color_name": "blue",
+    }]}
+    e = parse_object_list(scene_graph_to_object_list(scene))[0]
+    assert e.label == "sofa" and e.color == "blue"
+
+
+def test_scene_graph_to_object_list_no_color_when_absent():
+    scene = {"objects": [{"label": "cup", "position": [0, 0, 0]}]}
+    assert parse_object_list(scene_graph_to_object_list(scene))[0].color is None
+
+
+def test_add_colors_to_object_list_joins_by_id():
+    from xiao_hei_vln.detected_dataset.builder import add_colors_to_object_list
+    lines = ['0 0 0 0 1 1 1 0 "speaker"', '5 1 1 1 1 1 1 0 "lamp"']
+    p = parse_object_list(add_colors_to_object_list(lines, {0: "black", 5: "green"}))
+    assert p[0].color == "black" and p[5].color == "green"
+
+
+def test_add_colors_leaves_existing_and_unknown_untouched():
+    from xiao_hei_vln.detected_dataset.builder import add_colors_to_object_list
+    lines = ['0 0 0 0 1 1 1 0 "a" "red"', '9 1 1 1 1 1 1 0 "b"']
+    p = parse_object_list(add_colors_to_object_list(lines, {0: "white"}))
+    assert p[0].color == "red"   # already coloured → unchanged
+    assert p[9].color is None    # id not in map → no colour
+
+
+def test_build_dataset_joins_gt_color_from_csv(tmp_path: Path):
+    # minimal VLA-3D layout: <vla>/scene/scene_object_result.csv
+    scene_dir = tmp_path / "vla" / "myscene"
+    scene_dir.mkdir(parents=True)
+    (scene_dir / "myscene_object_result.csv").write_text(
+        "object_id,object_color_scheme1\n7,red\n8,N/A\n"
+    )
+    qa = tmp_path / "qa.jsonl"
+    qa.write_text(json.dumps({
+        "scene": "myscene", "type": "object_reference", "question": "q",
+        "answer": {"object_id": 7}, "object_list": [
+            '7 1 1 1 0.2 0.2 0.2 0 "lamp"', '8 2 2 2 0.2 0.2 0.2 0 "wall"',
+        ],
+    }) + "\n")
+    spliced, _, _ = build_dataset(
+        _online_scene(), "myscene", [qa], vla3d_dir=tmp_path / "vla"
+    )
+    gt = parse_object_list(spliced[0]["object_list"])
+    assert gt[7].color == "red"   # joined
+    assert gt[8].color is None    # N/A → skipped

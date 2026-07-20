@@ -196,3 +196,22 @@ def test_run_limit(tmp_path):
     # Only ENTRY_NUMERICAL loaded into GT (limit=1), so only one match possible.
     assert len(lines) == 1
     assert lines[0]["ground_truth"]["kind"] == "numerical"
+
+
+# ── optional colour token (2nd quoted field) ──────────────────────────────────
+
+def test_parse_object_list_reads_optional_color():
+    lines = [
+        '3 1.0 2.0 3.0 0.5 0.6 0.7 0.0 "book" "red"',   # with colour
+        '4 0.0 0.0 0.0 1.0 1.0 1.0 0.0 "table"',          # none → backward compat
+    ]
+    got = parse_object_list(lines)
+    assert got[3].label == "book" and got[3].color == "red"
+    assert got[4].label == "table" and got[4].color is None
+    # numeric fields still parse correctly alongside the colour token.
+    assert (got[3].center.x, got[3].size.z, got[3].heading) == pytest.approx((1.0, 0.7, 0.0))
+
+
+def test_parse_object_list_empty_color_token_is_none():
+    (got,) = parse_object_list(['1 0 0 0 1 1 1 0 "chair" ""']).values()
+    assert got.label == "chair" and got.color is None

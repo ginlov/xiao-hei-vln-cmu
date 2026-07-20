@@ -25,11 +25,14 @@ untouched, so scoring still uses the authoritative GT.
 
 from __future__ import annotations
 
+import csv
 import json
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from xiao_hei_vln.eval_sampler.object_list import parse_object_list
+
+_DEFAULT_VLA3D_DIR = "dataset_generator/vla-3d/Unity"
 
 
 def _object_center_size(obj: dict) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -77,11 +80,16 @@ def scene_graph_to_object_list(
     for i, obj in enumerate(objects):
         (cx, cy, cz), (sx, sy, sz) = _object_center_size(obj)
         label = str(obj.get("label", "unknown")).replace('"', "'")
+        # Carry the detection's natural-language colour (already computed live
+        # and stored on the scene graph) as a 2nd quoted token, so the LLM
+        # eval sees it. Absent/empty → no colour token.
+        color = obj.get("color_name")
+        color_str = f' "{str(color).replace(chr(34), chr(39))}"' if color else ""
         lines.append(
             f"{i} "
             f"{cx:.{precision}f} {cy:.{precision}f} {cz:.{precision}f} "
             f"{sx:.{precision}f} {sy:.{precision}f} {sz:.{precision}f} "
-            f'0.0 "{label}"'
+            f'0.0 "{label}"' + color_str
         )
     return lines
 
@@ -146,16 +154,72 @@ def extract_scene_graph_from_session(session_dir: str | Path) -> dict:
     return scene
 
 
+def load_gt_colors(scene_name: str, vla3d_dir: str | Path) -> dict[int, str]:
+    """``object_id → dominant colour`` from VLA-3D ``<scene>_object_result.csv``.
+
+    Uses ``object_color_scheme1`` (the most-dominant named colour). Returns an
+    empty dict when the CSV is missing, so GT-colour join is a no-op offline
+    when the VLA-3D source isn't present.
+    """
+    csv_path = Path(vla3d_dir) / scene_name / f"{scene_name}_object_result.csv"
+    if not csv_path.exists():
+        return {}
+    colors: dict[int, str] = {}
+    with csv_path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                oid = int(row["object_id"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            c = (row.get("object_color_scheme1") or "").strip()
+            if c and c.upper() != "N/A":
+                colors[oid] = c
+    return colors
+
+
+def add_colors_to_object_list(lines: Iterable[str], id_color: dict[int, str]) -> list[str]:
+    """Append a colour token to each GT ``object_list`` line, keyed by its
+    leading ``object_id``. Lines that already carry a colour (a 2nd quoted
+    token), or whose id has no colour, pass through unchanged."""
+    out: list[str] = []
+    for line in lines:
+        s = line.rstrip()
+        if not isinstance(line, str) or s.count('"') >= 4:
+            out.append(line)
+            continue
+        try:
+            oid = int(s.split()[0])
+        except (ValueError, IndexError):
+            out.append(line)
+            continue
+        color = id_color.get(oid)
+        out.append(f'{s} "{color.replace(chr(34), chr(39))}"' if color else line)
+    return out
+
+
 def build_dataset(
     scene_graph: dict,
     scene_name: str,
     qa_paths: Iterable[str | Path],
+    vla3d_dir: str | Path | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """End-to-end: scene graph + scene name + Q&A files → (spliced records,
     truth records, detected_object_list). Empty spliced list means no Q&A
-    records matched ``scene_name``."""
+    records matched ``scene_name``.
+
+    When ``vla3d_dir`` is given, GT ``object_list`` lines are augmented with
+    each object's dominant colour from ``<scene>_object_result.csv`` (matched
+    by object_id), so both lists carry natural-language colour.
+    """
     detected = scene_graph_to_object_list(scene_graph)
     qa = load_qa_for_scene(qa_paths, scene_name)
+    if vla3d_dir is not None:
+        id_color = load_gt_colors(scene_name, vla3d_dir)
+        if id_color:
+            for rec in qa:
+                ol = rec.get("object_list")
+                if isinstance(ol, list):
+                    rec["object_list"] = add_colors_to_object_list(ol, id_color)
     spliced = splice_detected(qa, detected)
     truth = truth_records(qa)
     return spliced, truth, detected

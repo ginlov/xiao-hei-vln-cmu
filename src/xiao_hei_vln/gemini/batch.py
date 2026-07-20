@@ -289,6 +289,7 @@ def build_scene(object_list: list[str], *, near_threshold: float = 2.0) -> Scene
                 confidence=1.0,
                 bbox_min=bmin,
                 bbox_max=bmax,
+                color_name=e.color,
             )
         )
     scene.derive_near_relations(threshold=near_threshold)
