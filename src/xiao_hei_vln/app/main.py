@@ -20,6 +20,7 @@ Pick the responder with `XIAO_HEI_RESPONDER`:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Callable
@@ -337,6 +338,25 @@ def main() -> None:
             _scene_pub.publish(snap, scoreboard_text=text)
 
         node.create_timer(0.5, _publish_markers)
+
+    # Periodic full scene-graph dump to disk. A pure exploration run has no
+    # per-question VLM session log, so without this it would leave no scene
+    # graph for offline dataset building (xiao_hei_vln.detected_dataset).
+    # Opt in with XIAO_HEI_SCENE_DUMP_PATH; atomic write, last dump = fullest map.
+    _scene_dump_path = os.environ.get("XIAO_HEI_SCENE_DUMP_PATH", "")
+    if _scene_dump_path:
+        _dump_target = Path(_scene_dump_path)
+        _dump_target.parent.mkdir(parents=True, exist_ok=True)
+
+        def _dump_scene() -> None:
+            try:
+                tmp = _dump_target.with_suffix(_dump_target.suffix + ".tmp")
+                tmp.write_text(json.dumps(scene.to_dict()))
+                tmp.replace(_dump_target)
+            except Exception:  # noqa: BLE001 — never let the dump break the run
+                node.get_logger().exception("scene dump failed")
+
+        node.create_timer(2.0, _dump_scene)
 
     explorer = _build_explorer(node)
 

@@ -289,6 +289,7 @@ def build_scene(object_list: list[str], *, near_threshold: float = 2.0) -> Scene
                 confidence=1.0,
                 bbox_min=bmin,
                 bbox_max=bmax,
+                color_name=e.color,
             )
         )
     scene.derive_near_relations(threshold=near_threshold)
@@ -380,7 +381,13 @@ def predict_entry(
         return None
 
     qtype = QuestionType(qtype_str)
-    raw_list = entry.get("object_list")
+    # Prefer our real detections when the record carries them
+    # (detected_object_list, injected by xiao_hei_vln.detected_dataset) so
+    # the eval measures perception + LLM; fall back to the GT object_list.
+    # The ground-truth converter still reads object_list, so scoring stays
+    # against the authoritative GT.
+    detected = entry.get("detected_object_list")
+    raw_list = detected if isinstance(detected, list) else entry.get("object_list")
     object_list = raw_list if isinstance(raw_list, list) else []
 
     scene = build_scene(object_list, near_threshold=near_threshold)

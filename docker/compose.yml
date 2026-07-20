@@ -68,6 +68,8 @@ services:
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
+      # Periodic scene-graph dump for offline dataset building. Empty → off.
+      - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
       # Qwen — read only when XIAO_HEI_RESPONDER=qwen.
       - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
       - XIAO_HEI_QWEN_MODEL

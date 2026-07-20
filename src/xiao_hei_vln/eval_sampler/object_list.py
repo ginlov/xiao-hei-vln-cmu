@@ -22,6 +22,10 @@ class ObjectEntry:
     center: Vector3
     size: Vector3
     heading: float
+    # Optional natural-language colour (e.g. "red"), carried as a second
+    # quoted token after the label:  ... heading "label" "color". None when
+    # the line has no colour token (all pre-colour object_lists).
+    color: str | None = None
 
 
 def parse_object_list(lines: list[str]) -> dict[int, ObjectEntry]:
@@ -39,10 +43,14 @@ def parse_object_list(lines: list[str]) -> dict[int, ObjectEntry]:
 def _parse_line(line: str) -> ObjectEntry | None:
     if not line:
         return None
-    # Split out the quoted label first to avoid its spaces confusing the split.
-    m = re.search(r'"([^"]*)"', line)
-    label = m.group(1) if m else ""
-    numeric_part = line[: m.start()].strip() if m else line
+    # Split out the quoted tokens first so their spaces don't confuse the
+    # numeric split. The 1st quoted group is the label; an optional 2nd is
+    # the colour (`... heading "label" "color"`).
+    quoted = list(re.finditer(r'"([^"]*)"', line))
+    label = quoted[0].group(1) if quoted else ""
+    color = quoted[1].group(1) if len(quoted) > 1 else None
+    color = color or None  # treat an empty "" colour token as absent
+    numeric_part = line[: quoted[0].start()].strip() if quoted else line
 
     parts = numeric_part.split()
     if len(parts) < 8:
@@ -61,4 +69,5 @@ def _parse_line(line: str) -> ObjectEntry | None:
         center=Vector3(x=cx, y=cy, z=cz),
         size=Vector3(x=lx, y=ly, z=lz),
         heading=heading,
+        color=color,
     )
