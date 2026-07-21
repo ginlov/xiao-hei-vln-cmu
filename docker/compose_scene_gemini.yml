@@ -1,0 +1,139 @@
+# Xiao Hei VLN — submission stack (scene_gemini responder).
+#
+# One command brings up the full end-to-end pipeline:
+#
+#   frontier exploration  →  perception scene graph (YOLO-World + SAM)  →  Gemini answer
+#
+# Three containers:
+#   - system      : challenge simulator (unmodified official image, GPU).
+#   - perception  : YOLO-World v2 + SAM 2.1 sidecar (GPU) — builds the object graph.
+#   - ai_module   : our node running XIAO_HEI_RESPONDER=scene_gemini (no GPU; Gemini
+#                   reasoning runs in the cloud, perception runs in the sidecar).
+#
+# Usage:
+#   export XIAO_HEI_GEMINI_API_KEY=<your-key>     # REQUIRED — validated at boot
+#   export XIAO_HEI_VLM_LOG_DIR=/vlm_logs         # writes predictions.jsonl for scoring
+#   xhost +local:
+#   docker compose -f docker/compose_scene_gemini.yml up -d --build
+#
+#   # inside iros2026_system: start the sim
+#   docker exec -it iros2026_system \
+#     /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
+#
+#   # ask a question, then watch the answer topic + logs
+#   docker exec iros2026_system bash -lc \
+#     'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+#      ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many chairs are in the room\"}"'
+#   docker logs -f xiao_hei_ai_module
+#
+# > The API key must be valid at startup: GeminiEngine.warmup() issues one live
+# > call when ai_module boots; an invalid/missing key crash-loops the container.
+#
+# Exploration is authoritative here (single sweep): the app-level FrontierExplorer
+# drives movement while the perception sidecar builds the scene graph via ingest();
+# the answer is deferred until the sweep completes. Tune the sweep with
+# XIAO_HEI_EXPLORATION_MAX_WAYPOINTS (0 disables exploration → answer from spawn).
+
+services:
+  # Challenge simulator (unmodified official image). Needs the GPU to render.
+  system:
+    image: zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation
+    container_name: iros2026_system
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /etc/localtime:/etc/localtime:ro
+      - /dev/input:/dev/input
+      - /dev/bus/usb:/dev/bus/usb
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Perception sidecar — YOLOv8-World v2 + SAM 2.1 Hiera Tiny. Builds the object
+  # scene graph the responder feeds to Gemini. Shares the GPU with the sim.
+  perception:
+    build:
+      context: ../perception
+      dockerfile: Dockerfile
+    image: xiao-hei/perception:latest
+    container_name: xiao_hei_perception
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PERCEPTION_HOST=0.0.0.0
+      - PERCEPTION_PORT=8001
+      # Set PERCEPTION_DEBUG=1 on the host to dump per-/detect step images.
+      - PERCEPTION_DEBUG=${PERCEPTION_DEBUG:-}
+    volumes:
+      - ../perception/server.py:/opt/perception/server.py:ro
+      - ../perception/pipeline.py:/opt/perception/pipeline.py:ro
+      - ../perception/geometry.py:/opt/perception/geometry.py:ro
+      - ../perception/debug:/opt/perception/debug
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Our AI module — scene_gemini responder. No GPU: perception runs in the
+  # sidecar and reasoning runs in the Gemini cloud. Installs the perception
+  # HTTP client + the Gemini SDK + the exploration/plotting deps.
+  ai_module:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-perception,gemini,exploration}
+    image: xiao-hei/ai_module:scene_gemini
+    container_name: xiao_hei_ai_module
+    network_mode: host
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - PYTHONUNBUFFERED=1
+      - XIAO_HEI_RESPONDER=${XIAO_HEI_RESPONDER:-scene_gemini}
+      - XIAO_HEI_VLM_TICK_HZ
+      - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
+      - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
+      # Exploration sweep (authoritative). 0 disables → answer from spawn pose.
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
+      # Perception sidecar (scene-graph building via ingest()).
+      - XIAO_HEI_PERCEPTION_BASE_URL=${XIAO_HEI_PERCEPTION_BASE_URL:-http://localhost:8001}
+      - XIAO_HEI_PERCEPTION_SCORE_THRESHOLD
+      - XIAO_HEI_PERCEPTION_MIN_INLIERS
+      # Opt-in ObjectMap fusion (converged 3D boxes + NMS). Empty → off.
+      - XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-}
+      # Gemini reasoning. The key is required; interpolated (not bare) so a
+      # value in .env is picked up — `docker compose` only feeds .env into
+      # ${...} substitutions, never into bare `- VAR` pass-throughs.
+      - XIAO_HEI_GEMINI_API_KEY=${XIAO_HEI_GEMINI_API_KEY:?set XIAO_HEI_GEMINI_API_KEY in .env or export it}
+      - XIAO_HEI_GEMINI_MODEL=${XIAO_HEI_GEMINI_MODEL:-gemini-2.5-flash}
+      - XIAO_HEI_GEMINI_TEMPERATURE
+      - XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS
+      - XIAO_HEI_GEMINI_IMAGE_LONG_EDGE
+      - XIAO_HEI_GEMINI_THINKING_BUDGET
+    volumes:
+      - ../src:/opt/xiao_hei_vln/src:ro
+      - ../vlm_logs:/vlm_logs
+      - ../exploration_logs:/exploration_logs
+    stdin_open: true
+    tty: true
+    depends_on:
+      - system
+      - perception
+    restart: unless-stopped
