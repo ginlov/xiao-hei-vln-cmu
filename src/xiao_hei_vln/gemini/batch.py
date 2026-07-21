@@ -4,7 +4,7 @@ Produces a ``predictions.jsonl`` for Task 1 (numerical) and Task 2
 (object_reference) *without* the ROS simulator, so we can score Gemini
 with the offline evaluator (``xiao_hei_vln.eval_pipeline``).
 
-The live :class:`~xiao_hei_vln.gemini.responder.GeminiResponder` consumes
+The live :class:`~xiao_hei_vln.scene_gemini.SceneGeminiResponder` consumes
 raw sensor snapshots (camera / lidar / pose) and renders occupancy maps.
 There is no offline dataset of such snapshots, so this harness instead
 reconstructs the **same scene-graph representation** Gemini sees at test

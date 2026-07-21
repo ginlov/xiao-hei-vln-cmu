@@ -56,7 +56,7 @@ class GeminiClientProtocol(Protocol):
 
 
 class GeminiEngineProtocol(Protocol):
-    """The engine surface :class:`GeminiResponder` depends on.
+    """The engine surface :class:`SceneGeminiResponder` depends on.
 
     Wider than :class:`xiao_hei_vln.qwen.engine.EngineProtocol` because
     we always go multimodal (panorama + occupancy map) plus a JSON

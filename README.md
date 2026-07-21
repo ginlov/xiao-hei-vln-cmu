@@ -155,21 +155,30 @@ docker logs -f xiao_hei_ai_module
 Build / push / drop-into-challenge-compose details are in
 [`docker/README.md`](docker/README.md).
 
-### 4b. Run end-to-end with Gemini (Task 1 + Task 2)
+### 4b. Run end-to-end — the submission stack (`scene_gemini`)
 
-The `gemini` responder explores the room with the Phase-A frontier
-planner, then calls the Gemini API for the final answer (Task 1) or
-route plan (Task 2). Reasoning runs in the cloud, so **no local VLM /
-vLLM is needed** — the GPU is only used by the simulator. Use the
-dedicated compose file [`docker/compose_gemini.yml`](docker/compose_gemini.yml)
-(simulator with GPU, no vLLM sidecar, Gemini env vars wired):
+The **`scene_gemini`** responder is the team's full pipeline:
+
+```
+frontier exploration  →  perception scene graph (YOLO-World + SAM)  →  Gemini answer
+```
+
+One shared frontier sweep drives the robot; on every tick the perception
+sidecar lifts detections into the scene graph (`ingest()`). When the sweep
+completes, the **populated** object graph — plus a panorama JPEG and an
+occupancy/trajectory PNG — is handed to Gemini for the final numerical /
+object-reference answer (Task 1) or the route plan (Task 2). Reasoning
+runs in the cloud and perception runs in the sidecar; the GPU is shared by
+the simulator and the perception sidecar. Use the dedicated compose file
+[`docker/compose_scene_gemini.yml`](docker/compose_scene_gemini.yml)
+(simulator + perception sidecar + our node, Gemini env wired):
 
 ```bash
 export XIAO_HEI_GEMINI_API_KEY=<your-key>   # required — see note below
 export XIAO_HEI_VLM_LOG_DIR=/vlm_logs       # write predictions.jsonl for scoring
 xhost +local:
 
-docker compose -f docker/compose_gemini.yml up -d --build
+docker compose -f docker/compose_scene_gemini.yml up -d --build
 
 # inside iros2026_system: start the sim
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
@@ -179,8 +188,13 @@ docker exec iros2026_system bash -lc \
   'source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
    ros2 topic pub --once /challenge_question std_msgs/msg/String "{data: \"How many chairs are in the room\"}"'
 
-docker logs -f xiao_hei_ai_module   # "ready (responder=gemini ...)" means it is up
+docker logs -f xiao_hei_ai_module   # "ready (responder=scene_gemini ...)" means it is up
 ```
+
+The answer is **deferred until the frontier sweep completes** (the robot
+finishes exploring before it commits), so keep the `echo` from §4c
+attached and watch the logs. Set `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0` to
+answer from the spawn pose without exploring.
 
 > **The API key must be valid at startup.** `GeminiEngine.warmup()`
 > issues one live `generate_content` call when the container boots, so an
@@ -191,9 +205,10 @@ Optional knobs (all have defaults; just `export` to override):
 
 | Env var | Default | Purpose |
 |---|---|---|
+| `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | frontier sweep budget; `0` disables exploration |
+| `XIAO_HEI_OBJECT_MAP` | (off) | `1` fuses detections into converged 3D boxes (NMS + wall-sheet rejection) |
+| `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate |
 | `XIAO_HEI_GEMINI_MODEL` | `gemini-2.5-flash` | model id |
-| `XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS` | `120` | Task-1 ticks to explore before asking Gemini |
-| `XIAO_HEI_GEMINI_MAX_TICKS` | `240` | hard per-question safety cap |
 | `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | sampling temperature |
 | `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `2048` | response token cap |
 | `XIAO_HEI_GEMINI_THINKING_BUDGET` | `0` | thinking tokens; `0` disables (keeps the JSON answer from being truncated), `-1` = dynamic |
@@ -224,10 +239,10 @@ docker exec iros2026_system bash -lc \
 # …then pub the question (§4 / §4b) in another terminal.
 ```
 
-The response is **not immediate**: the VLM ticks at 2 Hz and explores for
-several ticks before committing an answer (Gemini mode:
-`XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS`, capped by `XIAO_HEI_GEMINI_MAX_TICKS`),
-so keep the `echo` attached and watch `docker logs -f xiao_hei_ai_module`
+The response is **not immediate**: the VLM ticks at 2 Hz and runs the full
+frontier sweep before committing an answer (`scene_gemini` defers until
+exploration completes; budget = `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS`), so
+keep the `echo` attached and watch `docker logs -f xiao_hei_ai_module`
 for progress. `WaypointPathResponse` emits one `Pose2D` per waypoint, so
 `/way_point_with_heading` prints a burst of messages, one per path point.
 
@@ -389,7 +404,11 @@ src/xiao_hei_vln/
 ├── adapters/       ROS 2 subscribers + publishers (lazy rclpy import)
 ├── dummy/          reference responder ported from dummyVLM.cpp
 ├── qwen/           Qwen2.5-VL responder (vLLM-backed, separate container)
-├── gemini/         Gemini responder + offline batch evaluator + call tracer
+├── gemini/         Gemini engine + offline batch evaluator + call tracer
+├── scene_gemini/   submission responder: exploration + perception graph + Gemini
+├── perception/     YOLO-World + SAM sidecar client, 3D lifter, scene-graph fusion
+├── exploration/    frontier exploration strategies (occupancy grid + planner)
+├── scene/          SceneRepresentation (Room → Viewpoints → Objects graph)
 ├── evaluator/      offline metrics (numerical + object-reference)
 ├── eval_sampler/   GT ↔ prediction matcher, GT format converter
 ├── eval_pipeline/  CLI entry point (xiao-hei-eval)
