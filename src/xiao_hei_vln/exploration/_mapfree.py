@@ -235,6 +235,8 @@ class NextBestViewExplorer(_MapFreeBase):
         for cell in samples:
             if cell not in costs or cell in self._blacklist:
                 continue
+            if costs[cell] <= self._reach_dist:
+                continue
             gain = self._grid.unknown_region_size([cell], radius_cells=12)
             path = max(costs[cell], 1e-3)
             score = gain / (1.0 + path)
