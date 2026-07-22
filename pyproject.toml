@@ -41,9 +41,13 @@ perception = [
     "pillow>=10",
     "pycocotools>=2.0.8",
 ]
-# Online exploration strategies + debug visualisation.
+# Online exploration strategies + debug visualisation. matplotlib draws the
+# occupancy-grid plot; python-xlib + pillow grab the sim's RViz window for the
+# end-of-run screenshot (both optional at runtime — a headless run skips it).
 exploration = [
     "matplotlib>=3.8",
+    "python-xlib>=0.33",
+    "pillow>=10",
 ]
 # Offline trajectory generation from traversable-area point clouds.
 trajectory = [

@@ -61,7 +61,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-perception}
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-perception,exploration}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
@@ -72,13 +72,19 @@ services:
       - XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-}
       - XIAO_HEI_PERCEPTION_MIN_INLIERS
       - XIAO_HEI_PERCEPTION_SCORE_THRESHOLD
-      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-500}
       - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
       # Periodic scene-graph dump for offline dataset building. Empty → off.
       - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
+      # Names the per-run log dir (exploration_logs/<scene>/). Only the basename
+      # is used — the path itself points at the host, not into this container.
+      - XIAO_HEI_SCENE_DIR_HOST=${XIAO_HEI_SCENE_DIR_HOST:-}
+      # Lets the node screenshot the sim's RViz window when exploration ends.
+      # Empty on a headless host, which the node reads as "skip it".
+      - DISPLAY=${DISPLAY:-}
       # Perception — used only when XIAO_HEI_RESPONDER=perception (the
       # wrapper activates --profile perception, which starts the sidecar
       # below). Ignored otherwise.
@@ -97,6 +103,9 @@ services:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
       - ../exploration_logs:/exploration_logs
+      # X socket, so the node can reach the display RViz drew into. Needs
+      # `xhost +local:` on the host, same as the sim container.
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Conditional trajectory mount. When the host var is unset, the
       # mount resolves to /dev/null:/data/...:ro — harmless because the
       # responder then has no trajectory to read.

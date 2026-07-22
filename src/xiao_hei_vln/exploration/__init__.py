@@ -25,6 +25,12 @@ save_exploration_plot(visited_waypoints, grid, output_path)
     Only supported by strategies that expose ``get_visited_waypoints()``
     and ``get_grid()``.  Requires matplotlib (install the ``[exploration]``
     extra).
+
+save_rviz_screenshot(output_path, display_name=None)
+    Saves a PNG of the simulator's RViz window — the traversed path drawn
+    over the scene mesh, as the sim rendered it.  Needs an X server to grab
+    from; raises ``CaptureError`` otherwise.  Requires python-xlib + pillow
+    (the same ``[exploration]`` extra).
 """
 
 from __future__ import annotations
@@ -45,7 +51,19 @@ class ExplorationStrategy(Protocol):
     def reset(self) -> None: ...
 
 
+from xiao_hei_vln.exploration._capture import (
+    CaptureError,
+    list_windows,
+    save_rviz_screenshot,
+)
 from xiao_hei_vln.exploration._frontier import FrontierExplorer
 from xiao_hei_vln.exploration._visualize import save_exploration_plot
 
-__all__ = ["ExplorationStrategy", "FrontierExplorer", "save_exploration_plot"]
+__all__ = [
+    "CaptureError",
+    "ExplorationStrategy",
+    "FrontierExplorer",
+    "list_windows",
+    "save_exploration_plot",
+    "save_rviz_screenshot",
+]

@@ -40,10 +40,26 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 # Exploration is NOT interrupted when a question arrives: it runs until the
 # strategy completes (budget exhausted, consecutive-skip hatch, or no frontiers
 # remain), and only then does the responder answer — from the fully-built scene.
-_EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "100"))
+_EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "500"))
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
+# Scene the sim is running. Only the basename is meaningful here — the value is
+# a *host* path (compose bind-mounts it into the sim, not into this container),
+# so we never open it, we only name the log dir after it.
+_EXPLORATION_SCENE = (
+    os.path.basename(os.environ.get("XIAO_HEI_SCENE_DIR_HOST", "").rstrip("/"))
+    or "default_scene"
+)
+
+
+def _exploration_dir() -> Path:
+    """Where this run's log and images go: <log dir>/<scene>/.
+
+    Keeping every run under a scene name means consecutive runs never clobber
+    each other — exploration.log is opened with mode "w".
+    """
+    return Path(_EXPLORATION_LOG_DIR or "/exploration_logs") / _EXPLORATION_SCENE
 
 
 @dataclass(frozen=True)
@@ -284,11 +300,9 @@ def _maybe_save_png(explorer, node) -> None:
         node.get_logger().info("Exploration plot skipped: strategy does not support it.")
         return
     try:
-        from pathlib import Path
-
         from xiao_hei_vln.exploration import save_exploration_plot
 
-        out_dir = Path(_EXPLORATION_LOG_DIR)
+        out_dir = _exploration_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "exploration.png"
         save_exploration_plot(
@@ -299,6 +313,30 @@ def _maybe_save_png(explorer, node) -> None:
         node.get_logger().info(f"Exploration plot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save exploration plot: {exc}")
+
+
+def _maybe_save_rviz(node) -> None:
+    """Screenshot the sim's RViz window if a display is available.
+
+    Gated on DISPLAY, so a headless run (the challenge submission, CI) skips
+    it without complaint rather than failing.  Everything is best-effort: a
+    missing X server, a missing python-xlib, or an RViz that never opened
+    must not take the node down — exploration has already finished by the
+    time we get here, and a lost debug image is not worth a crash.
+    """
+    if not _EXPLORATION_LOG_DIR:
+        return
+    if not os.environ.get("DISPLAY"):
+        node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
+        return
+    try:
+        from xiao_hei_vln.exploration import save_rviz_screenshot
+
+        out_path = _exploration_dir() / "rviz.png"
+        save_rviz_screenshot(out_path)
+        node.get_logger().info(f"RViz screenshot saved to {out_path}")
+    except Exception as exc:  # noqa: BLE001
+        node.get_logger().warn(f"Could not save RViz screenshot: {exc}")
 
 
 def main() -> None:
@@ -415,9 +453,9 @@ def main() -> None:
     # Structured exploration log — survives the container via the mounted volume.
     # Create the dir if it doesn't exist so a run without a bind-mounted
     # /exploration_logs (e.g. the non-GPU compose.yml) doesn't crash on startup.
-    _log_dir = _EXPLORATION_LOG_DIR or "/exploration_logs"
-    os.makedirs(_log_dir, exist_ok=True)
-    _exp_log_file = open(os.path.join(_log_dir, "exploration.log"), "w", buffering=1)
+    _log_dir = _exploration_dir()
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _exp_log_file = open(_log_dir / "exploration.log", "w", buffering=1)
 
     def _exp_log(event: str, **fields) -> None:
         now_s = node.get_clock().now().nanoseconds / 1e9
@@ -597,6 +635,7 @@ def main() -> None:
                     f"skipped={explorer.skipped_count} reason={reason}"
                 )
                 _maybe_save_png(explorer, node)
+                _maybe_save_rviz(node)
             return
 
         # New question → reset the responder so it handles it from scratch.
