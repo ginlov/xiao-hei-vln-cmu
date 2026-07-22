@@ -42,6 +42,19 @@ simulator has started publishing.  The explorer handles both gracefully:
 it skips the grid update when `terrain_ext` is `None`, and returns the
 current target unchanged when `pose` is `None`.
 
+## Next-Best-View (`nbv`)
+
+Set `XIAO_HEI_EXPLORATION_STRATEGY=nbv` to use `NextBestViewExplorer`
+instead of frontier clustering.  It builds the same online
+`OccupancyGrid` from `terrain_ext`, then repeatedly:
+
+1. BFS reachable FREE cells from the robot pose.
+2. Sample candidates (frontier-biased).
+3. Score each as `unknown_gain / (1 + path_cost)`.
+4. Drive to the best sample; blacklist visited cells with a small radius.
+
+No ground-truth floor plan is used — only the live belief map.
+
 ## Output
 
 Each call to `update()` returns a `Waypoint(x, y, heading)` or `None`.
