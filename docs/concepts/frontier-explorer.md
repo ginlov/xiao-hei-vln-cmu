@@ -106,7 +106,7 @@ These are set in `_build_explorer()` in `app/main.py`:
 
 | Parameter | Default | Env var |
 |---|---|---|
-| `max_waypoints` | 100 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` |
+| `max_waypoints` | 500 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` |
 | `max_waypoint_dist` | 1.5 m | `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` |
 | `waypoint_reach_dist` | 0.3 m | — |
 | `stuck_timeout_s` | 12.0 s | — |

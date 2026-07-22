@@ -136,6 +136,14 @@ every subsequent tick.  The map built during exploration is not discarded
 — it lives in the `FrontierExplorer` instance for the rest of the run
 and is used to save the debug PNG (if configured).
 
+On `DONE` the loop also saves two images into `exploration_logs/<scene>/`
+(the scene name comes from `XIAO_HEI_SCENE_DIR_HOST`, or `default_scene`):
+`exploration.png` (the explorer's occupancy grid and visited waypoints) and
+`rviz.png` (a screenshot of the simulator's RViz window — the traversed path
+over the scene mesh).  The screenshot needs `DISPLAY` to be set and the X
+socket mounted; without either it is skipped with an info log.  Both are
+best-effort and never fail the run.
+
 ## Disabling exploration
 
 Set `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0` to skip exploration entirely.

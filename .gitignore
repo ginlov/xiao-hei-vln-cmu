@@ -8,6 +8,10 @@ perception/ViT-*.pt
 # VLM tick logs (generated at runtime, not committed)
 vlm_logs/
 
+# Exploration logs — per-scene exploration.log / exploration.png / rviz.png
+# plus the sweep's results.csv. Generated at runtime, not committed.
+exploration_logs/
+
 # Perception debug step images (generated when PERCEPTION_DEBUG is on)
 perception/debug/
 
