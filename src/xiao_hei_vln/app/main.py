@@ -274,6 +274,12 @@ def _build_explorer(node):
             stuck_timeout_s=12.0,
             max_consecutive_skips=20,
         )
+    elif _EXPLORATION_STRATEGY == "nbv":
+        from xiao_hei_vln.exploration import NextBestViewExplorer
+        explorer = NextBestViewExplorer(
+            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
+            waypoint_reach_dist=0.3,
+        )
     else:
         node.get_logger().error(
             f"Unknown exploration strategy {_EXPLORATION_STRATEGY!r} — disabling exploration."

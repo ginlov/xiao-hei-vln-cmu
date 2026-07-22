@@ -18,6 +18,11 @@ frontier (default)
     ``terrain_map_ext`` snapshots and navigates toward the largest nearby
     frontier cluster.  Stops when ``max_waypoints`` have been visited.
 
+nbv
+    ``NextBestViewExplorer`` — samples reachable FREE poses on the same
+    belief map and picks the pose with highest unknown-gain / path-cost.
+    Select with ``XIAO_HEI_EXPLORATION_STRATEGY=nbv``.
+
 Visualisation
 -------------
 save_exploration_plot(visited_waypoints, grid, output_path)
@@ -57,12 +62,14 @@ from xiao_hei_vln.exploration._capture import (
     save_rviz_screenshot,
 )
 from xiao_hei_vln.exploration._frontier import FrontierExplorer
+from xiao_hei_vln.exploration._nbv import NextBestViewExplorer
 from xiao_hei_vln.exploration._visualize import save_exploration_plot
 
 __all__ = [
     "CaptureError",
     "ExplorationStrategy",
     "FrontierExplorer",
+    "NextBestViewExplorer",
     "list_windows",
     "save_exploration_plot",
     "save_rviz_screenshot",

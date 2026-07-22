@@ -8,6 +8,7 @@ Frontier cells are FREE cells that have at least one UNKNOWN neighbour.
 from __future__ import annotations
 
 import math
+from collections import deque
 
 from xiao_hei_vln.messages.sensors import TerrainMap
 
@@ -59,12 +60,88 @@ class OccupancyGrid:
                     break
         return frontiers
 
+    def unknown_region_size(
+        self,
+        cluster: list[tuple[int, int]],
+        cap: int = 500,
+        radius_cells: int = 15,
+    ) -> int:
+        """Local unseen area opened by ``cluster`` (information gain).
+
+        Multi-source BFS through UNKNOWN neighbours, limited to
+        ``radius_cells`` hops.
+        """
+        if not cluster or radius_cells <= 0:
+            return 0
+        known = self._free | self._occupied
+        queue: deque[tuple[int, int]] = deque()
+        dist: dict[tuple[int, int], int] = {}
+        for ix, iy in cluster:
+            for dx, dy in _NEIGHBOURS:
+                nbr = (ix + dx, iy + dy)
+                if nbr in known or nbr in dist:
+                    continue
+                dist[nbr] = 1
+                queue.append(nbr)
+        while queue and len(dist) < cap:
+            cx, cy = queue.popleft()
+            d = dist[(cx, cy)]
+            if d >= radius_cells:
+                continue
+            for dx, dy in _NEIGHBOURS:
+                nbr = (cx + dx, cy + dy)
+                if nbr in known or nbr in dist:
+                    continue
+                dist[nbr] = d + 1
+                queue.append(nbr)
+                if len(dist) >= cap:
+                    break
+        return len(dist)
+
+    def reachable_path_costs(self, x: float, y: float) -> dict[tuple[int, int], float]:
+        """4-connected BFS distances (metres) over FREE cells from near ``(x, y)``."""
+        if not self._free:
+            return {}
+        seed = self._seed_free_cell(x, y)
+        if seed is None:
+            return {}
+        step = self._res
+        costs: dict[tuple[int, int], float] = {seed: 0.0}
+        queue: deque[tuple[int, int]] = deque([seed])
+        while queue:
+            cx, cy = queue.popleft()
+            base = costs[(cx, cy)]
+            for dx, dy in _NEIGHBOURS:
+                nbr = (cx + dx, cy + dy)
+                if nbr in self._free and nbr not in costs:
+                    costs[nbr] = base + step
+                    queue.append(nbr)
+        return costs
+
+    def _seed_free_cell(self, x: float, y: float) -> tuple[int, int] | None:
+        """Pick a FREE BFS seed at/near the robot pose."""
+        origin = self._to_grid(x, y)
+        if origin in self._free:
+            return origin
+        for radius in range(1, 9):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if max(abs(dx), abs(dy)) != radius:
+                        continue
+                    cand = (origin[0] + dx, origin[1] + dy)
+                    if cand in self._free:
+                        return cand
+        return None
+
     # ------------------------------------------------------------------
     # Coordinate helpers
 
     def to_world(self, ix: int, iy: int) -> tuple[float, float]:
         half = self._res * 0.5
         return (ix * self._res + half, iy * self._res + half)
+
+    def world_to_grid(self, x: float, y: float) -> tuple[int, int]:
+        return self._to_grid(x, y)
 
     # ------------------------------------------------------------------
     # Properties
