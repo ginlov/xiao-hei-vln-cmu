@@ -46,9 +46,25 @@ are required — docker-compose sets them for you, but they can be overridden.
 | Variable | Default | Description |
 |---|---|---|
 | `XIAO_HEI_EXPLORATION_STRATEGY` | `frontier` | Exploration algorithm to use. Only `frontier` is currently implemented; unknown values disable exploration with an error log |
-| `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | Waypoint budget. Set to `0` to disable exploration entirely and go straight to question answering. Exploration runs to completion (budget / skips / no frontiers) even if a question arrives first — the answer is deferred until it finishes |
+| `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `500` | Waypoint budget. Set to `0` to disable exploration entirely and go straight to question answering. Exploration runs to completion (budget / skips / no frontiers) even if a question arrives first — the answer is deferred until it finishes |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` | `1.5` | Preferred maximum distance (metres) to a frontier target. Closer targets score higher; if all exceed this cap the nearest valid one is used as a fallback |
-| `XIAO_HEI_EXPLORATION_LOG_DIR` | `/exploration_logs` (GPU compose) | Directory for `exploration.log` and the debug PNG. The text log is always written (falls back to `/exploration_logs`); the PNG is only saved when this variable is explicitly set |
+| `XIAO_HEI_EXPLORATION_LOG_DIR` | `/exploration_logs` (GPU compose) | Base directory for the run's artefacts. The run lands in `<log dir>/<scene>/`, where the scene name is the basename of `XIAO_HEI_SCENE_DIR_HOST` (`default_scene` when no scene is mounted), so consecutive runs never clobber each other. The text log is always written; the two PNGs only when this variable is set |
+| `XIAO_HEI_SCENE_DIR_HOST` | (unset) | Host path of the extracted scene. Mounts the scene into the simulator, and its basename names the log dir — `.../chinese_room` → `exploration_logs/chinese_room/` |
+| `DISPLAY` | (unset) | X display the simulator renders RViz into. When set (and the X socket is mounted), the node screenshots the RViz window to `rviz.png` as exploration finishes. When unset — a headless host, or the challenge submission — the screenshot is skipped with an info log. Needs `xhost +local:` on the host, since the containers run as a different user |
+
+On `DONE` the exploration phase writes three artefacts into
+`exploration_logs/<scene>/`:
+
+| File | What it is |
+|---|---|
+| `exploration.log` | Structured event log (`START` / `WP_SET` / `WP_ADVANCE` / `WP_SKIP` / `DONE`) |
+| `exploration.png` | The explorer's own view: occupancy grid + visited waypoints |
+| `rviz.png` | The simulator's view: the traversed path over the scene mesh, as RViz drew it |
+
+The screenshot is strictly best-effort. A missing display, a missing
+`python-xlib`, or an RViz that never opened all produce a warning and nothing
+more — exploration has already finished by then, so a lost debug image never
+fails the run.
 
 ## Logging
 
