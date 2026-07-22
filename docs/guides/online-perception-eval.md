@@ -26,7 +26,7 @@ xhost +local:
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room   # sim loads this scene
 export XIAO_HEI_RESPONDER=perception
 export XIAO_HEI_OBJECT_MAP=1                          # cross-frame fusion + 3D boxes
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 ```
 
 The `perception` sidecar (YOLO-World v2 + SAM 2.1) loads its weights on

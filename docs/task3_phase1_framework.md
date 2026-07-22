@@ -1,5 +1,14 @@
 # Task 3 — Phase 1: Serving framework for Qwen 3.5
 
+!!! warning "Historical record"
+
+    This document describes the **retired `qwen` responder** (Qwen3.5 via a
+    vLLM sidecar), removed in
+    [TASK 17](tasks/TASK%2017%20-%20Retire%20the%20qwen%20responder.md).
+    It is kept for the recorded rationale — the sidecar-vs-in-process
+    reasoning here still informs how the perception sidecar is structured.
+    Nothing on this page describes code that currently exists.
+
 This document records the framework choice that backs the
 `xiao_hei_vln.qwen` package added in Phase 2. The decision is driven
 by the tick cadence and synchronization strategy defined in Task 1

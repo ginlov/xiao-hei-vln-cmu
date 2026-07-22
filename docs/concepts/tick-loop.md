@@ -9,7 +9,7 @@ This decouples the model's processing rate from the sensor publishing rates
 | Constraint | Value |
 |---|---|
 | Camera topic rate | ~10 Hz |
-| Qwen3.5-4B inference time | ~200-400 ms per tick |
+| Perception sidecar detect+segment | ~200-400 ms per tick |
 | Available budget per tick | 500 ms |
 | Overhead (snapshot + publish) | ~5 ms |
 

@@ -5,8 +5,7 @@ Three pure functions consumed by ``scripts/generate_report.py``:
 - :func:`render_topdown_png` — 2D top-down spatial view of the graph.
 - :func:`render_graph_png`   — hierarchical scene-graph topology
   (Room → Viewpoints (left-to-right by tick_id) → Objects grouped
-  under their first-observing viewpoint, with Object↔Object "near"
-  arcs across the bottom).
+  under their first-observing viewpoint).
 - :func:`render_node_tables` — HTML tables for Room / Viewpoints /
   Objects, suitable for inline embedding.
 
@@ -47,7 +46,6 @@ def render_topdown_png(
     pose_history: list[tuple[float, float]] | None = None,
     planned_waypoints: list[dict[str, float]] | None = None,
     label_radius: float = 3.0,
-    near_edge_radius: float = 3.0,
     view_bounds: tuple[float, float, float, float] | None = None,
 ) -> str:
     """Render the spatial view (positions, paths, edges) as a base64 PNG.
@@ -89,7 +87,6 @@ def render_topdown_png(
                    label=f"objects ({len(objs)})")
 
     # Local object labels — only when we have a pose to anchor on.
-    # Object↔Object "near" edges intentionally not drawn.
     if current_pose is not None:
         px = float(current_pose["x"])
         py = float(current_pose["y"])
@@ -139,8 +136,7 @@ def render_topdown_png(
 
     counts = (
         f"tick {scene_dict.get('tick_id', '?')}   |   "
-        f"viewpoints {len(vps)}   objects {len(objs)}   "
-        f"near-edges {sum(len(o.get('spatial_relations', [])) for o in objs)}"
+        f"viewpoints {len(vps)}   objects {len(objs)}"
     )
     ax.set_title(counts, fontsize=10)
     if (planned_waypoints or vps or objs or sb is not None or
@@ -152,29 +148,6 @@ def render_topdown_png(
     # area is identical every frame; otherwise crop-to-content makes
     # the boundary appear to drift as the legend grows.
     return _fig_to_base64(fig, tight=view_bounds is None)
-
-
-def _draw_local_near_edges(
-    ax, objs: list[dict], px: float, py: float, radius: float,
-) -> None:
-    label_to_idx = {o["label"]: i for i, o in enumerate(objs)}
-    for src in objs:
-        if math.hypot(src["position"][0] - px, src["position"][1] - py) > radius:
-            continue
-        for rel in src.get("spatial_relations", []):
-            if rel.get("relation") != "near":
-                continue
-            tgt_idx = label_to_idx.get(rel.get("target_label"))
-            if tgt_idx is None:
-                continue
-            tgt = objs[tgt_idx]
-            if math.hypot(tgt["position"][0] - px, tgt["position"][1] - py) > radius:
-                continue
-            ax.plot(
-                [src["position"][0], tgt["position"][0]],
-                [src["position"][1], tgt["position"][1]],
-                "-", color="#ff9800", alpha=0.4, linewidth=0.7, zorder=3,
-            )
 
 
 def _draw_local_labels(
@@ -206,7 +179,6 @@ def render_graph_png(scene_dict: dict[str, Any]) -> str:
     Edges:
         Room → Viewpoint     faint grey
         Viewpoint → Object   light grey thin
-        Object ↔ Object near orange arc across the bottom
     """
     vps = scene_dict.get("viewpoints", [])
     objs = scene_dict.get("objects", [])
@@ -228,12 +200,6 @@ def render_graph_png(scene_dict: dict[str, Any]) -> str:
         for vp_tick in o.get("observing_viewpoint_ids", []):
             if int(vp_tick) in vp_ids:
                 g.add_edge(f"vp:{vp_tick}", f"obj:{i}", kind="v-o")
-    near_pairs: list[tuple[str, str]] = []
-    for i, o in enumerate(objs):
-        for rel in o.get("spatial_relations", []):
-            if rel.get("relation") == "near":
-                near_pairs.append((f"obj:{i}", f"obj:{rel['target_index']}"))
-
     pos = _hierarchical_positions(vps, objs)
 
     fig, ax = plt.subplots(figsize=(11, 6))
@@ -243,9 +209,7 @@ def render_graph_png(scene_dict: dict[str, Any]) -> str:
                 alpha=0.5, zorder=1)
     _draw_edges(ax, g, pos, kind="v-o", color="#bbbbbb", linewidth=0.4,
                 alpha=0.5, zorder=2)
-    # Object↔Object "near" arcs intentionally not drawn — the graph shows
-    # only the Room→Viewpoint→Object hierarchy. (near_pairs is still
-    # computed above for the count in the title.)
+    # The graph shows only the Room→Viewpoint→Object hierarchy.
 
     _draw_node_group(ax, pos, [n for n in g.nodes if g.nodes[n]["kind"] == "room"],
                      color="#9e9e9e", size=1400, marker="o", zorder=4)
@@ -267,11 +231,9 @@ def render_graph_png(scene_dict: dict[str, Any]) -> str:
             ax.text(x, y - 0.18, label, ha="center", va="top",
                     color="#1b5e20", fontsize=6.5, zorder=7)
 
-    near_count = len(near_pairs)
     ax.set_title(
         f"tick {scene_dict.get('tick_id', '?')}   |   "
-        f"Room 1   Viewpoints {len(vps)}   Objects {len(objs)}   "
-        f"near-edges {near_count}",
+        f"Room 1   Viewpoints {len(vps)}   Objects {len(objs)}",
         fontsize=10,
     )
     fig.tight_layout()
@@ -365,23 +327,6 @@ def _draw_edges(
         )
 
 
-def _draw_near_arcs(
-    ax, pos: dict[str, tuple[float, float]],
-    pairs: list[tuple[str, str]], *, zorder: int,
-) -> None:
-    for u, v in pairs:
-        if u not in pos or v not in pos:
-            continue
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        ax.add_patch(FancyArrowPatch(
-            (x0, y0), (x1, y1),
-            connectionstyle="arc3,rad=-0.25",
-            arrowstyle="-", color="#ff9800",
-            alpha=0.35, linewidth=0.6, zorder=zorder,
-        ))
-
-
 def _draw_node_group(
     ax, pos: dict[str, tuple[float, float]], nodes: list[str],
     *, color: str, size: int, marker: str, zorder: int,
@@ -472,32 +417,18 @@ def _objects_table(objs: list[dict]) -> str:
         f"<td>{o.get('confidence', 1.0):.2f}</td>"
         f"<td>{o['first_tick_id']} → {o['last_tick_id']}</td>"
         f"<td>{len(o.get('observing_viewpoint_ids', []) or [])}</td>"
-        f"<td>{_near_summary(o)}</td>"
         "</tr>"
         for o in objs
     )
     if not rows:
-        rows = "<tr><td colspan='7' class='empty'>— no objects yet —</td></tr>"
+        rows = "<tr><td colspan='6' class='empty'>— no objects yet —</td></tr>"
     return (
         f"<h3>Objects ({len(objs)})</h3>"
         "<table class='scene-table'>"
         "<thead><tr><th>label</th><th>x</th><th>y</th><th>conf</th>"
-        "<th>tick span</th><th>#obs</th><th>near</th></tr></thead>"
+        "<th>tick span</th><th>#obs</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
-
-
-def _near_summary(obj: dict) -> str:
-    near = [
-        escape(r["target_label"])
-        for r in obj.get("spatial_relations", []) or []
-        if r.get("relation") == "near"
-    ]
-    if not near:
-        return "—"
-    if len(near) <= 4:
-        return ", ".join(near)
-    return ", ".join(near[:3]) + f" (+{len(near) - 3})"
 
 
 # ---------------------------------------------------------------------------

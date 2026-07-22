@@ -18,7 +18,7 @@ SysNav builds a three-level graph ℛ updated incrementally as the robot navigat
 | Mid | **Viewpoint** | position, coverage region (observed voxels), panoramic image |
 | Low | **Object** | label, confidence, 3D point cloud, bounding box, representative image |
 
-**Edge types:** room–room (doorway connectivity), room–viewpoint (affiliation), room–object (containment), viewpoint–object (visibility), object–object (spatial relations, task-specific).
+**Edge types:** room–room (doorway connectivity), room–viewpoint (affiliation), room–object (containment), viewpoint–object (visibility).
 
 **Sensor inputs:** 360° panoramic RGB + LiDAR point cloud at each step. Object detection uses YOLOv8x + SAM2.1; room boundaries are identified via vertical planar surface fitting on the LiDAR point cloud (wall detection). Viewpoints are created when new coverage exceeds a threshold ε relative to the accumulated coverage union.
 
@@ -60,15 +60,19 @@ The challenge sensor suite (360° equirectangular RGB + LiDAR) is well-suited to
 SysNav fits vertical planes on the LiDAR point cloud to segment rooms and define coverage boundaries. With only one room, room segmentation is unnecessary. Coverage boundaries are instead derived for free from the registered scan: a numpy `min`/`max` over the XY extent of the point cloud gives an approximate scene bounding box (`scene_bounds`) stored on the `RoomNode`. This tells the VLM how large the search area is — enough to reason about whether full coverage has been achieved — without any model inference.
 
 **Edges — storage and entry points now, reasoning logic later.**
-Full graph edge reasoning is deferred, but the storage fields and entry point hooks are wired now so the interface does not need to change later. Three edge types are prepared:
+Full graph edge reasoning is deferred, but the storage fields and entry point hooks are wired now so the interface does not need to change later. Two edge types are prepared:
 
 - *Room → Viewpoint* (affiliation): `RoomNode.viewpoint_tick_ids: list[int]` — appended in `_maybe_add_viewpoint()`. Trivial with one room; present for API completeness.
 - *Viewpoint → Object* (visibility, stored as a reverse edge on the object): `ObjectObservation.observing_viewpoint_ids: list[int]` — appended in `add_object()` with the *current* viewpoint id (the latest viewpoint added at-or-before the observing tick). Entries are guaranteed real `ViewpointNode.tick_id` values, so the field doubles as the reverse graph edge. To query "which objects were visible from viewpoint N": filter objects where N is in `observing_viewpoint_ids`. Logic can later be enriched with LiDAR ray-casting.
-- *Object → Object* (spatial relations): `ObjectObservation.spatial_relations: list[SpatialRelation]` — populated via two methods:
-  - `add_spatial_relation_by_index(idx_a, idx_b, relation)` — the primitive; dedup-keyed on `(target_index, relation)`. Use this when you need to distinguish multiple objects sharing the same label.
-  - `add_spatial_relation(label_a, label_b, relation)` — a convenience wrapper that resolves each label to its *first* matching index, then forwards. Easier to call from caller-side string-only contexts (e.g. parsing VLM rationale) but does not disambiguate same-label instances.
+!!! note "Object → Object edges were removed"
 
-  The relation type is a free string (e.g. `"left_of"`, `"near"`, `"on_top_of"`). Both methods are idempotent on `(target_index, relation)` — re-asserting an edge is a no-op.
+    An `ObjectObservation.spatial_relations` field once stored Object→Object
+    edges, auto-populated by `derive_near_relations(threshold)`. It was removed
+    in TASK 19: nothing consumed the edges. The live `scene_gemini` responder
+    never derived them, the offline batch sends a compact object list rather
+    than the relation graph, and the perception responder answers by label
+    match and pose distance. Proximity is inferred from object coordinates,
+    which every consumer already has.
 
 ---
 
@@ -100,12 +104,6 @@ SceneRepresentation
 │     bbox_min / bbox_max: Vector3 | None     # from LiDAR, optional
 │     first_tick_id / last_tick_id: int
 │     observing_viewpoint_ids: list[int]      # ── edge: Viewpoint → Object (visibility, reverse)
-│     spatial_relations: list[SpatialRelation]# ── edge: Object → Object (spatial)
-│
-└── SpatialRelation  (frozen dataclass)
-      target_label: str                       # display only; not authoritative
-      target_index: int                       # positional index into objects list (current authoritative key)
-      target_object_id: int                   # stable id of target; designed to survive future object removal
       relation: str                           # e.g. "left_of", "near", "on_top_of"
 ```
 
@@ -121,9 +119,6 @@ rep = SceneRepresentation(
 
 rep.update(snapshot: VLMInput)                                       # call every tick before inference
 rep.add_object(obs: ObjectObservation)                               # call after inference if object identified
-rep.add_spatial_relation_by_index(idx_a, idx_b, relation: str)       # index-keyed primitive (dedup on (target_index, relation))
-rep.add_spatial_relation(label_a, label_b, relation: str)            # label-keyed convenience wrapper (first match)
-rep.derive_near_relations(threshold: float = 2.0)                    # bidirectional XY-distance "near" edges (call on demand)
 ```
 
 ---
@@ -182,12 +177,6 @@ rep.derive_near_relations(threshold: float = 2.0)                    # bidirecti
 - Dedup against the last entry — multiple observations within the same viewpoint don't inflate the list.
 - Not appended when a lower-confidence observation is rejected.
 
-**Object → Object (spatial_relations):**
-
-- `add_spatial_relation(label_a, label_b, relation)` appends a `SpatialRelation` to label_a's node.
-- No-op when label_a or label_b is not found.
-- Multiple relations on the same object accumulate correctly.
-
 ### 5. Yaw extraction from quaternion
 
 - Identity quaternion (`w=1, x=y=z=0`) → yaw = 0.
@@ -199,6 +188,6 @@ rep.derive_near_relations(threshold: float = 2.0)                    # bidirecti
 ## Integration plan (next steps)
 
 1. **Phase 3 (this task):** implement `SceneRepresentation` and tests.
-2. **Responder wiring:** `QwenResponder` calls `rep.update(snapshot)` before inference and embeds the representation into the user message via `build_user_message`.
+2. **Responder wiring:** `SceneGeminiResponder` calls `rep.update(snapshot)` while exploring and serialises the populated representation into the Gemini request via `serialize_for_gemini`.
 3. **Object population:** after parsing `ObjectReferenceResponse` or extracting entity mentions from the numerical rationale, call `rep.add_object()`.
 4. **Engine multi-image:** pass `scene.room.best_image` alongside the current frame once the engine interface is extended to accept multiple images.

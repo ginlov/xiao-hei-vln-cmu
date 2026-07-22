@@ -98,7 +98,7 @@ def _build_explorer(node):
 
 ```bash
 # Docker Compose
-XIAO_HEI_EXPLORATION_STRATEGY=my_strategy docker compose -f docker/compose_gpu.yml up -d --build
+XIAO_HEI_EXPLORATION_STRATEGY=my_strategy docker/run perception up -d --build
 
 # Or export before compose
 export XIAO_HEI_EXPLORATION_STRATEGY=my_strategy
@@ -144,7 +144,7 @@ Run: `uv run pytest tests/ -q`
 ```bash
 XIAO_HEI_EXPLORATION_STRATEGY=my_strategy \
 XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=50 \
-docker compose -f docker/compose_gpu.yml up -d --build
+docker/run perception up -d --build
 
 docker logs -f xiao_hei_ai_module
 # look for: Exploration enabled: MyStrategy (strategy=my_strategy, ...)

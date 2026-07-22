@@ -1,7 +1,6 @@
 """Engine / responder configuration loaded from environment variables.
 
-Mirrors the shape of :class:`xiao_hei_vln.qwen.config.QwenConfig` — all
-knobs are env-overridable so docker-compose can swap them without a
+All knobs are env-overridable so docker-compose can swap them without a
 rebuild. The only required env var is ``XIAO_HEI_GEMINI_API_KEY``; the
 constructor fails fast if it is missing.
 """

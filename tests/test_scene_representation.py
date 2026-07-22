@@ -241,34 +241,54 @@ class TestObjectIds:
 # ---------------------------------------------------------------------------
 
 
-class TestRelationTargetObjectId:
-    def test_index_primitive_populates_target_object_id(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        rep.add_spatial_relation_by_index(0, 1, "near")
-        rel = rep.objects[0].spatial_relations[0]
-        assert rel.target_object_id == rep.objects[1].object_id
+class TestYawExtraction:
+    def test_identity_gives_zero_yaw(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=0.0)))
+        assert rep.viewpoints[0].yaw == pytest.approx(0.0, abs=1e-6)
 
-    def test_label_wrapper_populates_target_object_id(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        rep.add_spatial_relation("chair", "table", "near")
-        rel = rep.objects[0].spatial_relations[0]
-        assert rel.target_object_id == rep.objects[1].object_id
+    def test_90_degree_yaw(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=math.pi / 2)))
+        assert rep.viewpoints[0].yaw == pytest.approx(math.pi / 2, abs=1e-5)
 
-    def test_derive_near_populates_target_object_id(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("a", 0.0, 0.0))
-        rep.add_object(_obs("b", 1.0, 0.0))
-        rep.derive_near_relations(threshold=2.0)
-        assert rep.objects[0].spatial_relations[0].target_object_id == rep.objects[1].object_id
-        assert rep.objects[1].spatial_relations[0].target_object_id == rep.objects[0].object_id
+    def test_negative_90_degree_yaw(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=-math.pi / 2)))
+        assert rep.viewpoints[0].yaw == pytest.approx(-math.pi / 2, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
-# 4. Edge storage
+# 6. scene_bounds from registered scan
+# ---------------------------------------------------------------------------
+
+
+class TestSceneBounds:
+    def test_no_scan_bounds_none(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot())
+        assert rep.room.scene_bounds is None
+
+    def test_bounds_computed_from_scan(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot(scan=_scan([(-1, -2, 0, 0), (3, 4, 1, 0)])))
+        mn, mx = rep.room.scene_bounds
+        assert mn.x == pytest.approx(-1.0)
+        assert mn.y == pytest.approx(-2.0)
+        assert mx.x == pytest.approx(3.0)
+        assert mx.y == pytest.approx(4.0)
+
+    def test_bounds_updated_on_each_tick(self) -> None:
+        rep = SceneRepresentation()
+        rep.update(_snapshot(scan=_scan([(0, 0, 0, 0), (1, 1, 0, 0)])))
+        rep.update(_snapshot(scan=_scan([(-5, -5, 0, 0), (5, 5, 0, 0)])))
+        mn, mx = rep.room.scene_bounds
+        assert mn.x == pytest.approx(-5.0)
+        assert mx.x == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# 7. to_dict serialisation
 # ---------------------------------------------------------------------------
 
 
@@ -337,238 +357,6 @@ class TestEdgeStorage:
         rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.5))  # rejected
         assert rep.objects[0].observing_viewpoint_ids == [3]
 
-    # Object → Object (spatial_relations)
-    def test_add_spatial_relation_records_on_source(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        rep.add_spatial_relation("chair", "table", "left_of")
-        assert len(rep.objects[0].spatial_relations) == 1
-        rel = rep.objects[0].spatial_relations[0]
-        assert rel.target_label == "table"
-        assert rel.target_index == 1
-        assert rel.relation == "left_of"
-
-    def test_add_spatial_relation_noop_when_label_missing(self) -> None:
-        rep = SceneRepresentation()
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_spatial_relation("chair", "ghost", "near")  # "ghost" not in objects
-        assert rep.objects[0].spatial_relations == []
-
-    def test_multiple_relations_accumulate(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        rep.add_object(_obs("lamp", 5.0, 0.0))
-        rep.add_spatial_relation("chair", "table", "left_of")
-        rep.add_spatial_relation("chair", "lamp", "near")
-        assert len(rep.objects[0].spatial_relations) == 2
-
-    def test_add_spatial_relation_is_idempotent(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        rep.add_spatial_relation("chair", "table", "near")
-        rep.add_spatial_relation("chair", "table", "near")  # replay
-        rep.add_spatial_relation("chair", "table", "near")  # replay
-        assert len(rep.objects[0].spatial_relations) == 1
-
-    def test_different_relations_to_same_target_coexist(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        rep.add_spatial_relation("chair", "table", "left_of")
-        rep.add_spatial_relation("chair", "table", "near")
-        assert len(rep.objects[0].spatial_relations) == 2
-
-    # add_spatial_relation_by_index — the primitive
-    def test_add_spatial_relation_by_index_records_edge(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        assert rep.add_spatial_relation_by_index(0, 1, "left_of") is True
-        rel = rep.objects[0].spatial_relations[0]
-        assert rel.target_index == 1
-        assert rel.target_label == "table"
-        assert rel.relation == "left_of"
-
-    def test_add_spatial_relation_by_index_is_index_keyed(self) -> None:
-        # Two chairs sharing a label — the label-keyed wrapper would
-        # only edge chair0, but by_index lets us edge chair1 too.
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("chair", 5.0, 0.0))
-        rep.add_object(_obs("table", 5.0, 1.0))
-        assert rep.add_spatial_relation_by_index(1, 2, "near") is True
-        assert rep.objects[0].spatial_relations == []
-        assert rep.objects[1].spatial_relations[0].target_index == 2
-
-    def test_add_spatial_relation_by_index_dedupes_on_index(self) -> None:
-        rep = SceneRepresentation(merge_radius=5.0)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 3.0, 0.0))
-        assert rep.add_spatial_relation_by_index(0, 1, "near") is True
-        # Replay: same (idx, relation) → dedup hit, returns False, no inflation.
-        assert rep.add_spatial_relation_by_index(0, 1, "near") is False
-        assert len(rep.objects[0].spatial_relations) == 1
-
-    def test_add_spatial_relation_by_index_out_of_range_is_noop(self) -> None:
-        rep = SceneRepresentation()
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        assert rep.add_spatial_relation_by_index(0, 99, "near") is False
-        assert rep.add_spatial_relation_by_index(-1, 0, "near") is False
-        assert rep.objects[0].spatial_relations == []
-
-    def test_add_spatial_relation_wrapper_first_match_with_duplicate_labels(self) -> None:
-        # Documented limitation: label-keyed wrapper picks the FIRST match.
-        # Captured as a regression so the contract doesn't silently change.
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("chair", 5.0, 0.0))
-        rep.add_object(_obs("table", 0.5, 0.0))
-        rep.add_spatial_relation("chair", "table", "near")
-        # Only the first chair (idx 0) gets the edge.
-        assert len(rep.objects[0].spatial_relations) == 1
-        assert rep.objects[1].spatial_relations == []
-
-
-# ---------------------------------------------------------------------------
-# 4b. derive_near_relations — auto pairwise from positions
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveNearRelations:
-    def test_empty_scene_no_op(self) -> None:
-        rep = SceneRepresentation()
-        assert rep.derive_near_relations(threshold=2.0) == 0
-
-    def test_pair_within_threshold_gets_bidirectional_edges(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        added = rep.derive_near_relations(threshold=2.0)
-        assert added == 2
-        # chair → table
-        assert any(r.target_label == "table" and r.relation == "near"
-                   for r in rep.objects[0].spatial_relations)
-        # table → chair (the reverse edge)
-        assert any(r.target_label == "chair" and r.relation == "near"
-                   for r in rep.objects[1].spatial_relations)
-
-    def test_pair_outside_threshold_no_edges(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 5.0, 0.0))
-        added = rep.derive_near_relations(threshold=2.0)
-        assert added == 0
-        assert rep.objects[0].spatial_relations == []
-        assert rep.objects[1].spatial_relations == []
-
-    def test_idempotent_across_calls(self) -> None:
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        rep.derive_near_relations(threshold=2.0)
-        added_2nd = rep.derive_near_relations(threshold=2.0)
-        added_3rd = rep.derive_near_relations(threshold=2.0)
-        assert added_2nd == 0 and added_3rd == 0
-        assert len(rep.objects[0].spatial_relations) == 1
-        assert len(rep.objects[1].spatial_relations) == 1
-
-    def test_multiple_same_label_each_get_own_edges(self) -> None:
-        # Two chairs and a table — both chairs near the table independently.
-        # add_spatial_relation would only edge the first chair (label-keyed);
-        # derive_near_relations uses indices so both chairs are wired up.
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("chair", 0.0, 1.0))   # second chair, distinct position
-        rep.add_object(_obs("table", 0.5, 0.5))
-        added = rep.derive_near_relations(threshold=2.0)
-        # chair0↔table + chair1↔table + chair0↔chair1 = 6 directed edges
-        assert added == 6
-        # Both chairs should have an edge to the table.
-        for chair_idx in (0, 1):
-            assert any(r.relation == "near" and r.target_label == "table"
-                       for r in rep.objects[chair_idx].spatial_relations)
-        # Table should have edges to both chair indices.
-        target_indices = {r.target_index for r in rep.objects[2].spatial_relations}
-        assert target_indices == {0, 1}
-
-    def test_uses_xy_distance_only(self) -> None:
-        # Object far in z but close in xy → still "near".
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(ObjectObservation(
-            label="ceiling_lamp",
-            position=Vector3(x=0.0, y=0.0, z=5.0),
-        ))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        added = rep.derive_near_relations(threshold=2.0)
-        assert added == 2
-
-    def test_threshold_is_exclusive_at_exact_boundary_no(self) -> None:
-        # threshold = 2.0; two objects at exactly 2.0 m apart → considered near
-        # (we use ≤, not <, so the boundary is inclusive).
-        rep = SceneRepresentation(merge_radius=0.3)
-        rep.add_object(_obs("a", 0.0, 0.0))
-        rep.add_object(_obs("b", 2.0, 0.0))
-        assert rep.derive_near_relations(threshold=2.0) == 2
-
-
-# ---------------------------------------------------------------------------
-# 5. Yaw extraction from quaternion
-# ---------------------------------------------------------------------------
-
-
-class TestYawExtraction:
-    def test_identity_gives_zero_yaw(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=0.0)))
-        assert rep.viewpoints[0].yaw == pytest.approx(0.0, abs=1e-6)
-
-    def test_90_degree_yaw(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=math.pi / 2)))
-        assert rep.viewpoints[0].yaw == pytest.approx(math.pi / 2, abs=1e-5)
-
-    def test_negative_90_degree_yaw(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot(pose=_pose(0, 0, 0, yaw=-math.pi / 2)))
-        assert rep.viewpoints[0].yaw == pytest.approx(-math.pi / 2, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# 6. scene_bounds from registered scan
-# ---------------------------------------------------------------------------
-
-
-class TestSceneBounds:
-    def test_no_scan_bounds_none(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot())
-        assert rep.room.scene_bounds is None
-
-    def test_bounds_computed_from_scan(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot(scan=_scan([(-1, -2, 0, 0), (3, 4, 1, 0)])))
-        mn, mx = rep.room.scene_bounds
-        assert mn.x == pytest.approx(-1.0)
-        assert mn.y == pytest.approx(-2.0)
-        assert mx.x == pytest.approx(3.0)
-        assert mx.y == pytest.approx(4.0)
-
-    def test_bounds_updated_on_each_tick(self) -> None:
-        rep = SceneRepresentation()
-        rep.update(_snapshot(scan=_scan([(0, 0, 0, 0), (1, 1, 0, 0)])))
-        rep.update(_snapshot(scan=_scan([(-5, -5, 0, 0), (5, 5, 0, 0)])))
-        mn, mx = rep.room.scene_bounds
-        assert mn.x == pytest.approx(-5.0)
-        assert mx.x == pytest.approx(5.0)
-
-
-# ---------------------------------------------------------------------------
-# 7. to_dict serialisation
-# ---------------------------------------------------------------------------
-
 
 class TestToDict:
     def test_empty_scene_serialises(self) -> None:
@@ -592,7 +380,6 @@ class TestToDict:
         ))
         rep.add_object(_obs("chair", 1.5, 2.0))
         rep.add_object(_obs("table", 4.5, 0.0))
-        rep.add_spatial_relation("chair", "table", "near")
 
         d = rep.to_dict()
         json.dumps(d)  # JSON-clean
@@ -609,8 +396,3 @@ class TestToDict:
         table = next(o for o in d["objects"] if o["label"] == "table")
         assert "object_id" in chair and chair["object_id"] > 0
         assert "object_id" in table and table["object_id"] > 0
-        rel = chair["spatial_relations"][0]
-        assert rel["target_label"] == "table"
-        assert rel["relation"] == "near"
-        assert rel["target_index"] == 1
-        assert rel["target_object_id"] == table["object_id"]

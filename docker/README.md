@@ -6,21 +6,23 @@ ROS 2 simulator.
 
 ## TL;DR
 
-Pick the responder with one environment variable; `docker/run` does the rest.
+Pick the responder as the first argument; `docker/run` does the rest — no
+environment variables needed.
 
 ```bash
-# Dummy responder (no vllm sidecar)
-XIAO_HEI_RESPONDER=dummy docker/run up -d
+# Dummy responder (no sidecars, no GPU)
+docker/run dummy up -d
 
-# Qwen3.5 responder (auto-starts the vllm sidecar)
-XIAO_HEI_RESPONDER=qwen docker/run up -d
+# Submission stack: frontier exploration + perception scene graph + Gemini.
+# Reads the Gemini key from ./.env (or an exported XIAO_HEI_GEMINI_API_KEY).
+docker/run scene_gemini up -d
 
 # Perception responder (YOLO-World + SAM 2.1 sidecar) — one scene env var
 # drives the sim (Unity scene); optional trajectory walks coverage in Phase A.
 SCENES=/path/to/CMU-VLN-Challenge-data/unity_env_models
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room              # for system (Unity)
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json  # optional
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 ```
 
 All trailing args to `docker/run` are forwarded to `docker compose`:
@@ -28,16 +30,16 @@ All trailing args to `docker/run` are forwarded to `docker compose`:
 
 > **Switching scenes**: extract `<scene>.zip` once on the host (e.g.
 > `unzip -o arabic_room.zip -d CMU-VLN-Challenge-data/unity_env_models/`)
-> then set `XIAO_HEI_SCENE_DIR_HOST`. `docker/run up -d` swaps the bind
+> then set `XIAO_HEI_SCENE_DIR_HOST`. `docker/run perception up -d` swaps the bind
 > mount; no more `docker cp` required.
 
 ## What's here
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Builds `xiao-hei/ai_module:latest` by extending `zhangjicmu/ubuntu24_ros:ai_module` and editable-installing this repo into the system Python 3.12. Default build installs the lightweight `qwen` extra (`openai` + `pillow`) so the same image serves all three responders. |
+| `Dockerfile` | Builds `xiao-hei/ai_module:latest` by extending `zhangjicmu/ubuntu24_ros:ai_module` and editable-installing this repo into the system Python 3.12. Default build installs the lightweight `perception` extra (`httpx` + `pillow` + `pycocotools`) so the same image serves both responders. |
 | `entrypoint.sh` | Sources ROS Jazzy and sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` before `exec`-ing the container CMD. |
-| `compose.yml` | Single unified stack: `system` + `ai_module` always, `vllm` only under `--profile qwen`, `perception` only under `--profile perception`. Conditional trajectory bind mount via a host-side env var. |
+| `compose.yml` | Single unified stack: `system` + `ai_module` always, `perception` only under `--profile perception`. Conditional trajectory bind mount via a host-side env var. |
 | `run` | Wrapper script. Maps `XIAO_HEI_RESPONDER` to the right `--profile`, layers `compose.scene.yml` when `XIAO_HEI_SCENE_DIR_HOST` is set, forwards everything else to `docker compose`. |
 
 ## How the env-var-driven selection works
@@ -45,16 +47,15 @@ All trailing args to `docker/run` are forwarded to `docker compose`:
 | `XIAO_HEI_RESPONDER` | Containers started | Extra env vars needed |
 |---|---|---|
 | `dummy` (default) | `system`, `ai_module` | — |
-| `qwen` | `system`, `ai_module`, `vllm` | `HUGGING_FACE_HUB_TOKEN` if model is gated; optional `XIAO_HEI_SCENE_DIR_HOST` to pick a sim scene |
 | `perception` | `system`, `ai_module`, `perception` | optional `XIAO_HEI_SCENE_DIR_HOST` to pick a sim scene. Runs YOLOv8x-World v2 + SAM 2.1 Hiera Tiny in the sidecar; the responder lifts each mask through the LiDAR scan and pushes detections into the scene graph. See [Perception (Sidecar + Responder)](../docs/perception-sidecar.md). |
 
-The `vllm` sidecar is profile-gated (`profiles: [qwen]` in `compose.yml`), so non-qwen runs never instantiate it.
+The `perception` sidecar is profile-gated (`profiles: [perception]` in `compose.yml`), so a dummy run never instantiates it.
 
 If you'd rather call `docker compose` directly:
 
 ```bash
-# Equivalent to XIAO_HEI_RESPONDER=qwen docker/run up -d
-XIAO_HEI_RESPONDER=qwen docker compose -f docker/compose.yml --profile qwen up -d
+# Equivalent to docker/run perception up -d
+XIAO_HEI_RESPONDER=perception docker compose -f docker/compose.yml --profile perception up -d
 ```
 
 ## Build
@@ -63,15 +64,15 @@ XIAO_HEI_RESPONDER=qwen docker compose -f docker/compose.yml --profile qwen up -
 docker/run build ai_module
 ```
 
-## Full run with Qwen3.5
+## Full run with the perception sidecar
 
 ```bash
 xhost +local:
-XIAO_HEI_RESPONDER=qwen docker/run up -d
+docker/run perception up -d
 
-# Wait for vLLM weights to download + load.
-docker logs -f xiao_hei_vllm
-# look for: "Uvicorn running on http://0.0.0.0:8000"
+# Wait for the sidecar to load YOLO-World + SAM weights.
+docker logs -f xiao_hei_perception
+# look for: "Uvicorn running on http://0.0.0.0:8001"
 
 # Start the simulator (RViz opens on your host display)
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
@@ -107,7 +108,7 @@ uv run python -m xiao_hei_vln.trajectory $SCENES/arabic_room.zip --out trajector
 #    --profile perception is activated by the wrapper automatically.
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 
 # 4. Launch Unity in the sim container.
 docker exec -it iros2026_system \
@@ -122,44 +123,35 @@ docker exec iros2026_system bash -lc \
 ```
 
 To switch scenes later, just change `XIAO_HEI_SCENE_DIR_HOST` (and the
-trajectory) and run `docker/run up -d` again — the bind mount swaps, no
+trajectory) and run `docker/run perception up -d` again — the bind mount swaps, no
 `docker cp`.
 
-## Architecture: sidecar vs in-process
+## Architecture: why sidecars
 
-**Sidecar (default, recommended)**: the `vllm` service uses the official
-`vllm/vllm-openai` image and exposes an OpenAI-compatible API at
-`localhost:8000`. The `ai_module` calls it via HTTP using the
-lightweight `openai` Python SDK. No CUDA deps are installed in the
-ai_module image — this completely avoids the pip/apt package conflicts
-with the ROS base image.
+Heavy models run in **their own container**, never inside `ai_module`.
+The perception sidecar ships its own CUDA/torch stack and exposes an
+HTTP API on `localhost:8001`; `ai_module` calls it with the lightweight
+`httpx` client. No CUDA deps are installed in the ai_module image, which
+completely avoids the pip/apt package conflicts with the ROS base image.
 
-**In-process (legacy)**: set `XIAO_HEI_QWEN_VLLM_BASE_URL=""` and
-build with `XIAO_HEI_EXTRA=qwen-local` to load vLLM directly inside
-the ai_module container. This path requires manually resolving
-pip/apt conflicts in the Dockerfile and is not recommended.
+The submission stack applies the same split to reasoning: `scene_gemini`
+calls the Gemini API over HTTPS, so no inference weights live in
+`ai_module` at all. See `compose_scene_gemini.yml`.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `qwen`, `perception`. The `docker/run` wrapper maps `qwen` to `--profile qwen` (starts vllm) and `perception` to `--profile perception` (starts the YOLO+SAM sidecar). |
+| `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`, `scene_gemini`. **You normally don't set this** — pass the responder as the first argument to `docker/run` instead, which sets it and selects the matching compose file/profile. |
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Perception sidecar URL the responder talks to. |
-| `XIAO_HEI_PERCEPTION_NEAR_THRESHOLD` | `2.0` | XY radius (m) for `derive_near_relations` at answer time. |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | Forwarded to YOLO-World on every `/detect`. Lower → more detections, more noise. |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped (no 3D point committed). |
 | `PERCEPTION_DEBUG` | (unset) | Set on the `perception` sidecar to dump per-step images (equirect → faces → bboxes → masks → reprojected equirect) to `perception/debug/` for each `/detect`. |
-| `XIAO_HEI_QWEN_VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM server URL. Set to empty for in-process mode. |
-| `XIAO_HEI_QWEN_MODEL` | `/models/Qwen3.5-4B` | Model path (local) or HuggingFace ID. |
-| `XIAO_HEI_QWEN_DTYPE` | `bfloat16` | Model dtype (vLLM server arg). |
-| `XIAO_HEI_QWEN_MAX_MODEL_LEN` | `4096` | Max context length. |
-| `XIAO_HEI_QWEN_GPU_MEM_UTIL` | `0.85` | GPU memory fraction for vLLM. |
 | `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` | Directory for VLM tick logs. When set, every tick is logged to JSONL + JPEG. |
 | `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz. |
 | `XIAO_HEI_SCENE_DIR_HOST` | (unset) | **Optional, any responder**: path to the *extracted* scene directory on the host (e.g. `…/unity_env_models/arabic_room`). When set, the wrapper layers `compose.scene.yml` to bind-mount `<dir>/environment/` over the sim's prebaked Unity environment, so the simulator loads that scene. Without it, the sim falls back to whatever scene is baked into the image. |
 | `XIAO_HEI_TRAJECTORY_JSON_HOST` | (unset) | Host path to a pre-planned Task 7 trajectory JSON; bind-mounted as `/data/trajectory.json` inside `ai_module`. Walked in Phase A by the perception responder. Without it, the responder answers from tick 0 without moving. |
-| `HUGGING_FACE_HUB_TOKEN` | (unset) | HF token if the model weights are gated. |
-| `XIAO_HEI_EXTRA` | `qwen` | pip extra to install at image build time. |
+| `XIAO_HEI_EXTRA` | `perception` | pip extra to install at image build time. |
 
 ## Publish to Docker Hub (for the challenge submission)
 
@@ -203,8 +195,7 @@ branch to `_build_responder()` returning anything that implements
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `docker logs xiao_hei_ai_module` shows "Waiting for vLLM server…" indefinitely | vLLM container not started, or model download stalled | Confirm you set `XIAO_HEI_RESPONDER=qwen` (so `--profile qwen` activates). Check `docker logs xiao_hei_vllm` for download progress or OOM. |
-| vLLM OOM on model load | Model too large for GPU | Use a smaller model (e.g. `XIAO_HEI_QWEN_MODEL=/models/Qwen3.5-2B`) or lower `XIAO_HEI_QWEN_GPU_MEM_UTIL`. |
+| `ai_module` blocks at startup waiting on the perception sidecar | sidecar not started, or weights still downloading | Confirm you set `XIAO_HEI_RESPONDER=perception` (so `--profile perception` activates). Check `docker logs xiao_hei_perception`. |
 | ai_module ready but `ros2 topic info /challenge_question` shows `Subscription count: 0` | DDS mismatch | Confirm both have `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` (`docker exec <c> env \| grep RMW`). |
 | Publisher sends a response but `ros2 topic echo --once` returns nothing | Late-subscriber + VOLATILE QoS | Run `ros2 topic echo /<topic>` *before* publishing the question. |
 | Perception responder answers from the start pose without moving | No coverage trajectory provided | Set `XIAO_HEI_TRAJECTORY_JSON_HOST` to a pre-planned Task 7 trajectory JSON (see the full-run section above). |
@@ -263,5 +254,5 @@ python -m xiao_hei_vln.eval_pipeline \
 To disable logging, unset the env var:
 
 ```bash
-XIAO_HEI_VLM_LOG_DIR="" XIAO_HEI_RESPONDER=qwen docker/run up -d
+XIAO_HEI_VLM_LOG_DIR="" docker/run perception up -d
 ```
