@@ -14,28 +14,14 @@ and can be dropped into the main tick loop.  Register new strategies in
 Currently implemented
 ---------------------
 frontier (default)
-    ``FrontierExplorer`` — builds a 2-D occupancy grid from
-    ``terrain_map_ext`` snapshots and navigates toward the largest nearby
-    frontier cluster.  Stops when ``max_waypoints`` have been visited.
-
-nbv
-    ``NextBestViewExplorer`` — samples reachable FREE poses on the same
-    belief map and picks the pose with highest unknown-gain / path-cost.
-    Select with ``XIAO_HEI_EXPLORATION_STRATEGY=nbv``.
-
-Visualisation
--------------
-save_exploration_plot(visited_waypoints, grid, output_path)
-    Saves a PNG debug plot showing the explored map and the robot path.
-    Only supported by strategies that expose ``get_visited_waypoints()``
-    and ``get_grid()``.  Requires matplotlib (install the ``[exploration]``
-    extra).
-
-save_rviz_screenshot(output_path, display_name=None)
-    Saves a PNG of the simulator's RViz window — the traversed path drawn
-    over the scene mesh, as the sim rendered it.  Needs an X server to grab
-    from; raises ``CaptureError`` otherwise.  Requires python-xlib + pillow
-    (the same ``[exploration]`` extra).
+    ``FrontierExplorer``
+nearest / random
+    ``NearestFrontierExplorer`` / ``RandomFrontierExplorer``
+lawnmower
+    ``LawnmowerExplorer``
+wall_follow / nbv / rrt
+    Map-free strategies on the live belief occupancy grid
+    (``WallFollowExplorer``, ``NextBestViewExplorer``, ``RRTExplorer``).
 """
 
 from __future__ import annotations
@@ -62,14 +48,28 @@ from xiao_hei_vln.exploration._capture import (
     save_rviz_screenshot,
 )
 from xiao_hei_vln.exploration._frontier import FrontierExplorer
-from xiao_hei_vln.exploration._nbv import NextBestViewExplorer
+from xiao_hei_vln.exploration._lawnmower import LawnmowerExplorer
+from xiao_hei_vln.exploration._mapfree import (
+    NextBestViewExplorer,
+    RRTExplorer,
+    WallFollowExplorer,
+)
+from xiao_hei_vln.exploration._metric import ExplorationScore, score_exploration
+from xiao_hei_vln.exploration._nearest import NearestFrontierExplorer, RandomFrontierExplorer
 from xiao_hei_vln.exploration._visualize import save_exploration_plot
 
 __all__ = [
     "CaptureError",
     "ExplorationStrategy",
     "FrontierExplorer",
+    "NearestFrontierExplorer",
+    "RandomFrontierExplorer",
+    "LawnmowerExplorer",
+    "WallFollowExplorer",
     "NextBestViewExplorer",
+    "RRTExplorer",
+    "ExplorationScore",
+    "score_exploration",
     "list_windows",
     "save_exploration_plot",
     "save_rviz_screenshot",

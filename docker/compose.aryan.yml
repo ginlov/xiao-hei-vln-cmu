@@ -1,0 +1,33 @@
+# Aryan-only overlay: unique container names + ROS domain so we don't
+# clobber Rajath's `xiao_hei_ai_module` / `iros2026_system`.
+#
+# Usage (from repo root):
+#   docker compose -p aryan_nbv \
+#     -f docker/compose_scene_gemini.yml \
+#     -f docker/compose.scene.yml \
+#     -f docker/compose.aryan.yml \
+#     up -d --force-recreate
+
+services:
+  system:
+    container_name: aryan_iros2026_system
+    environment:
+      - ROS_DOMAIN_ID=42
+
+  perception:
+    container_name: aryan_xiao_hei_perception
+    # Dockerfile CMD hardcodes --port 8001; override so we don't fight Rajath.
+    command: ["python3", "-m", "uvicorn", "perception.server:app", "--host", "0.0.0.0", "--port", "8002"]
+    environment:
+      - PERCEPTION_PORT=8002
+      - ROS_DOMAIN_ID=42
+
+  ai_module:
+    container_name: aryan_xiao_hei_ai_module
+    environment:
+      - ROS_DOMAIN_ID=42
+      - XIAO_HEI_PERCEPTION_BASE_URL=http://localhost:8002
+      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-nbv}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST=${XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST:-3.0}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_SCENE_DIR_HOST=${XIAO_HEI_SCENE_DIR_HOST}

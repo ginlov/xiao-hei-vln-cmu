@@ -3,6 +3,10 @@
 Pick the responder with `XIAO_HEI_RESPONDER`:
 
   - `dummy` (default) — the deterministic port of `dummyVLM.cpp`. No GPU.
+  - `qwen`            — Qwen3.5 via vLLM. By default talks to a vLLM
+                        HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
+                        Falls back to in-process vLLM when the URL is
+                        unset (`pip install .[qwen-local]` + CUDA GPU).
   - `perception`      — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny via the
                         perception sidecar (`XIAO_HEI_PERCEPTION_BASE_URL`).
                         Detects + segments objects per tick, projects
@@ -26,7 +30,6 @@ import json
 import math
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from xiao_hei_vln.messages.common import Stamp
@@ -40,142 +43,10 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 # Exploration is NOT interrupted when a question arrives: it runs until the
 # strategy completes (budget exhausted, consecutive-skip hatch, or no frontiers
 # remain), and only then does the responder answer — from the fully-built scene.
-_EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "500"))
+_EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "100"))
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
-# Scene the sim is running. Only the basename is meaningful here — the value is
-# a *host* path (compose bind-mounts it into the sim, not into this container),
-# so we never open it, we only name the log dir after it.
-_EXPLORATION_SCENE = (
-    os.path.basename(os.environ.get("XIAO_HEI_SCENE_DIR_HOST", "").rstrip("/"))
-    or "default_scene"
-)
-
-
-def _exploration_dir() -> Path:
-    """Where this run's log and images go: <log dir>/<scene>/.
-
-    Keeping every run under a scene name means consecutive runs never clobber
-    each other — exploration.log is opened with mode "w".
-    """
-    return Path(_EXPLORATION_LOG_DIR or "/exploration_logs") / _EXPLORATION_SCENE
-
-
-@dataclass(frozen=True)
-class _PerceptionSettings:
-    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` / `XIAO_HEI_OBJECT_MAP`
-    knobs shared by every perception-backed responder.
-
-    Split out from `_build_responder` so the `perception` and `scene_gemini`
-    branches read the environment through one code path — they used to parse
-    the same nine variables independently, which meant a default could drift
-    between the two responders without anything failing.
-    """
-
-    base_url: str
-    score_threshold: float
-    min_inliers: int
-    use_object_map: bool
-    scan_keyframes: int
-    scan_min_move_m: float
-    scan_min_rot_deg: float
-    scan_voxel_m: float
-
-    @classmethod
-    def from_env(cls) -> _PerceptionSettings:
-        # Imported lazily: these modules pull in httpx/pycocotools (the
-        # `perception` extra), and the package must stay importable without it.
-        from xiao_hei_vln.perception.client import DEFAULT_BASE_URL
-        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS
-        from xiao_hei_vln.perception.responder import DEFAULT_SCORE_THRESHOLD
-
-        return cls(
-            base_url=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL),
-            score_threshold=float(os.environ.get(
-                "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
-            )),
-            min_inliers=int(os.environ.get(
-                "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
-            )),
-            # Opt-in: fuse detections across frames with ObjectMap (converged
-            # 3D boxes + NMS + wall-sheet rejection) instead of per-detection
-            # add_object. Off by default → the pipeline behaves as before.
-            use_object_map=os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
-                "1", "true", "yes", "on",
-            ),
-            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
-            scan_min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
-            scan_min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
-            scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
-        )
-
-    def as_log_config(self) -> dict[str, object]:
-        """The knobs worth recording in `session.json` for *any* responder
-        that builds the perception stack.
-
-        """
-        return {
-            "perception_base_url": self.base_url,
-            "score_threshold": self.score_threshold,
-            "min_inliers": self.min_inliers,
-            "object_map": self.use_object_map,
-        }
-
-
-def _build_perception_responder(
-    scene: SceneRepresentation,
-    settings: _PerceptionSettings,
-    *,
-    trajectory_path: Path | None = None,
-    take_waypoint_reached_signals: Callable[[], int] | None = None,
-    logger=None,
-):
-    """Build the sidecar-backed `PerceptionResponder`.
-
-    Blocks until the sidecar's `/healthz` is green, so this must not be called
-    before the sidecar container is up.
-    """
-    from xiao_hei_vln.perception import PerceptionResponder
-    from xiao_hei_vln.perception.client import HTTPPerceptionClient
-    from xiao_hei_vln.perception.lifter import PointLifter
-    from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
-    from xiao_hei_vln.perception.vocab import Vocabulary
-
-    client = HTTPPerceptionClient(base_url=settings.base_url)
-    client.wait_until_ready()       # blocks until /healthz is green
-
-    # The z-buffer occlusion gate is always on: a camera can't see through a
-    # foreground object, so background returns falling inside a mask must be
-    # rejected (default in PointLifter). Independent of ObjectMap fusion.
-    lifter = PointLifter(min_inliers=settings.min_inliers)
-
-    # Densify the sparse single sweep before lifting so small objects clear
-    # min_inliers with genuine on-surface returns (env-tunable).
-    scan_accum = ScanAccumulator(
-        max_keyframes=settings.scan_keyframes,
-        min_move_m=settings.scan_min_move_m,
-        min_rot_deg=settings.scan_min_rot_deg,
-        voxel_m=settings.scan_voxel_m,
-    )
-
-    object_map = None
-    if settings.use_object_map:
-        from xiao_hei_vln.perception.object_map import ObjectMap
-        object_map = ObjectMap()
-
-    return PerceptionResponder(
-        scene,
-        client=client,
-        lifter=lifter,
-        vocabulary=Vocabulary(),
-        score_threshold=settings.score_threshold,
-        trajectory_path=trajectory_path,
-        take_waypoint_reached_signals=take_waypoint_reached_signals,
-        logger=logger,
-        object_map=object_map,
-        scan_accumulator=scan_accum,
-    )
 
 
 def _build_responder(
@@ -188,12 +59,86 @@ def _build_responder(
         from xiao_hei_vln.dummy import DummyResponder
 
         return DummyResponder(), None
+    if name == "qwen":
+        from dataclasses import asdict
+
+        from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
+
+        config = QwenConfig.from_env()
+        engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
+        engine.warmup()
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            logger = VLMLogger(
+                log_dir,
+                config=asdict(config),
+                responder_name="qwen",
+                tick_hz=TICK_HZ,
+            )
+        return QwenResponder(engine, config, logger=logger), logger
     if name == "perception":
         from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.perception import PerceptionResponder
+        from xiao_hei_vln.perception.client import (
+            DEFAULT_BASE_URL,
+            HTTPPerceptionClient,
+        )
+        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_SCORE_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+        from xiao_hei_vln.perception.vocab import Vocabulary
 
-        settings = _PerceptionSettings.from_env()
+        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
+        near_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD",
+            str(PERCEPTION_NEAR_THRESHOLD),
+        ))
+        score_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
+            str(DEFAULT_SCORE_THRESHOLD),
+        ))
+        min_inliers = int(os.environ.get(
+            "XIAO_HEI_PERCEPTION_MIN_INLIERS",
+            str(DEFAULT_MIN_INLIERS),
+        ))
+        # Opt-in: fuse detections across frames with ObjectMap (converged 3D
+        # boxes + NMS + wall-sheet rejection) instead of per-detection
+        # add_object. Off by default → the pipeline behaves exactly as before.
+        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
+            "1", "true", "yes", "on",
+        )
         traj_str = os.environ.get("XIAO_HEI_TRAJECTORY_JSON", "")
         traj_path = Path(traj_str) if traj_str else None
+
+        client = HTTPPerceptionClient(base_url=base_url)
+        client.wait_until_ready()       # blocks until /healthz is green
+        # The z-buffer occlusion gate is always on: a camera can't see
+        # through a foreground object, so background returns falling inside
+        # a mask must be rejected (default in PointLifter). Independent of
+        # whether ObjectMap fusion is enabled.
+        lifter = PointLifter(min_inliers=min_inliers)
+        # Densify the sparse single sweep before lifting so small objects
+        # clear min_inliers with genuine on-surface returns (env-tunable).
+        scan_accum = ScanAccumulator(
+            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
+            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
+            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+        )
+        vocab = Vocabulary()
+
+        object_map = None
+        if use_object_map:
+            from xiao_hei_vln.perception.object_map import ObjectMap
+            object_map = ObjectMap()
 
         logger = None
         log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
@@ -201,19 +146,28 @@ def _build_responder(
             logger = VLMLogger(
                 log_dir,
                 config={
-                    **settings.as_log_config(),
-                    # Phase-B-only: only this responder walks a trajectory.
+                    "perception_base_url": base_url,
+                    "near_threshold_m": near_t,
+                    "score_threshold": score_t,
+                    "min_inliers": min_inliers,
+                    "object_map": use_object_map,
                     "trajectory_json": traj_str or None,
                 },
                 responder_name="perception",
                 tick_hz=TICK_HZ,
             )
-        responder = _build_perception_responder(
+        responder = PerceptionResponder(
             scene,
-            settings,
+            client=client,
+            lifter=lifter,
+            vocabulary=vocab,
+            near_threshold=near_t,
+            score_threshold=score_t,
             trajectory_path=traj_path,
             take_waypoint_reached_signals=take_waypoint_reached_signals,
             logger=logger,
+            object_map=object_map,
+            scan_accumulator=scan_accum,
         )
         return responder, logger
     if name == "scene_gemini":
@@ -221,14 +175,68 @@ def _build_responder(
 
         from xiao_hei_vln.gemini import GeminiConfig, GeminiEngine
         from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.perception import PerceptionResponder
+        from xiao_hei_vln.perception.client import (
+            DEFAULT_BASE_URL,
+            HTTPPerceptionClient,
+        )
+        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_SCORE_THRESHOLD,
+        )
+        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+        from xiao_hei_vln.perception.vocab import Vocabulary
         from xiao_hei_vln.scene_gemini import SceneGeminiResponder
 
         # --- Perception sidecar → scene-graph building (used via ingest()) ---
+        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
+        near_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD", str(PERCEPTION_NEAR_THRESHOLD),
+        ))
+        score_t = float(os.environ.get(
+            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
+        ))
+        min_inliers = int(os.environ.get(
+            "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
+        ))
+        # Opt-in ObjectMap fusion (converged 3D boxes + NMS) — same flag as
+        # the perception responder. Off by default.
+        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
+            "1", "true", "yes", "on",
+        )
+
+        client = HTTPPerceptionClient(base_url=base_url)
+        client.wait_until_ready()       # blocks until the sidecar /healthz is green
+        lifter = PointLifter(min_inliers=min_inliers)
+        scan_accum = ScanAccumulator(
+            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
+            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
+            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+        )
+        vocab = Vocabulary()
+        object_map = None
+        if use_object_map:
+            from xiao_hei_vln.perception.object_map import ObjectMap
+            object_map = ObjectMap()
+
         # No trajectory walk / no logger on the perception responder: it is
         # driven purely via ingest() during the shared exploration sweep, and
         # scene_gemini owns all logging.
-        settings = _PerceptionSettings.from_env()
-        perception = _build_perception_responder(scene, settings)
+        perception = PerceptionResponder(
+            scene,
+            client=client,
+            lifter=lifter,
+            vocabulary=vocab,
+            near_threshold=near_t,
+            score_threshold=score_t,
+            trajectory_path=None,
+            object_map=object_map,
+            scan_accumulator=scan_accum,
+        )
 
         # --- Gemini reasoning ------------------------------------------------
         config = GeminiConfig.from_env()
@@ -242,7 +250,13 @@ def _build_responder(
             safe_cfg = {k: v for k, v in asdict(config).items() if k != "api_key"}
             logger = VLMLogger(
                 log_dir,
-                config={**safe_cfg, **settings.as_log_config()},
+                config={
+                    **safe_cfg,
+                    "perception_base_url": base_url,
+                    "score_threshold": score_t,
+                    "min_inliers": min_inliers,
+                    "object_map": use_object_map,
+                },
                 responder_name="scene_gemini",
                 tick_hz=TICK_HZ,
             )
@@ -252,7 +266,7 @@ def _build_responder(
         return responder, logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; "
-        "expected one of: dummy, perception, scene_gemini",
+        "expected one of: dummy, qwen, perception, scene_gemini",
     )
 
 
@@ -271,15 +285,27 @@ def _build_explorer(node):
             max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
             waypoint_reach_dist=0.3,
             max_waypoint_dist=_EXPLORATION_MAX_WAYPOINT_DIST,
-            stuck_timeout_s=12.0,
+            stuck_timeout_s=8.0,
             max_consecutive_skips=20,
         )
+    elif _EXPLORATION_STRATEGY == "nearest":
+        from xiao_hei_vln.exploration import NearestFrontierExplorer
+        explorer = NearestFrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    elif _EXPLORATION_STRATEGY == "random":
+        from xiao_hei_vln.exploration import RandomFrontierExplorer
+        explorer = RandomFrontierExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    elif _EXPLORATION_STRATEGY == "lawnmower":
+        from xiao_hei_vln.exploration import LawnmowerExplorer
+        explorer = LawnmowerExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    elif _EXPLORATION_STRATEGY == "wall_follow":
+        from xiao_hei_vln.exploration import WallFollowExplorer
+        explorer = WallFollowExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
     elif _EXPLORATION_STRATEGY == "nbv":
         from xiao_hei_vln.exploration import NextBestViewExplorer
-        explorer = NextBestViewExplorer(
-            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
-            waypoint_reach_dist=0.3,
-        )
+        explorer = NextBestViewExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
+    elif _EXPLORATION_STRATEGY == "rrt":
+        from xiao_hei_vln.exploration import RRTExplorer
+        explorer = RRTExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
     else:
         node.get_logger().error(
             f"Unknown exploration strategy {_EXPLORATION_STRATEGY!r} — disabling exploration."
@@ -294,11 +320,11 @@ def _build_explorer(node):
     return explorer
 
 
-def _maybe_save_png(explorer, node) -> None:
-    """Save the debug PNG if XIAO_HEI_EXPLORATION_LOG_DIR is configured.
+def _maybe_save_png(explorer, node, *, pose_trace: list | None = None) -> None:
+    """Save the debug PNG + belief dump if XIAO_HEI_EXPLORATION_LOG_DIR is set.
 
-    Skipped silently when the active strategy does not expose get_grid() /
-    get_visited_waypoints() (not all algorithms maintain an OccupancyGrid).
+    Also writes ``exploration_state.json`` so live runs can be scored vs GT
+    (same ``gt_coverage`` / ``mapped_coverage`` metrics as the offline bench).
     """
     if not _EXPLORATION_LOG_DIR:
         return
@@ -308,41 +334,30 @@ def _maybe_save_png(explorer, node) -> None:
     try:
         from xiao_hei_vln.exploration import save_exploration_plot
 
-        out_dir = _exploration_dir()
+        out_dir = Path(_EXPLORATION_LOG_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "exploration.png"
-        save_exploration_plot(
-            explorer.get_visited_waypoints(),
-            explorer.get_grid(),
-            out_path,
-        )
+        grid = explorer.get_grid()
+        visited = explorer.get_visited_waypoints()
+        save_exploration_plot(visited, grid, out_path)
         node.get_logger().info(f"Exploration plot saved to {out_path}")
+
+        state_path = out_dir / "exploration_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "resolution": float(grid.resolution),
+                    "free_cells": [[ix, iy] for ix, iy in grid.free_cells],
+                    "visited": [{"x": w.x, "y": w.y} for w in visited],
+                    "pose_trace": pose_trace or [],
+                    "n_visited": len(visited),
+                    "skipped": int(getattr(explorer, "skipped_count", 0)),
+                }
+            )
+        )
+        node.get_logger().info(f"Exploration state saved to {state_path}")
     except Exception as exc:  # noqa: BLE001
-        node.get_logger().warn(f"Could not save exploration plot: {exc}")
-
-
-def _maybe_save_rviz(node) -> None:
-    """Screenshot the sim's RViz window if a display is available.
-
-    Gated on DISPLAY, so a headless run (the challenge submission, CI) skips
-    it without complaint rather than failing.  Everything is best-effort: a
-    missing X server, a missing python-xlib, or an RViz that never opened
-    must not take the node down — exploration has already finished by the
-    time we get here, and a lost debug image is not worth a crash.
-    """
-    if not _EXPLORATION_LOG_DIR:
-        return
-    if not os.environ.get("DISPLAY"):
-        node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
-        return
-    try:
-        from xiao_hei_vln.exploration import save_rviz_screenshot
-
-        out_path = _exploration_dir() / "rviz.png"
-        save_rviz_screenshot(out_path)
-        node.get_logger().info(f"RViz screenshot saved to {out_path}")
-    except Exception as exc:  # noqa: BLE001
-        node.get_logger().warn(f"Could not save RViz screenshot: {exc}")
+        node.get_logger().warn(f"Could not save exploration plot/state: {exc}")
 
 
 def main() -> None:
@@ -355,6 +370,7 @@ def main() -> None:
 
     rclpy.init()
     node_name = {
+        "qwen": "xiao_hei_qwen_vlm",
         "perception": "xiao_hei_perception_vlm",
         "scene_gemini": "xiao_hei_scene_gemini_vlm",
     }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
@@ -456,12 +472,33 @@ def main() -> None:
 
     explorer = _build_explorer(node)
 
+    # Live RViz view of frontiers / free / bans / path on /exploration/markers.
+    # Opt out with XIAO_HEI_PUBLISH_EXPLORATION_MARKERS=0.
+    if explorer is not None and hasattr(explorer, "get_viz_layers") and os.environ.get(
+        "XIAO_HEI_PUBLISH_EXPLORATION_MARKERS", "1",
+    ).lower() not in ("0", "false", "no", "off"):
+        from xiao_hei_vln.app.exploration_markers import ExplorationPublisher
+
+        _exp_pub = ExplorationPublisher(node)
+
+        def _publish_exploration_markers() -> None:
+            try:
+                _exp_pub.publish(explorer.get_viz_layers())
+            except Exception:  # noqa: BLE001 — never let viz break exploration
+                node.get_logger().exception("exploration marker publish failed")
+
+        node.create_timer(0.5, _publish_exploration_markers)
+        node.get_logger().info(
+            "Exploration markers enabled on /exploration/markers "
+            "(namespaces: free, frontier, soft_ban, hard_ban, visited, current, path, legend)"
+        )
+
     # Structured exploration log — survives the container via the mounted volume.
     # Create the dir if it doesn't exist so a run without a bind-mounted
     # /exploration_logs (e.g. the non-GPU compose.yml) doesn't crash on startup.
-    _log_dir = _exploration_dir()
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    _exp_log_file = open(_log_dir / "exploration.log", "w", buffering=1)
+    _log_dir = _EXPLORATION_LOG_DIR or "/exploration_logs"
+    os.makedirs(_log_dir, exist_ok=True)
+    _exp_log_file = open(os.path.join(_log_dir, "exploration.log"), "w", buffering=1)
 
     def _exp_log(event: str, **fields) -> None:
         now_s = node.get_clock().now().nanoseconds / 1e9
@@ -478,9 +515,26 @@ def main() -> None:
     )
 
     # Track nav stack's distance to current waypoint; best = closest approach this target.
-    _wp_reached_state = {"value": float("inf"), "close_ticks": 0, "best": float("inf"),
-                         "settled_ticks": 0, "prev_best": float("inf")}
-    _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
+    _wp_reached_state = {
+        "value": float("inf"),
+        "close_ticks": 0,
+        "best": float("inf"),
+        "settled_ticks": 0,
+        "prev_best": float("inf"),
+        "inf_ticks": 0,
+        "wall_ticks": 0,
+    }
+    # Slightly loose so "stuck at 0.93m against a wall" still counts as arrived
+    # when nav can't get closer (local planner often bottoms out ~0.25–1.0m).
+    _WP_REACHED_THRESHOLD = 1.05
+    # Fast-fail when /way_point_reached never becomes finite (nav never engaged).
+    _INF_NAV_GRACE_S = 2.0
+    _INF_NAV_FAIL_TICKS = 3  # ~1.5 s more at 2 Hz → ~3.5 s total before replan
+    # Fast-fail when nav is pushing into an obstacle: close but not arriving,
+    # and distance stops improving.
+    _WALL_STUCK_GRACE_S = 3.0
+    _WALL_STUCK_MAX_DIST = 1.6  # best_nav in (threshold, this] ⇒ wall-push regime
+    _WALL_STUCK_TICKS = 4  # ~2 s of no improvement after grace
 
     def _on_wp_reached(msg) -> None:
         v = float(msg.data)
@@ -496,6 +550,7 @@ def main() -> None:
         "exploration_started": False,
         "last_exploration_wp": None,
         "wp_start_time": None,
+        "pose_trace": [],
     }
 
     def tick() -> None:
@@ -510,11 +565,29 @@ def main() -> None:
         # going (still building the scene) and the answer is deferred to the
         # responder block below once explorer.is_complete() is True.
         if explorer is not None and not explorer.is_complete():
+            # External hard-stop (live bench): touch FORCE_DONE to freeze,
+            # dump belief+poses, and mark exploration complete.
+            if _EXPLORATION_LOG_DIR:
+                force_path = Path(_EXPLORATION_LOG_DIR) / "FORCE_DONE"
+                if force_path.is_file():
+                    try:
+                        force_path.unlink()
+                    except OSError:
+                        pass
+                    _maybe_save_png(explorer, node, pose_trace=state["pose_trace"])
+                    explorer._done = True
+                    _exp_log("DONE",
+                             visited=len(getattr(explorer, "_visited", [])),
+                             skipped=getattr(explorer, "skipped_count", 0),
+                             reason="force_done")
+                    node.get_logger().info("Exploration FORCE_DONE — state dumped.")
+                    return
+
             # Build the scene graph on the fly *while* exploring. scene.update()
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
             # perception detect→lift→add_object cycle without ever emitting an
             # answer (so a pending question stays deferred). Responders without
-            # a scene path (dummy) simply don't expose ingest().
+            # a scene path (dummy/qwen) simply don't expose ingest().
             scene.update(snapshot)
             if hasattr(responder, "ingest"):
                 responder.ingest(snapshot)
@@ -533,12 +606,24 @@ def main() -> None:
             robot_pos = (
                 f"({pose.position.x:.2f},{pose.position.y:.2f})" if pose is not None else "unknown"
             )
+            if pose is not None:
+                # Subsample pose trace (~1 Hz) for live GT scoring raycasts.
+                if state["tick_id"] % 2 == 0:
+                    state["pose_trace"].append(
+                        [float(pose.position.x), float(pose.position.y)]
+                    )
 
-            # Advance when nav stack has settled within threshold for 3 consecutive ticks.
+            # Advance when nav has gotten within threshold. Prefer live value,
+            # but also accept a sustained best-so-far under threshold so brief
+            # distance spikes don't cancel a near-arrival (wall grazing).
             if explorer._current_target is not None:
-                if _wp_reached_state["value"] < _WP_REACHED_THRESHOLD:
+                under = (
+                    _wp_reached_state["value"] < _WP_REACHED_THRESHOLD
+                    or _wp_reached_state["best"] < _WP_REACHED_THRESHOLD
+                )
+                if under:
                     _wp_reached_state["close_ticks"] += 1
-                    if _wp_reached_state["close_ticks"] >= 3:
+                    if _wp_reached_state["close_ticks"] >= 2:
                         best = _wp_reached_state["best"]
                         _exp_log("WP_ADVANCE",
                                  target=f"({explorer._current_target.x:.2f},{explorer._current_target.y:.2f})",
@@ -559,11 +644,52 @@ def main() -> None:
             prev_skipped = explorer.skipped_count
             prev_visited = len(explorer._visited)
 
-            # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
+            # Fast skip: nav never engaged (best stays +inf). Replan in ~3.5s
+            # instead of waiting for the full stuck timeout / early-skip window.
+            if (
+                explorer._current_target is not None
+                and state["wp_start_time"] is not None
+                and math.isinf(_wp_reached_state["best"])
+                and now_s - state["wp_start_time"] > _INF_NAV_GRACE_S
+            ):
+                _wp_reached_state["inf_ticks"] += 1
+                if _wp_reached_state["inf_ticks"] >= _INF_NAV_FAIL_TICKS:
+                    explorer.force_skip()
+                    _wp_reached_state["inf_ticks"] = 0
+                    _wp_reached_state["settled_ticks"] = 0
+                    _wp_reached_state["wall_ticks"] = 0
+                    _wp_reached_state["prev_best"] = float("inf")
+            else:
+                _wp_reached_state["inf_ticks"] = 0
+
+            # Fast skip: wall-push regime — nav is close (threshold..1.6m) but
+            # not arriving and not improving. Replan in ~5s instead of ~12s.
+            if (
+                explorer._current_target is not None
+                and state["wp_start_time"] is not None
+                and not math.isinf(_wp_reached_state["best"])
+                and _WP_REACHED_THRESHOLD < _wp_reached_state["best"] <= _WALL_STUCK_MAX_DIST
+                and now_s - state["wp_start_time"] > _WALL_STUCK_GRACE_S
+            ):
+                if _wp_reached_state["best"] >= _wp_reached_state["prev_best"] - 0.02:
+                    _wp_reached_state["wall_ticks"] += 1
+                else:
+                    _wp_reached_state["wall_ticks"] = 0
+                _wp_reached_state["prev_best"] = _wp_reached_state["best"]
+                if _wp_reached_state["wall_ticks"] >= _WALL_STUCK_TICKS:
+                    explorer.force_skip()
+                    _wp_reached_state["wall_ticks"] = 0
+                    _wp_reached_state["settled_ticks"] = 0
+                    _wp_reached_state["prev_best"] = float("inf")
+            else:
+                _wp_reached_state["wall_ticks"] = 0
+
+            # Early skip: nav stack settled farther out with no improvement.
             # 4s minimum delay gives the nav stack time to respond before we start counting.
             if (
                 explorer._current_target is not None
-                and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
+                and not math.isinf(_wp_reached_state["best"])
+                and _wp_reached_state["best"] > _WALL_STUCK_MAX_DIST
                 and state["wp_start_time"] is not None
                 and now_s - state["wp_start_time"] > 4.0
             ):
@@ -623,6 +749,8 @@ def main() -> None:
                     _wp_reached_state["close_ticks"] = 0
                     _wp_reached_state["settled_ticks"] = 0
                     _wp_reached_state["prev_best"] = float("inf")
+                    _wp_reached_state["inf_ticks"] = 0
+                    _wp_reached_state["wall_ticks"] = 0
                 publisher.publish(WaypointPathResponse(waypoints=[wp]))
 
             if explorer.is_complete():
@@ -640,8 +768,7 @@ def main() -> None:
                     f"Exploration complete: visited={len(explorer._visited)} "
                     f"skipped={explorer.skipped_count} reason={reason}"
                 )
-                _maybe_save_png(explorer, node)
-                _maybe_save_rviz(node)
+                _maybe_save_png(explorer, node, pose_trace=state["pose_trace"])
             return
 
         # New question → reset the responder so it handles it from scratch.

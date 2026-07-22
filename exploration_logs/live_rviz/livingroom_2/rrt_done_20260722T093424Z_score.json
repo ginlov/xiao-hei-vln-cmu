@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.49747474747474746,
+  "mapped_coverage": 0.5951178451178452,
+  "path_length_m": 7.723287470176181,
+  "coverage_per_meter": 0.06441230491494307,
+  "n_gt_free": 1188,
+  "n_seen": 591,
+  "n_mapped": 707,
+  "n_visited_waypoints": 5,
+  "ticks": 66,
+  "done_reason": "done",
+  "skipped": 27,
+  "resolution": 0.2,
+  "scene": "livingroom_2"
+}

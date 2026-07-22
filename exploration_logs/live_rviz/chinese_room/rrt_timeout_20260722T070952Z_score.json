@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.9110651499482937,
+  "mapped_coverage": 0.6959669079627715,
+  "path_length_m": 31.690340856870836,
+  "coverage_per_meter": 0.02874898550517686,
+  "n_gt_free": 967,
+  "n_seen": 881,
+  "n_mapped": 673,
+  "n_visited_waypoints": 12,
+  "ticks": 177,
+  "done_reason": "timeout",
+  "skipped": 58,
+  "resolution": 0.2,
+  "scene": "chinese_room"
+}

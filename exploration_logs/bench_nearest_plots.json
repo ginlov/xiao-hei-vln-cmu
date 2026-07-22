@@ -1,0 +1,407 @@
+{
+  "metric": "gt_coverage = |sensor_seen \u2229 GT_free| / |GT_free|",
+  "secondary": "coverage_per_meter, mapped_coverage",
+  "max_ticks": 300,
+  "resolution": 0.25,
+  "algorithms": [
+    "nearest_frontier"
+  ],
+  "scenes": {
+    "arabic_room": {
+      "n_gt_free": 550,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.98,
+          "mapped_coverage": 0.8927272727272727,
+          "path_length_m": 19.23802518256903,
+          "coverage_per_meter": 0.050940779560261065,
+          "n_gt_free": 550,
+          "n_seen": 539,
+          "n_mapped": 491,
+          "n_visited_waypoints": 7,
+          "ticks": 51,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "chinese_room": {
+      "n_gt_free": 625,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.4544,
+          "mapped_coverage": 0.4656,
+          "path_length_m": 3.8605436930371653,
+          "coverage_per_meter": 0.11770362833078432,
+          "n_gt_free": 625,
+          "n_seen": 284,
+          "n_mapped": 291,
+          "n_visited_waypoints": 4,
+          "ticks": 11,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "home_building_1": {
+      "n_gt_free": 2837,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.8100105745505816,
+          "mapped_coverage": 0.5812477969686288,
+          "path_length_m": 90.52406979899663,
+          "coverage_per_meter": 0.008948013233929521,
+          "n_gt_free": 2837,
+          "n_seen": 2298,
+          "n_mapped": 1649,
+          "n_visited_waypoints": 51,
+          "ticks": 231,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "home_building_2": {
+      "n_gt_free": 2086,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9678811121764141,
+          "mapped_coverage": 0.7430488974113135,
+          "path_length_m": 97.06280825109262,
+          "coverage_per_meter": 0.009971699043289517,
+          "n_gt_free": 2086,
+          "n_seen": 2019,
+          "n_mapped": 1550,
+          "n_visited_waypoints": 46,
+          "ticks": 243,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "hotel_room_1": {
+      "n_gt_free": 501,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9960079840319361,
+          "mapped_coverage": 0.654690618762475,
+          "path_length_m": 28.474281273342072,
+          "coverage_per_meter": 0.0349792142063445,
+          "n_gt_free": 501,
+          "n_seen": 499,
+          "n_mapped": 328,
+          "n_visited_waypoints": 15,
+          "ticks": 75,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "hotel_room_2": {
+      "n_gt_free": 297,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.6363636363636364,
+          "mapped_coverage": 0.5084175084175084,
+          "path_length_m": 7.372684790375567,
+          "coverage_per_meter": 0.08631369093581169,
+          "n_gt_free": 297,
+          "n_seen": 189,
+          "n_mapped": 151,
+          "n_visited_waypoints": 7,
+          "ticks": 19,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "japanese_room": {
+      "n_gt_free": 331,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8670694864048338,
+          "path_length_m": 3.8257226203682526,
+          "coverage_per_meter": 0.26138852688273123,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 287,
+          "n_visited_waypoints": 4,
+          "ticks": 11,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_1": {
+      "n_gt_free": 490,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9285714285714286,
+          "mapped_coverage": 0.7489795918367347,
+          "path_length_m": 19.64378839182739,
+          "coverage_per_meter": 0.047270486224426644,
+          "n_gt_free": 490,
+          "n_seen": 455,
+          "n_mapped": 367,
+          "n_visited_waypoints": 9,
+          "ticks": 51,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_2": {
+      "n_gt_free": 809,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.8467243510506799,
+          "mapped_coverage": 0.6625463535228677,
+          "path_length_m": 20.820008829175173,
+          "coverage_per_meter": 0.040668779633952955,
+          "n_gt_free": 809,
+          "n_seen": 685,
+          "n_mapped": 536,
+          "n_visited_waypoints": 11,
+          "ticks": 55,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_3": {
+      "n_gt_free": 803,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9613947696139477,
+          "mapped_coverage": 0.7048567870485679,
+          "path_length_m": 28.826967422998035,
+          "coverage_per_meter": 0.033350534432107865,
+          "n_gt_free": 803,
+          "n_seen": 772,
+          "n_mapped": 566,
+          "n_visited_waypoints": 31,
+          "ticks": 76,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_4": {
+      "n_gt_free": 468,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.967948717948718,
+          "mapped_coverage": 0.6581196581196581,
+          "path_length_m": 25.401169326785872,
+          "coverage_per_meter": 0.038106462954364984,
+          "n_gt_free": 468,
+          "n_seen": 453,
+          "n_mapped": 308,
+          "n_visited_waypoints": 16,
+          "ticks": 65,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "loft": {
+      "n_gt_free": 445,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.6382022471910113,
+          "mapped_coverage": 0.503370786516854,
+          "path_length_m": 17.52181166603187,
+          "coverage_per_meter": 0.036423302530310994,
+          "n_gt_free": 445,
+          "n_seen": 284,
+          "n_mapped": 224,
+          "n_visited_waypoints": 13,
+          "ticks": 50,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_1": {
+      "n_gt_free": 581,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6695352839931153,
+          "path_length_m": 23.865092864344838,
+          "coverage_per_meter": 0.04190220443240051,
+          "n_gt_free": 581,
+          "n_seen": 581,
+          "n_mapped": 389,
+          "n_visited_waypoints": 17,
+          "ticks": 63,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_2": {
+      "n_gt_free": 469,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9530916844349681,
+          "mapped_coverage": 0.8081023454157783,
+          "path_length_m": 11.072590971898912,
+          "coverage_per_meter": 0.08607666325377827,
+          "n_gt_free": 469,
+          "n_seen": 447,
+          "n_mapped": 379,
+          "n_visited_waypoints": 7,
+          "ticks": 30,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_building_1": {
+      "n_gt_free": 14028,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9603649843170802,
+          "mapped_coverage": 0.9637867122897062,
+          "path_length_m": 111.21195302147022,
+          "coverage_per_meter": 0.008635447523627925,
+          "n_gt_free": 14028,
+          "n_seen": 13472,
+          "n_mapped": 13520,
+          "n_visited_waypoints": 80,
+          "ticks": 274,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_building_2": {
+      "n_gt_free": 26026,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.7535541381695228,
+          "mapped_coverage": 0.7586644125105664,
+          "path_length_m": 113.51872924915712,
+          "coverage_per_meter": 0.0066381481113621426,
+          "n_gt_free": 26026,
+          "n_seen": 19612,
+          "n_mapped": 19745,
+          "n_visited_waypoints": 80,
+          "ticks": 267,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_building_2_without_360_cam": {
+      "n_gt_free": 26026,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.7535541381695228,
+          "mapped_coverage": 0.7586644125105664,
+          "path_length_m": 113.51872924915712,
+          "coverage_per_meter": 0.0066381481113621426,
+          "n_gt_free": 26026,
+          "n_seen": 19612,
+          "n_mapped": 19745,
+          "n_visited_waypoints": 80,
+          "ticks": 267,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "studio": {
+      "n_gt_free": 511,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8923679060665362,
+          "path_length_m": 17.455492478459927,
+          "coverage_per_meter": 0.05728855838550529,
+          "n_gt_free": 511,
+          "n_seen": 511,
+          "n_mapped": 456,
+          "n_visited_waypoints": 11,
+          "ticks": 47,
+          "done_reason": "complete"
+        }
+      }
+    }
+  },
+  "summary": {
+    "ranking_mean_gt_coverage": [
+      {
+        "algo": "nearest_frontier",
+        "mean": 0.867114987032747,
+        "n_scenes": 18,
+        "min": 0.4544,
+        "max": 1.0
+      }
+    ],
+    "best_algo": "nearest_frontier",
+    "best_mean_gt_coverage": 0.867114987032747,
+    "elapsed_s": 27.263322591781616,
+    "per_scene_winner": {
+      "arabic_room": "nearest_frontier",
+      "chinese_room": "nearest_frontier",
+      "home_building_1": "nearest_frontier",
+      "home_building_2": "nearest_frontier",
+      "hotel_room_1": "nearest_frontier",
+      "hotel_room_2": "nearest_frontier",
+      "japanese_room": "nearest_frontier",
+      "livingroom_1": "nearest_frontier",
+      "livingroom_2": "nearest_frontier",
+      "livingroom_3": "nearest_frontier",
+      "livingroom_4": "nearest_frontier",
+      "loft": "nearest_frontier",
+      "office_1": "nearest_frontier",
+      "office_2": "nearest_frontier",
+      "office_building_1": "nearest_frontier",
+      "office_building_2": "nearest_frontier",
+      "office_building_2_without_360_cam": "nearest_frontier",
+      "studio": "nearest_frontier"
+    }
+  },
+  "plots": {
+    "arabic_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/arabic_room/nearest_frontier.png"
+    },
+    "chinese_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/chinese_room/nearest_frontier.png"
+    },
+    "home_building_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/home_building_1/nearest_frontier.png"
+    },
+    "home_building_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/home_building_2/nearest_frontier.png"
+    },
+    "hotel_room_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/hotel_room_1/nearest_frontier.png"
+    },
+    "hotel_room_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/hotel_room_2/nearest_frontier.png"
+    },
+    "japanese_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/japanese_room/nearest_frontier.png"
+    },
+    "livingroom_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/livingroom_1/nearest_frontier.png"
+    },
+    "livingroom_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/livingroom_2/nearest_frontier.png"
+    },
+    "livingroom_3": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/livingroom_3/nearest_frontier.png"
+    },
+    "livingroom_4": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/livingroom_4/nearest_frontier.png"
+    },
+    "loft": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/loft/nearest_frontier.png"
+    },
+    "office_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/office_1/nearest_frontier.png"
+    },
+    "office_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/office_2/nearest_frontier.png"
+    },
+    "office_building_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/office_building_1/nearest_frontier.png"
+    },
+    "office_building_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/office_building_2/nearest_frontier.png"
+    },
+    "office_building_2_without_360_cam": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/office_building_2_without_360_cam/nearest_frontier.png"
+    },
+    "studio": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots/studio/nearest_frontier.png"
+    }
+  }
+}

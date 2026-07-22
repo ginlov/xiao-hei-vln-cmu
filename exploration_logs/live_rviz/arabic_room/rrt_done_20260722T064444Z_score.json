@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.9778554778554779,
+  "mapped_coverage": 0.8205128205128205,
+  "path_length_m": 30.948145522038725,
+  "coverage_per_meter": 0.031596577480196016,
+  "n_gt_free": 858,
+  "n_seen": 839,
+  "n_mapped": 704,
+  "n_visited_waypoints": 8,
+  "ticks": 110,
+  "done_reason": "done",
+  "skipped": 43,
+  "resolution": 0.2,
+  "scene": "arabic_room"
+}

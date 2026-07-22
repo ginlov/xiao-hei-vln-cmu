@@ -1,0 +1,169 @@
+[1784712374.345] START  max_waypoints=80  threshold=1.05  stuck_timeout=12.0s  max_skips=25
+[1784712374.352] WP_SET  target=(0.90,0.50)  robot=(0.00,0.00)  dist=1.03
+[1784712381.282] WP_ADVANCE  target=(0.90,0.50)  nav_dist=0.84  visited=1
+[1784712381.298] WP_SET  target=(2.90,1.30)  robot=(1.15,-0.39)  dist=2.43
+[1784712384.402] WP_ADVANCE  target=(2.90,1.30)  nav_dist=0.92  visited=2
+[1784712384.418] WP_SET  target=(0.90,-1.30)  robot=(1.30,-0.40)  dist=0.98
+[1784712393.501] WP_ADVANCE  target=(0.90,-1.30)  nav_dist=0.65  visited=3
+[1784712393.528] WP_SET  target=(-1.90,-0.70)  robot=(0.50,-1.00)  dist=2.42
+[1784712398.238] WP_ADVANCE  target=(-1.90,-0.70)  nav_dist=0.48  visited=4
+[1784712398.256] WP_SET  target=(-1.90,-2.30)  robot=(-0.37,-1.12)  dist=1.93
+[1784712406.981] WP_SKIP  target=(-1.90,-2.30)  robot=(-0.59,-0.81)  elapsed=8.7s  best_nav_dist=1.32  last_nav_dist=1.32  consecutive=1
+[1784712406.982] WP_SET  target=(2.50,4.90)  robot=(-0.59,-0.81)  dist=6.49
+[1784712412.633] WP_SKIP  target=(2.50,4.90)  robot=(0.26,2.06)  elapsed=5.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712412.634] WP_SET  target=(-1.90,2.30)  robot=(0.26,2.06)  dist=2.17
+[1784712417.163] WP_SKIP  target=(-1.90,2.30)  robot=(-0.22,3.19)  elapsed=4.5s  best_nav_dist=inf  last_nav_dist=inf  consecutive=3
+[1784712417.164] WP_SET  target=(-1.50,5.10)  robot=(-0.22,3.19)  dist=2.30
+[1784712428.021] WP_SKIP  target=(-1.50,5.10)  robot=(-0.84,3.94)  elapsed=10.9s  best_nav_dist=1.33  last_nav_dist=1.33  consecutive=4
+[1784712428.022] WP_SET  target=(-1.90,3.90)  robot=(-0.84,3.94)  dist=1.06
+[1784712432.091] WP_SKIP  target=(-1.90,3.90)  robot=(-0.84,3.94)  elapsed=4.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=5
+[1784712432.092] WP_SET  target=(-1.90,4.30)  robot=(-0.84,3.94)  dist=1.12
+[1784712436.071] WP_SKIP  target=(-1.90,4.30)  robot=(-0.84,3.94)  elapsed=4.0s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712436.072] WP_SET  target=(-1.90,4.50)  robot=(-0.84,3.94)  dist=1.20
+[1784712440.102] WP_SKIP  target=(-1.90,4.50)  robot=(-0.84,3.94)  elapsed=4.0s  best_nav_dist=inf  last_nav_dist=inf  consecutive=7
+[1784712440.104] WP_SET  target=(-1.90,4.90)  robot=(-0.84,3.94)  dist=1.43
+[1784712445.016] WP_SKIP  target=(-1.90,4.90)  robot=(-0.84,3.94)  elapsed=4.9s  best_nav_dist=inf  last_nav_dist=inf  consecutive=8
+[1784712445.018] WP_SET  target=(-1.90,3.10)  robot=(-0.84,3.94)  dist=1.35
+[1784712449.387] WP_SKIP  target=(-1.90,3.10)  robot=(-0.96,3.60)  elapsed=4.4s  best_nav_dist=inf  last_nav_dist=inf  consecutive=9
+[1784712449.388] WP_SET  target=(-0.30,5.50)  robot=(-0.96,3.60)  dist=2.01
+[1784712452.873] WP_ADVANCE  target=(-0.30,5.50)  nav_dist=1.03  visited=5
+[1784712452.899] WP_SET  target=(2.90,4.90)  robot=(-1.02,3.68)  dist=4.11
+[1784712462.832] WP_SKIP  target=(2.90,4.90)  robot=(1.23,3.19)  elapsed=9.9s  best_nav_dist=1.70  last_nav_dist=2.36  consecutive=1
+[1784712462.833] WP_SET  target=(2.90,2.10)  robot=(1.23,3.19)  dist=2.00
+[1784712475.072] WP_SKIP  target=(2.90,2.10)  robot=(1.31,2.65)  elapsed=12.2s  best_nav_dist=1.67  last_nav_dist=1.69  consecutive=2
+[1784712475.073] WP_SET  target=(2.10,2.90)  robot=(1.31,2.65)  dist=0.83
+[1784712479.075] WP_ADVANCE  target=(2.10,2.90)  nav_dist=0.77  visited=6
+[1784712479.093] WP_SET  target=(2.70,4.90)  robot=(1.35,2.80)  dist=2.49
+[1784712481.276] WP_ADVANCE  target=(2.70,4.90)  nav_dist=0.74  visited=7
+[1784712481.294] WP_SET  target=(-1.90,4.70)  robot=(1.36,3.11)  dist=3.63
+[1784712492.646] WP_SKIP  target=(-1.90,4.70)  robot=(-1.01,3.71)  elapsed=11.4s  best_nav_dist=1.28  last_nav_dist=1.29  consecutive=1
+[1784712492.647] WP_SET  target=(-1.90,3.70)  robot=(-1.01,3.71)  dist=0.89
+[1784712497.119] WP_SKIP  target=(-1.90,3.70)  robot=(-1.03,3.78)  elapsed=4.5s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712497.120] WP_SET  target=(-1.90,3.50)  robot=(-1.03,3.78)  dist=0.92
+[1784712501.300] WP_SKIP  target=(-1.90,3.50)  robot=(-1.03,3.78)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=3
+[1784712501.301] WP_SET  target=(-2.30,6.30)  robot=(-1.03,3.78)  dist=2.82
+[1784712509.880] WP_SKIP  target=(-2.30,6.30)  robot=(-1.09,4.16)  elapsed=8.6s  best_nav_dist=2.78  last_nav_dist=2.78  consecutive=4
+[1784712509.881] WP_SET  target=(-3.10,7.50)  robot=(-1.09,4.16)  dist=3.90
+[1784712514.123] WP_SKIP  target=(-3.10,7.50)  robot=(-1.09,4.16)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=5
+[1784712514.124] WP_SET  target=(-1.90,5.50)  robot=(-1.09,4.16)  dist=1.56
+[1784712518.459] WP_SKIP  target=(-1.90,5.50)  robot=(-1.09,4.16)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712518.460] WP_SET  target=(-1.90,3.30)  robot=(-1.09,4.16)  dist=1.18
+[1784712524.078] WP_ADVANCE  target=(-1.90,3.30)  nav_dist=1.00  visited=8
+[1784712524.099] WP_SET  target=(-3.30,8.10)  robot=(-1.10,3.85)  dist=4.79
+[1784712526.193] WP_ADVANCE  target=(-3.30,8.10)  nav_dist=0.88  visited=9
+[1784712526.217] WP_SET  target=(-2.10,5.90)  robot=(-1.12,3.70)  dist=2.40
+[1784712530.367] WP_SKIP  target=(-2.10,5.90)  robot=(-1.12,3.70)  elapsed=4.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=1
+[1784712530.368] WP_SET  target=(2.90,-1.30)  robot=(-1.12,3.70)  dist=6.42
+[1784712534.927] WP_SKIP  target=(2.90,-1.30)  robot=(-0.37,1.43)  elapsed=4.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712534.928] WP_SET  target=(2.90,0.30)  robot=(-0.37,1.43)  dist=3.45
+[1784712548.558] WP_SKIP  target=(2.90,0.30)  robot=(1.43,-0.47)  elapsed=13.6s  best_nav_dist=1.67  last_nav_dist=1.67  consecutive=3
+[1784712548.559] WP_SET  target=(2.90,-0.70)  robot=(1.43,-0.47)  dist=1.49
+[1784712554.623] WP_SKIP  target=(2.90,-0.70)  robot=(1.43,-0.47)  elapsed=6.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=4
+[1784712554.624] WP_SET  target=(2.90,-1.70)  robot=(1.43,-0.47)  dist=1.92
+[1784712566.930] WP_SKIP  target=(2.90,-1.70)  robot=(1.32,-0.58)  elapsed=12.3s  best_nav_dist=1.92  last_nav_dist=1.92  consecutive=5
+[1784712566.931] WP_SET  target=(4.90,-9.90)  robot=(1.32,-0.58)  dist=9.98
+[1784712573.681] WP_SKIP  target=(4.90,-9.90)  robot=(1.14,-4.22)  elapsed=6.7s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712573.683] WP_SET  target=(2.90,-4.70)  robot=(1.14,-4.22)  dist=1.83
+[1784712583.705] WP_SKIP  target=(2.90,-4.70)  robot=(1.98,-5.77)  elapsed=10.0s  best_nav_dist=1.40  last_nav_dist=1.41  consecutive=7
+[1784712583.706] WP_SET  target=(3.90,-5.50)  robot=(1.98,-5.77)  dist=1.94
+[1784712595.105] WP_SKIP  target=(3.90,-5.50)  robot=(4.02,-6.50)  elapsed=11.4s  best_nav_dist=1.05  last_nav_dist=1.05  consecutive=8
+[1784712595.106] WP_SET  target=(4.10,-5.30)  robot=(4.02,-6.50)  dist=1.20
+[1784712597.014] WP_ADVANCE  target=(4.10,-5.30)  nav_dist=1.01  visited=10
+[1784712597.036] WP_SET  target=(4.10,-9.90)  robot=(4.37,-6.23)  dist=3.68
+[1784712598.748] WP_ADVANCE  target=(4.10,-9.90)  nav_dist=0.96  visited=11
+[1784712598.768] WP_SET  target=(7.50,-7.30)  robot=(4.50,-6.18)  dist=3.20
+[1784712607.266] WP_SKIP  target=(7.50,-7.30)  robot=(6.39,-7.43)  elapsed=8.5s  best_nav_dist=1.12  last_nav_dist=1.12  consecutive=1
+[1784712607.268] WP_SET  target=(6.30,-5.30)  robot=(6.39,-7.43)  dist=2.14
+[1784712611.259] WP_SKIP  target=(6.30,-5.30)  robot=(6.10,-6.73)  elapsed=4.0s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712611.260] WP_SET  target=(7.50,-6.30)  robot=(6.10,-6.73)  dist=1.47
+[1784712615.429] WP_SKIP  target=(7.50,-6.30)  robot=(6.34,-6.76)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=3
+[1784712615.430] WP_SET  target=(7.50,-7.70)  robot=(6.34,-6.76)  dist=1.49
+[1784712625.962] WP_SKIP  target=(7.50,-7.70)  robot=(6.46,-7.42)  elapsed=10.5s  best_nav_dist=1.08  last_nav_dist=1.08  consecutive=4
+[1784712625.963] WP_SET  target=(6.90,-5.30)  robot=(6.46,-7.42)  dist=2.16
+[1784712630.339] WP_SKIP  target=(6.90,-5.30)  robot=(6.13,-6.98)  elapsed=4.4s  best_nav_dist=inf  last_nav_dist=inf  consecutive=5
+[1784712630.340] WP_SET  target=(6.10,-9.90)  robot=(6.13,-6.98)  dist=2.92
+[1784712634.421] WP_SKIP  target=(6.10,-9.90)  robot=(5.11,-7.91)  elapsed=4.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712634.422] WP_SET  target=(7.50,-8.70)  robot=(5.11,-7.91)  dist=2.52
+[1784712639.250] WP_SKIP  target=(7.50,-8.70)  robot=(6.38,-8.15)  elapsed=4.8s  best_nav_dist=inf  last_nav_dist=inf  consecutive=7
+[1784712639.251] WP_SET  target=(5.30,-5.30)  robot=(6.38,-8.15)  dist=3.04
+[1784712646.145] WP_ADVANCE  target=(5.30,-5.30)  nav_dist=0.86  visited=12
+[1784712646.172] WP_SET  target=(7.50,-7.50)  robot=(5.46,-6.13)  dist=2.46
+[1784712647.810] WP_ADVANCE  target=(7.50,-7.50)  nav_dist=0.82  visited=13
+[1784712647.832] WP_SET  target=(7.50,-6.10)  robot=(5.39,-6.11)  dist=2.11
+[1784712657.406] WP_SKIP  target=(7.50,-6.10)  robot=(6.36,-7.24)  elapsed=9.6s  best_nav_dist=1.57  last_nav_dist=1.61  consecutive=1
+[1784712657.408] WP_SET  target=(-2.10,-10.10)  robot=(6.36,-7.24)  dist=8.93
+[1784712661.715] WP_SKIP  target=(-2.10,-10.10)  robot=(4.06,-7.72)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712661.716] WP_SET  target=(6.50,-5.30)  robot=(4.06,-7.72)  dist=3.43
+[1784712666.284] WP_SKIP  target=(6.50,-5.30)  robot=(4.01,-7.26)  elapsed=4.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=3
+[1784712666.286] WP_SET  target=(6.90,-9.90)  robot=(4.01,-7.26)  dist=3.91
+[1784712670.561] WP_SKIP  target=(6.90,-9.90)  robot=(6.43,-7.77)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=4
+[1784712670.562] WP_SET  target=(7.50,-9.70)  robot=(6.43,-7.77)  dist=2.21
+[1784712679.503] WP_SKIP  target=(7.50,-9.70)  robot=(6.33,-7.86)  elapsed=9.0s  best_nav_dist=2.13  last_nav_dist=2.13  consecutive=5
+[1784712679.504] WP_SET  target=(-2.50,-5.70)  robot=(6.33,-7.86)  dist=9.09
+[1784712684.067] WP_SKIP  target=(-2.50,-5.70)  robot=(5.06,-8.21)  elapsed=4.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712684.068] WP_SET  target=(7.50,-8.90)  robot=(5.06,-8.21)  dist=2.54
+[1784712687.765] WP_SKIP  target=(7.50,-8.90)  robot=(4.64,-7.88)  elapsed=3.7s  best_nav_dist=inf  last_nav_dist=inf  consecutive=7
+[1784712687.766] WP_SET  target=(2.90,-9.70)  robot=(4.64,-7.88)  dist=2.52
+[1784712692.706] WP_SKIP  target=(2.90,-9.70)  robot=(4.53,-8.34)  elapsed=4.9s  best_nav_dist=inf  last_nav_dist=inf  consecutive=8
+[1784712692.707] WP_SET  target=(7.30,-5.30)  robot=(4.53,-8.34)  dist=4.11
+[1784712697.168] WP_SKIP  target=(7.30,-5.30)  robot=(4.18,-7.82)  elapsed=4.5s  best_nav_dist=inf  last_nav_dist=inf  consecutive=9
+[1784712697.169] WP_SET  target=(2.70,-9.90)  robot=(4.18,-7.82)  dist=2.56
+[1784712702.301] WP_SKIP  target=(2.70,-9.90)  robot=(3.74,-7.88)  elapsed=5.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=10
+[1784712702.302] WP_SET  target=(7.10,-9.90)  robot=(3.74,-7.88)  dist=3.92
+[1784712706.729] WP_SKIP  target=(7.10,-9.90)  robot=(4.40,-8.81)  elapsed=4.4s  best_nav_dist=inf  last_nav_dist=inf  consecutive=11
+[1784712706.730] WP_SET  target=(7.50,-8.30)  robot=(4.40,-8.81)  dist=3.14
+[1784712711.273] WP_SKIP  target=(7.50,-8.30)  robot=(6.40,-8.13)  elapsed=4.5s  best_nav_dist=inf  last_nav_dist=inf  consecutive=12
+[1784712711.275] WP_SET  target=(-2.30,-8.50)  robot=(6.40,-8.13)  dist=8.70
+[1784712718.442] WP_SKIP  target=(-2.30,-8.50)  robot=(2.87,-8.21)  elapsed=7.2s  best_nav_dist=1.11  last_nav_dist=1.11  consecutive=13
+[1784712718.443] WP_SET  target=(-1.90,-9.90)  robot=(2.87,-8.21)  dist=5.06
+[1784712727.615] WP_SKIP  target=(-1.90,-9.90)  robot=(2.04,-8.90)  elapsed=9.2s  best_nav_dist=4.07  last_nav_dist=4.07  consecutive=14
+[1784712727.616] WP_SET  target=(2.10,-9.90)  robot=(2.04,-8.90)  dist=1.00
+[1784712731.889] WP_SKIP  target=(2.10,-9.90)  robot=(2.04,-8.90)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=15
+[1784712731.890] WP_SET  target=(1.70,-9.90)  robot=(2.04,-8.90)  dist=1.06
+[1784712736.172] WP_SKIP  target=(1.70,-9.90)  robot=(2.04,-8.90)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=16
+[1784712736.174] WP_SET  target=(1.90,-9.90)  robot=(2.04,-8.90)  dist=1.01
+[1784712740.397] WP_SKIP  target=(1.90,-9.90)  robot=(2.04,-8.90)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=17
+[1784712740.398] WP_SET  target=(0.30,-9.90)  robot=(2.04,-8.90)  dist=2.01
+[1784712744.671] WP_SKIP  target=(0.30,-9.90)  robot=(2.04,-8.90)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=18
+[1784712744.673] WP_SET  target=(2.50,-9.90)  robot=(2.04,-8.90)  dist=1.10
+[1784712748.905] WP_SKIP  target=(2.50,-9.90)  robot=(2.04,-8.90)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=19
+[1784712748.907] WP_SET  target=(1.10,-9.90)  robot=(2.04,-8.90)  dist=1.37
+[1784712753.201] WP_SKIP  target=(1.10,-9.90)  robot=(2.04,-8.90)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=20
+[1784712753.202] WP_SET  target=(5.10,-9.90)  robot=(2.04,-8.90)  dist=3.22
+[1784712757.738] WP_SKIP  target=(5.10,-9.90)  robot=(3.50,-9.02)  elapsed=4.5s  best_nav_dist=inf  last_nav_dist=inf  consecutive=21
+[1784712757.739] WP_SET  target=(5.90,-9.90)  robot=(3.50,-9.02)  dist=2.55
+[1784712762.835] WP_ADVANCE  target=(5.90,-9.90)  nav_dist=0.95  visited=14
+[1784712762.858] WP_SET  target=(1.30,-9.90)  robot=(5.36,-9.06)  dist=4.15
+[1784712767.464] WP_SKIP  target=(1.30,-9.90)  robot=(3.97,-8.58)  elapsed=4.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=1
+[1784712767.465] WP_SET  target=(2.90,-2.70)  robot=(3.97,-8.58)  dist=5.98
+[1784712772.142] WP_SKIP  target=(2.90,-2.70)  robot=(4.19,-7.51)  elapsed=4.7s  best_nav_dist=inf  last_nav_dist=inf  consecutive=2
+[1784712772.143] WP_SET  target=(7.50,-9.10)  robot=(4.19,-7.51)  dist=3.68
+[1784712776.200] WP_SKIP  target=(7.50,-9.10)  robot=(5.42,-7.30)  elapsed=4.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=3
+[1784712776.201] WP_SET  target=(7.50,-6.70)  robot=(5.42,-7.30)  dist=2.17
+[1784712783.873] WP_SKIP  target=(7.50,-6.70)  robot=(6.44,-7.31)  elapsed=7.7s  best_nav_dist=1.23  last_nav_dist=1.23  consecutive=4
+[1784712783.874] WP_SET  target=(2.30,-9.90)  robot=(6.44,-7.31)  dist=4.88
+[1784712788.198] WP_SKIP  target=(2.30,-9.90)  robot=(4.82,-7.42)  elapsed=4.3s  best_nav_dist=inf  last_nav_dist=inf  consecutive=5
+[1784712788.199] WP_SET  target=(7.70,-5.70)  robot=(4.82,-7.42)  dist=3.35
+[1784712793.312] WP_SKIP  target=(7.70,-5.70)  robot=(5.83,-7.66)  elapsed=5.1s  best_nav_dist=inf  last_nav_dist=inf  consecutive=6
+[1784712793.313] WP_SET  target=(7.50,-5.90)  robot=(5.83,-7.66)  dist=2.42
+[1784712801.836] WP_SKIP  target=(7.50,-5.90)  robot=(6.30,-7.12)  elapsed=8.5s  best_nav_dist=1.82  last_nav_dist=1.82  consecutive=7
+[1784712801.838] WP_SET  target=(-2.10,-5.50)  robot=(6.30,-7.12)  dist=8.55
+[1784712805.838] WP_SKIP  target=(-2.10,-5.50)  robot=(5.14,-6.84)  elapsed=4.0s  best_nav_dist=inf  last_nav_dist=inf  consecutive=8
+[1784712805.839] WP_SET  target=(7.50,-8.50)  robot=(5.14,-6.84)  dist=2.88
+[1784712810.453] WP_SKIP  target=(7.50,-8.50)  robot=(5.33,-7.81)  elapsed=4.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=9
+[1784712810.454] WP_SET  target=(7.50,-9.50)  robot=(5.33,-7.81)  dist=2.75
+[1784712819.237] WP_SKIP  target=(7.50,-9.50)  robot=(6.29,-8.04)  elapsed=8.8s  best_nav_dist=1.92  last_nav_dist=1.92  consecutive=10
+[1784712819.238] WP_SET  target=(-1.90,-3.70)  robot=(6.29,-8.04)  dist=9.27
+[1784712823.648] WP_SKIP  target=(-1.90,-3.70)  robot=(5.32,-7.27)  elapsed=4.4s  best_nav_dist=inf  last_nav_dist=inf  consecutive=11
+[1784712823.649] WP_SET  target=(7.50,-9.30)  robot=(5.32,-7.27)  dist=2.98
+[1784712827.685] WP_SKIP  target=(7.50,-9.30)  robot=(4.93,-6.99)  elapsed=4.0s  best_nav_dist=inf  last_nav_dist=inf  consecutive=12
+[1784712827.687] WP_SET  target=(2.90,-3.50)  robot=(4.93,-6.99)  dist=4.04
+[1784712832.558] WP_SKIP  target=(2.90,-3.50)  robot=(4.96,-6.21)  elapsed=4.9s  best_nav_dist=inf  last_nav_dist=inf  consecutive=13
+[1784712832.559] WP_SET  target=(2.90,-2.90)  robot=(4.96,-6.21)  dist=3.89
+[1784712840.590] WP_SKIP  target=(2.90,-2.90)  robot=(4.71,-6.14)  elapsed=8.0s  best_nav_dist=3.30  last_nav_dist=3.73  consecutive=14
+[1784712840.591] WP_SET  target=(2.90,-2.50)  robot=(4.71,-6.14)  dist=4.07
+[1784712844.194] WP_SKIP  target=(2.90,-2.50)  robot=(4.71,-6.14)  elapsed=3.6s  best_nav_dist=inf  last_nav_dist=inf  consecutive=15
+[1784712844.195] WP_SET  target=(2.90,-4.30)  robot=(4.71,-6.14)  dist=2.59
+[1784712856.992] WP_SKIP  target=(2.90,-4.30)  robot=(1.87,-5.67)  elapsed=12.8s  best_nav_dist=1.79  last_nav_dist=1.79  consecutive=16
+[1784712856.993] WP_SET  target=(2.90,-3.70)  robot=(1.87,-5.67)  dist=2.22
+[1784712861.477] DONE  visited=14  skipped=69  reason=force_done

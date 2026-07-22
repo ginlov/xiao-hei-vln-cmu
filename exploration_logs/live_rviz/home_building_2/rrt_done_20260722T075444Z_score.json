@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.7087222401029932,
+  "mapped_coverage": 0.8091406501448343,
+  "path_length_m": 33.573643600944266,
+  "coverage_per_meter": 0.021109482441847936,
+  "n_gt_free": 3107,
+  "n_seen": 2202,
+  "n_mapped": 2514,
+  "n_visited_waypoints": 8,
+  "ticks": 130,
+  "done_reason": "done",
+  "skipped": 42,
+  "resolution": 0.2,
+  "scene": "home_building_2"
+}

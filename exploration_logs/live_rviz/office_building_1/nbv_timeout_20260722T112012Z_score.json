@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.8552374015568808,
+  "mapped_coverage": 0.8072108162243365,
+  "path_length_m": 204.3874898828035,
+  "coverage_per_meter": 0.0041843921173809456,
+  "n_gt_free": 21967,
+  "n_seen": 18787,
+  "n_mapped": 17732,
+  "n_visited_waypoints": 12,
+  "ticks": 178,
+  "done_reason": "timeout",
+  "skipped": 61,
+  "resolution": 0.2,
+  "scene": "office_building_1"
+}

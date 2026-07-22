@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.2125366081756208,
+  "mapped_coverage": 0.25922279920261854,
+  "path_length_m": 34.29275038271048,
+  "coverage_per_meter": 0.006197712513685583,
+  "n_gt_free": 40633,
+  "n_seen": 8636,
+  "n_mapped": 10533,
+  "n_visited_waypoints": 0,
+  "ticks": 101,
+  "done_reason": "done",
+  "skipped": 25,
+  "resolution": 0.2,
+  "scene": "office_building_2_without_360_cam"
+}

@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 1.0,
+  "mapped_coverage": 0.33125,
+  "path_length_m": 73.07051960096038,
+  "coverage_per_meter": 0.013685409731051876,
+  "n_gt_free": 480,
+  "n_seen": 480,
+  "n_mapped": 159,
+  "n_visited_waypoints": 28,
+  "ticks": 141,
+  "done_reason": "timeout",
+  "skipped": 44,
+  "resolution": 0.2,
+  "scene": "japanese_room"
+}

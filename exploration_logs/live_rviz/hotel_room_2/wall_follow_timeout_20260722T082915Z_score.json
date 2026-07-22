@@ -1,0 +1,15 @@
+{
+  "gt_coverage": 0.9565217391304348,
+  "mapped_coverage": 0.37299771167048057,
+  "path_length_m": 35.613392892698954,
+  "coverage_per_meter": 0.026858483885890294,
+  "n_gt_free": 437,
+  "n_seen": 418,
+  "n_mapped": 163,
+  "n_visited_waypoints": 21,
+  "ticks": 194,
+  "done_reason": "timeout",
+  "skipped": 62,
+  "resolution": 0.2,
+  "scene": "hotel_room_2"
+}

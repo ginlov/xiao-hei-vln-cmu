@@ -69,7 +69,10 @@ class OccupancyGrid:
         """Local unseen area opened by ``cluster`` (information gain).
 
         Multi-source BFS through UNKNOWN neighbours, limited to
-        ``radius_cells`` hops.
+        ``radius_cells`` hops. A doorway into a large empty chamber fills
+        many cells within that radius; a one-cell cavity scores ~1. A hop
+        limit avoids treating the whole outdoor UNKNOWN ocean as equal gain
+        for every perimeter frontier.
         """
         if not cluster or radius_cells <= 0:
             return 0
@@ -97,14 +100,25 @@ class OccupancyGrid:
                 if len(dist) >= cap:
                     break
         return len(dist)
+    def reachable_free_cells(self, x: float, y: float) -> set[tuple[int, int]]:
+        """FREE cells connected to ``(x, y)`` via 4-connected FREE paths."""
+        return set(self.reachable_path_costs(x, y))
 
     def reachable_path_costs(self, x: float, y: float) -> dict[tuple[int, int], float]:
-        """4-connected BFS distances (metres) over FREE cells from near ``(x, y)``."""
+        """4-connected BFS distances (metres) over FREE cells from near ``(x, y)``.
+
+        Cost is grid hop count × resolution — a proxy for path length that
+        routes around OCCUPIED / UNKNOWN instead of cutting through walls.
+        If the robot cell is not FREE yet, seeds from the nearest FREE cell
+        within a small search radius.
+        """
         if not self._free:
             return {}
+
         seed = self._seed_free_cell(x, y)
         if seed is None:
             return {}
+
         step = self._res
         costs: dict[tuple[int, int], float] = {seed: 0.0}
         queue: deque[tuple[int, int]] = deque([seed])
@@ -123,6 +137,7 @@ class OccupancyGrid:
         origin = self._to_grid(x, y)
         if origin in self._free:
             return origin
+        # Robot may sit on an unseen/blacklisted cell briefly — search nearby.
         for radius in range(1, 9):
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
@@ -143,6 +158,31 @@ class OccupancyGrid:
     def world_to_grid(self, x: float, y: float) -> tuple[int, int]:
         return self._to_grid(x, y)
 
+    def is_clear_for_goal(self, ix: int, iy: int, clearance_cells: int = 1) -> bool:
+        """True if ``(ix, iy)`` is FREE and no OCCUPIED cell lies within clearance.
+
+        Used to keep published waypoints off walls / furniture so the local
+        planner's inflated footprint can actually reach them.
+        """
+        if (ix, iy) not in self._free:
+            return False
+        for dx in range(-clearance_cells, clearance_cells + 1):
+            for dy in range(-clearance_cells, clearance_cells + 1):
+                if (ix + dx, iy + dy) in self._occupied:
+                    return False
+        return True
+
+    def clearance_score(self, ix: int, iy: int, max_radius: int = 3) -> int:
+        """Chebyshev distance to the nearest OCCUPIED cell, capped at ``max_radius``."""
+        for radius in range(0, max_radius + 1):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if max(abs(dx), abs(dy)) != radius:
+                        continue
+                    if (ix + dx, iy + dy) in self._occupied:
+                        return radius
+        return max_radius
+
     # ------------------------------------------------------------------
     # Properties
 
@@ -157,12 +197,21 @@ class OccupancyGrid:
         skipped / visited frontier areas are not re-selected.
         """
         cx, cy = self._to_grid(x, y)
-        for dx in range(-radius_cells, radius_cells + 1):
-            for dy in range(-radius_cells, radius_cells + 1):
-                cell = (cx + dx, cy + dy)
-                self._free.discard(cell)
-                self._occupied.add(cell)
-                self._blacklisted.add(cell)
+        self.mark_cells([(cx, cy)], radius_cells=radius_cells)
+
+    def mark_cells(
+        self,
+        cells: list[tuple[int, int]] | set[tuple[int, int]],
+        radius_cells: int = 0,
+    ) -> None:
+        """Permanently blacklist ``cells`` (plus an optional dilation radius)."""
+        for cx, cy in cells:
+            for dx in range(-radius_cells, radius_cells + 1):
+                for dy in range(-radius_cells, radius_cells + 1):
+                    cell = (cx + dx, cy + dy)
+                    self._free.discard(cell)
+                    self._occupied.add(cell)
+                    self._blacklisted.add(cell)
 
     @property
     def resolution(self) -> float:

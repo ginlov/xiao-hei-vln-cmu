@@ -1,0 +1,4 @@
+[1784708512.732] START  max_waypoints=80  threshold=1.05  stuck_timeout=12.0s  max_skips=25
+[1784708512.740] WP_SET  target=(0.10,0.10)  robot=(0.05,0.55)  dist=0.45
+[1784708516.943] WP_SKIP  target=(0.10,0.10)  robot=(0.20,0.29)  elapsed=4.2s  best_nav_dist=inf  last_nav_dist=inf  consecutive=1
+[1784708516.944] DONE  visited=0  skipped=1  reason=no_frontiers

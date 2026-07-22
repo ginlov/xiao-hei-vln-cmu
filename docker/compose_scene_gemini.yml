@@ -34,11 +34,6 @@
 # the answer is deferred until the sweep completes. Tune the sweep with
 # XIAO_HEI_EXPLORATION_MAX_WAYPOINTS (0 disables exploration → answer from spawn).
 
-# Pin the project name: Compose otherwise derives it from the parent dir
-# ("docker"), which collides with every other checkout of this repo and with
-# the challenge template — causing stacks to merge and clobber each other.
-name: xiao-hei
-
 services:
   # Challenge simulator (unmodified official image). Needs the GPU to render.
   system:
@@ -116,6 +111,7 @@ services:
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
       # Exploration sweep (authoritative). 0 disables → answer from spawn pose.
       - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST=${XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST:-1.5}
       - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
       # Perception sidecar (scene-graph building via ingest()).
       - XIAO_HEI_PERCEPTION_BASE_URL=${XIAO_HEI_PERCEPTION_BASE_URL:-http://localhost:8001}

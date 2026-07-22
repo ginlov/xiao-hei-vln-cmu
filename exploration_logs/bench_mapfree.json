@@ -1,0 +1,1375 @@
+{
+  "metric": "gt_coverage = |sensor_seen \u2229 GT_free| / |GT_free|",
+  "secondary": "coverage_per_meter, mapped_coverage",
+  "max_ticks": 300,
+  "resolution": 0.25,
+  "algorithms": [
+    "nearest_frontier",
+    "lawnmower",
+    "wall_follow",
+    "nbv",
+    "rrt"
+  ],
+  "scenes": {
+    "arabic_room": {
+      "n_gt_free": 550,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.98,
+          "mapped_coverage": 0.8927272727272727,
+          "path_length_m": 19.23802518256903,
+          "coverage_per_meter": 0.050940779560261065,
+          "n_gt_free": 550,
+          "n_seen": 539,
+          "n_mapped": 491,
+          "n_visited_waypoints": 7,
+          "ticks": 51,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.9727272727272728,
+          "mapped_coverage": 0.9163636363636364,
+          "path_length_m": 33.68805065454479,
+          "coverage_per_meter": 0.028874549100573858,
+          "n_gt_free": 550,
+          "n_seen": 535,
+          "n_mapped": 504,
+          "n_visited_waypoints": 80,
+          "ticks": 112,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.9490909090909091,
+          "path_length_m": 120.9132051561255,
+          "coverage_per_meter": 0.008270395269968903,
+          "n_gt_free": 550,
+          "n_seen": 550,
+          "n_mapped": 522,
+          "n_visited_waypoints": 18,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7090909090909091,
+          "path_length_m": 116.17373487401899,
+          "coverage_per_meter": 0.008607797632437478,
+          "n_gt_free": 550,
+          "n_seen": 550,
+          "n_mapped": 390,
+          "n_visited_waypoints": 36,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.49818181818181817,
+          "path_length_m": 76.75201663144878,
+          "coverage_per_meter": 0.013028973620352467,
+          "n_gt_free": 550,
+          "n_seen": 550,
+          "n_mapped": 274,
+          "n_visited_waypoints": 80,
+          "ticks": 209,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "chinese_room": {
+      "n_gt_free": 625,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.4544,
+          "mapped_coverage": 0.4656,
+          "path_length_m": 3.8605436930371653,
+          "coverage_per_meter": 0.11770362833078432,
+          "n_gt_free": 625,
+          "n_seen": 284,
+          "n_mapped": 291,
+          "n_visited_waypoints": 4,
+          "ticks": 11,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.8944,
+          "mapped_coverage": 0.7456,
+          "path_length_m": 38.083350176437676,
+          "coverage_per_meter": 0.023485328781640877,
+          "n_gt_free": 625,
+          "n_seen": 559,
+          "n_mapped": 466,
+          "n_visited_waypoints": 80,
+          "ticks": 121,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.9952,
+          "mapped_coverage": 0.8448,
+          "path_length_m": 119.3657661977311,
+          "coverage_per_meter": 0.0083373988346997,
+          "n_gt_free": 625,
+          "n_seen": 622,
+          "n_mapped": 528,
+          "n_visited_waypoints": 15,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6912,
+          "path_length_m": 115.56820609901011,
+          "coverage_per_meter": 0.008652898870328362,
+          "n_gt_free": 625,
+          "n_seen": 625,
+          "n_mapped": 432,
+          "n_visited_waypoints": 37,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.4128,
+          "path_length_m": 75.14321160996919,
+          "coverage_per_meter": 0.013307922014173412,
+          "n_gt_free": 625,
+          "n_seen": 625,
+          "n_mapped": 258,
+          "n_visited_waypoints": 80,
+          "ticks": 201,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "home_building_1": {
+      "n_gt_free": 2837,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.8100105745505816,
+          "mapped_coverage": 0.5812477969686288,
+          "path_length_m": 90.52406979899663,
+          "coverage_per_meter": 0.008948013233929521,
+          "n_gt_free": 2837,
+          "n_seen": 2298,
+          "n_mapped": 1649,
+          "n_visited_waypoints": 51,
+          "ticks": 231,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.5942897426859358,
+          "mapped_coverage": 0.5618611209023616,
+          "path_length_m": 30.835142751202092,
+          "coverage_per_meter": 0.01927313090395107,
+          "n_gt_free": 2837,
+          "n_seen": 1686,
+          "n_mapped": 1594,
+          "n_visited_waypoints": 80,
+          "ticks": 104,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.7349312654212196,
+          "mapped_coverage": 0.6439901304194572,
+          "path_length_m": 123.61761353394229,
+          "coverage_per_meter": 0.005945198620255081,
+          "n_gt_free": 2837,
+          "n_seen": 2085,
+          "n_mapped": 1827,
+          "n_visited_waypoints": 9,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.8798026083891435,
+          "mapped_coverage": 0.6647867465632711,
+          "path_length_m": 123.22901016765407,
+          "coverage_per_meter": 0.007139573767509492,
+          "n_gt_free": 2837,
+          "n_seen": 2496,
+          "n_mapped": 1886,
+          "n_visited_waypoints": 24,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.9467747620726119,
+          "mapped_coverage": 0.7042650687345787,
+          "path_length_m": 122.32059556823458,
+          "coverage_per_meter": 0.0077401091588412746,
+          "n_gt_free": 2837,
+          "n_seen": 2686,
+          "n_mapped": 1998,
+          "n_visited_waypoints": 47,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        }
+      }
+    },
+    "home_building_2": {
+      "n_gt_free": 2086,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9678811121764141,
+          "mapped_coverage": 0.7430488974113135,
+          "path_length_m": 97.06280825109262,
+          "coverage_per_meter": 0.009971699043289517,
+          "n_gt_free": 2086,
+          "n_seen": 2019,
+          "n_mapped": 1550,
+          "n_visited_waypoints": 46,
+          "ticks": 243,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.800575263662512,
+          "mapped_coverage": 0.7272291466922339,
+          "path_length_m": 38.23941445222834,
+          "coverage_per_meter": 0.02093586617709989,
+          "n_gt_free": 2086,
+          "n_seen": 1670,
+          "n_mapped": 1517,
+          "n_visited_waypoints": 80,
+          "ticks": 119,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.9697986577181208,
+          "mapped_coverage": 0.7957813998082455,
+          "path_length_m": 119.61968562175211,
+          "coverage_per_meter": 0.008107349995758297,
+          "n_gt_free": 2086,
+          "n_seen": 2023,
+          "n_mapped": 1660,
+          "n_visited_waypoints": 8,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.9880153403643337,
+          "mapped_coverage": 0.7861936720997124,
+          "path_length_m": 122.01177428107614,
+          "coverage_per_meter": 0.008097704882876812,
+          "n_gt_free": 2086,
+          "n_seen": 2061,
+          "n_mapped": 1640,
+          "n_visited_waypoints": 27,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.99856184084372,
+          "mapped_coverage": 0.7780441035474592,
+          "path_length_m": 117.0578458713067,
+          "coverage_per_meter": 0.008530499031577415,
+          "n_gt_free": 2086,
+          "n_seen": 2083,
+          "n_mapped": 1623,
+          "n_visited_waypoints": 34,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        }
+      }
+    },
+    "hotel_room_1": {
+      "n_gt_free": 501,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9960079840319361,
+          "mapped_coverage": 0.654690618762475,
+          "path_length_m": 28.474281273342072,
+          "coverage_per_meter": 0.0349792142063445,
+          "n_gt_free": 501,
+          "n_seen": 499,
+          "n_mapped": 328,
+          "n_visited_waypoints": 15,
+          "ticks": 75,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.782435129740519,
+          "mapped_coverage": 0.6966067864271457,
+          "path_length_m": 33.124072145746695,
+          "coverage_per_meter": 0.023621344812249714,
+          "n_gt_free": 501,
+          "n_seen": 392,
+          "n_mapped": 349,
+          "n_visited_waypoints": 80,
+          "ticks": 114,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7904191616766467,
+          "path_length_m": 124.3136637411542,
+          "coverage_per_meter": 0.008044168033549386,
+          "n_gt_free": 501,
+          "n_seen": 501,
+          "n_mapped": 396,
+          "n_visited_waypoints": 16,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6586826347305389,
+          "path_length_m": 120.2581986557393,
+          "coverage_per_meter": 0.008315441368473177,
+          "n_gt_free": 501,
+          "n_seen": 501,
+          "n_mapped": 330,
+          "n_visited_waypoints": 30,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.3712574850299401,
+          "path_length_m": 86.91399250751468,
+          "coverage_per_meter": 0.011505627243087917,
+          "n_gt_free": 501,
+          "n_seen": 501,
+          "n_mapped": 186,
+          "n_visited_waypoints": 80,
+          "ticks": 235,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "hotel_room_2": {
+      "n_gt_free": 297,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.6363636363636364,
+          "mapped_coverage": 0.5084175084175084,
+          "path_length_m": 7.372684790375567,
+          "coverage_per_meter": 0.08631369093581169,
+          "n_gt_free": 297,
+          "n_seen": 189,
+          "n_mapped": 151,
+          "n_visited_waypoints": 7,
+          "ticks": 19,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.8821548821548821,
+          "mapped_coverage": 0.8047138047138047,
+          "path_length_m": 35.53795543898961,
+          "coverage_per_meter": 0.024822893474255616,
+          "n_gt_free": 297,
+          "n_seen": 262,
+          "n_mapped": 239,
+          "n_visited_waypoints": 80,
+          "ticks": 121,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.898989898989899,
+          "path_length_m": 124.04028974062473,
+          "coverage_per_meter": 0.008061896679627697,
+          "n_gt_free": 297,
+          "n_seen": 297,
+          "n_mapped": 267,
+          "n_visited_waypoints": 18,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.5016835016835017,
+          "path_length_m": 76.96926090793546,
+          "coverage_per_meter": 0.012992199589861215,
+          "n_gt_free": 297,
+          "n_seen": 297,
+          "n_mapped": 149,
+          "n_visited_waypoints": 48,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.18518518518518517,
+          "path_length_m": 79.06742939907265,
+          "coverage_per_meter": 0.01264743280008201,
+          "n_gt_free": 297,
+          "n_seen": 297,
+          "n_mapped": 55,
+          "n_visited_waypoints": 80,
+          "ticks": 212,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "japanese_room": {
+      "n_gt_free": 331,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8670694864048338,
+          "path_length_m": 3.8257226203682526,
+          "coverage_per_meter": 0.26138852688273123,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 287,
+          "n_visited_waypoints": 4,
+          "ticks": 11,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.9546827794561934,
+          "path_length_m": 37.334518794259715,
+          "coverage_per_meter": 0.026784863774747588,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 316,
+          "n_visited_waypoints": 80,
+          "ticks": 122,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.9365558912386707,
+          "path_length_m": 116.2051946457542,
+          "coverage_per_meter": 0.00860546727750382,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 310,
+          "n_visited_waypoints": 27,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.24471299093655588,
+          "path_length_m": 112.55241858987142,
+          "coverage_per_meter": 0.008884749102050747,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 81,
+          "n_visited_waypoints": 78,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.0634441087613293,
+          "path_length_m": 46.094855536907595,
+          "coverage_per_meter": 0.021694394924381792,
+          "n_gt_free": 331,
+          "n_seen": 331,
+          "n_mapped": 21,
+          "n_visited_waypoints": 80,
+          "ticks": 135,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_1": {
+      "n_gt_free": 490,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9285714285714286,
+          "mapped_coverage": 0.7489795918367347,
+          "path_length_m": 19.64378839182739,
+          "coverage_per_meter": 0.047270486224426644,
+          "n_gt_free": 490,
+          "n_seen": 455,
+          "n_mapped": 367,
+          "n_visited_waypoints": 9,
+          "ticks": 51,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.8326530612244898,
+          "mapped_coverage": 0.8,
+          "path_length_m": 36.79853647161498,
+          "coverage_per_meter": 0.022627341765800044,
+          "n_gt_free": 490,
+          "n_seen": 408,
+          "n_mapped": 392,
+          "n_visited_waypoints": 80,
+          "ticks": 121,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8306122448979592,
+          "path_length_m": 122.17431479509247,
+          "coverage_per_meter": 0.008185026465482319,
+          "n_gt_free": 490,
+          "n_seen": 490,
+          "n_mapped": 407,
+          "n_visited_waypoints": 16,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6857142857142857,
+          "path_length_m": 117.71296562447017,
+          "coverage_per_meter": 0.008495240899717168,
+          "n_gt_free": 490,
+          "n_seen": 490,
+          "n_mapped": 336,
+          "n_visited_waypoints": 29,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.22653061224489796,
+          "path_length_m": 68.7090745532604,
+          "coverage_per_meter": 0.014554118309726933,
+          "n_gt_free": 490,
+          "n_seen": 490,
+          "n_mapped": 111,
+          "n_visited_waypoints": 80,
+          "ticks": 188,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_2": {
+      "n_gt_free": 809,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.8467243510506799,
+          "mapped_coverage": 0.6625463535228677,
+          "path_length_m": 20.820008829175173,
+          "coverage_per_meter": 0.040668779633952955,
+          "n_gt_free": 809,
+          "n_seen": 685,
+          "n_mapped": 536,
+          "n_visited_waypoints": 11,
+          "ticks": 55,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.7713226205191595,
+          "mapped_coverage": 0.6724351050679852,
+          "path_length_m": 44.04227769822264,
+          "coverage_per_meter": 0.01751323184972985,
+          "n_gt_free": 809,
+          "n_seen": 624,
+          "n_mapped": 544,
+          "n_visited_waypoints": 80,
+          "ticks": 138,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7935723114956736,
+          "path_length_m": 124.6119616960489,
+          "coverage_per_meter": 0.008024911785268101,
+          "n_gt_free": 809,
+          "n_seen": 809,
+          "n_mapped": 642,
+          "n_visited_waypoints": 11,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6588380716934487,
+          "path_length_m": 116.76558094434546,
+          "coverage_per_meter": 0.008564167556162246,
+          "n_gt_free": 809,
+          "n_seen": 809,
+          "n_mapped": 533,
+          "n_visited_waypoints": 40,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6118665018541409,
+          "path_length_m": 101.2698921494605,
+          "coverage_per_meter": 0.009874603189308594,
+          "n_gt_free": 809,
+          "n_seen": 809,
+          "n_mapped": 495,
+          "n_visited_waypoints": 80,
+          "ticks": 274,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_3": {
+      "n_gt_free": 803,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9613947696139477,
+          "mapped_coverage": 0.7048567870485679,
+          "path_length_m": 28.826967422998035,
+          "coverage_per_meter": 0.033350534432107865,
+          "n_gt_free": 803,
+          "n_seen": 772,
+          "n_mapped": 566,
+          "n_visited_waypoints": 31,
+          "ticks": 76,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.9028642590286425,
+          "mapped_coverage": 0.7235367372353674,
+          "path_length_m": 34.05086755128967,
+          "coverage_per_meter": 0.026515161696502698,
+          "n_gt_free": 803,
+          "n_seen": 725,
+          "n_mapped": 581,
+          "n_visited_waypoints": 80,
+          "ticks": 110,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7845579078455791,
+          "path_length_m": 123.1043424632338,
+          "coverage_per_meter": 0.008123190295246155,
+          "n_gt_free": 803,
+          "n_seen": 803,
+          "n_mapped": 630,
+          "n_visited_waypoints": 13,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.9912826899128269,
+          "mapped_coverage": 0.6537982565379825,
+          "path_length_m": 118.99494178812161,
+          "coverage_per_meter": 0.008330460732338283,
+          "n_gt_free": 803,
+          "n_seen": 796,
+          "n_mapped": 525,
+          "n_visited_waypoints": 46,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.4943960149439601,
+          "path_length_m": 89.16350252248873,
+          "coverage_per_meter": 0.01121535125594445,
+          "n_gt_free": 803,
+          "n_seen": 803,
+          "n_mapped": 397,
+          "n_visited_waypoints": 80,
+          "ticks": 246,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "livingroom_4": {
+      "n_gt_free": 468,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.967948717948718,
+          "mapped_coverage": 0.6581196581196581,
+          "path_length_m": 25.401169326785872,
+          "coverage_per_meter": 0.038106462954364984,
+          "n_gt_free": 468,
+          "n_seen": 453,
+          "n_mapped": 308,
+          "n_visited_waypoints": 16,
+          "ticks": 65,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.9294871794871795,
+          "mapped_coverage": 0.7649572649572649,
+          "path_length_m": 52.152499102145335,
+          "coverage_per_meter": 0.01782248589212754,
+          "n_gt_free": 468,
+          "n_seen": 435,
+          "n_mapped": 358,
+          "n_visited_waypoints": 80,
+          "ticks": 155,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8397435897435898,
+          "path_length_m": 122.67014170266506,
+          "coverage_per_meter": 0.00815194297585355,
+          "n_gt_free": 468,
+          "n_seen": 468,
+          "n_mapped": 393,
+          "n_visited_waypoints": 18,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.9957264957264957,
+          "mapped_coverage": 0.5448717948717948,
+          "path_length_m": 115.76632038218939,
+          "coverage_per_meter": 0.008601175993494633,
+          "n_gt_free": 468,
+          "n_seen": 466,
+          "n_mapped": 255,
+          "n_visited_waypoints": 39,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.43803418803418803,
+          "path_length_m": 81.81323630159707,
+          "coverage_per_meter": 0.012222961041580004,
+          "n_gt_free": 468,
+          "n_seen": 468,
+          "n_mapped": 205,
+          "n_visited_waypoints": 80,
+          "ticks": 222,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "loft": {
+      "n_gt_free": 445,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.6382022471910113,
+          "mapped_coverage": 0.503370786516854,
+          "path_length_m": 17.52181166603187,
+          "coverage_per_meter": 0.036423302530310994,
+          "n_gt_free": 445,
+          "n_seen": 284,
+          "n_mapped": 224,
+          "n_visited_waypoints": 13,
+          "ticks": 50,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.8786516853932584,
+          "mapped_coverage": 0.5707865168539326,
+          "path_length_m": 74.11797407061087,
+          "coverage_per_meter": 0.011854772022723972,
+          "n_gt_free": 445,
+          "n_seen": 391,
+          "n_mapped": 254,
+          "n_visited_waypoints": 80,
+          "ticks": 209,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7595505617977528,
+          "path_length_m": 124.80009083599433,
+          "coverage_per_meter": 0.008012814680673165,
+          "n_gt_free": 445,
+          "n_seen": 445,
+          "n_mapped": 338,
+          "n_visited_waypoints": 17,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.7932584269662921,
+          "mapped_coverage": 0.13258426966292136,
+          "path_length_m": 114.22148059661775,
+          "coverage_per_meter": 0.006944914588944503,
+          "n_gt_free": 445,
+          "n_seen": 353,
+          "n_mapped": 59,
+          "n_visited_waypoints": 77,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.5325842696629214,
+          "path_length_m": 79.10004280175355,
+          "coverage_per_meter": 0.012642218190782461,
+          "n_gt_free": 445,
+          "n_seen": 445,
+          "n_mapped": 237,
+          "n_visited_waypoints": 80,
+          "ticks": 215,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_1": {
+      "n_gt_free": 581,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.6695352839931153,
+          "path_length_m": 23.865092864344838,
+          "coverage_per_meter": 0.04190220443240051,
+          "n_gt_free": 581,
+          "n_seen": 581,
+          "n_mapped": 389,
+          "n_visited_waypoints": 17,
+          "ticks": 63,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.8967297762478486,
+          "mapped_coverage": 0.6230636833046471,
+          "path_length_m": 33.426202200013805,
+          "coverage_per_meter": 0.02682715107394038,
+          "n_gt_free": 581,
+          "n_seen": 521,
+          "n_mapped": 362,
+          "n_visited_waypoints": 80,
+          "ticks": 115,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7521514629948365,
+          "path_length_m": 123.33974243722629,
+          "coverage_per_meter": 0.008107686786430169,
+          "n_gt_free": 581,
+          "n_seen": 581,
+          "n_mapped": 437,
+          "n_visited_waypoints": 16,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.5972461273666093,
+          "path_length_m": 118.76138380381734,
+          "coverage_per_meter": 0.008420245436445118,
+          "n_gt_free": 581,
+          "n_seen": 581,
+          "n_mapped": 347,
+          "n_visited_waypoints": 36,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.26161790017211706,
+          "path_length_m": 72.16390109852573,
+          "coverage_per_meter": 0.013857343973612168,
+          "n_gt_free": 581,
+          "n_seen": 581,
+          "n_mapped": 152,
+          "n_visited_waypoints": 80,
+          "ticks": 193,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_2": {
+      "n_gt_free": 469,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9530916844349681,
+          "mapped_coverage": 0.8081023454157783,
+          "path_length_m": 11.072590971898912,
+          "coverage_per_meter": 0.08607666325377827,
+          "n_gt_free": 469,
+          "n_seen": 447,
+          "n_mapped": 379,
+          "n_visited_waypoints": 7,
+          "ticks": 30,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.9339019189765458,
+          "mapped_coverage": 0.837953091684435,
+          "path_length_m": 57.865926661363446,
+          "coverage_per_meter": 0.01613906443496227,
+          "n_gt_free": 469,
+          "n_seen": 438,
+          "n_mapped": 393,
+          "n_visited_waypoints": 80,
+          "ticks": 166,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8955223880597015,
+          "path_length_m": 119.03292717331706,
+          "coverage_per_meter": 0.008401036786602391,
+          "n_gt_free": 469,
+          "n_seen": 469,
+          "n_mapped": 420,
+          "n_visited_waypoints": 16,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.997867803837953,
+          "mapped_coverage": 0.6588486140724946,
+          "path_length_m": 118.66050123037456,
+          "coverage_per_meter": 0.008409435266927055,
+          "n_gt_free": 469,
+          "n_seen": 468,
+          "n_mapped": 309,
+          "n_visited_waypoints": 36,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.997867803837953,
+          "mapped_coverage": 0.39019189765458423,
+          "path_length_m": 69.21273444791734,
+          "coverage_per_meter": 0.014417401823487405,
+          "n_gt_free": 469,
+          "n_seen": 468,
+          "n_mapped": 183,
+          "n_visited_waypoints": 80,
+          "ticks": 195,
+          "done_reason": "complete"
+        }
+      }
+    },
+    "office_building_1": {
+      "n_gt_free": 14028,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.9603649843170802,
+          "mapped_coverage": 0.9637867122897062,
+          "path_length_m": 111.21195302147022,
+          "coverage_per_meter": 0.008635447523627925,
+          "n_gt_free": 14028,
+          "n_seen": 13472,
+          "n_mapped": 13520,
+          "n_visited_waypoints": 80,
+          "ticks": 274,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.5323638437410892,
+          "mapped_coverage": 0.6691616766467066,
+          "path_length_m": 38.19999999999999,
+          "coverage_per_meter": 0.01393622627594475,
+          "n_gt_free": 14028,
+          "n_seen": 7468,
+          "n_mapped": 9387,
+          "n_visited_waypoints": 80,
+          "ticks": 113,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.49358426005132594,
+          "mapped_coverage": 0.5333618477331052,
+          "path_length_m": 111.56263673379851,
+          "coverage_per_meter": 0.0044242792614258095,
+          "n_gt_free": 14028,
+          "n_seen": 6924,
+          "n_mapped": 7482,
+          "n_visited_waypoints": 30,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.9936555460507557,
+          "mapped_coverage": 0.9967921300256629,
+          "path_length_m": 123.49235360890796,
+          "coverage_per_meter": 0.008046292074063115,
+          "n_gt_free": 14028,
+          "n_seen": 13939,
+          "n_mapped": 13983,
+          "n_visited_waypoints": 20,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.9390504704875963,
+          "mapped_coverage": 0.9640718562874252,
+          "path_length_m": 110.64381746837665,
+          "coverage_per_meter": 0.008487148147757901,
+          "n_gt_free": 14028,
+          "n_seen": 13173,
+          "n_mapped": 13524,
+          "n_visited_waypoints": 12,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        }
+      }
+    },
+    "office_building_2": {
+      "n_gt_free": 26026,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.7535541381695228,
+          "mapped_coverage": 0.7586644125105664,
+          "path_length_m": 113.51872924915712,
+          "coverage_per_meter": 0.0066381481113621426,
+          "n_gt_free": 26026,
+          "n_seen": 19612,
+          "n_mapped": 19745,
+          "n_visited_waypoints": 80,
+          "ticks": 267,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.2969338353953739,
+          "mapped_coverage": 0.3837316529624222,
+          "path_length_m": 45.75,
+          "coverage_per_meter": 0.00649035705782238,
+          "n_gt_free": 26026,
+          "n_seen": 7728,
+          "n_mapped": 9987,
+          "n_visited_waypoints": 80,
+          "ticks": 124,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.3674018289402905,
+          "mapped_coverage": 0.3548374702220856,
+          "path_length_m": 125.62061699968493,
+          "coverage_per_meter": 0.002924693714418008,
+          "n_gt_free": 26026,
+          "n_seen": 9562,
+          "n_mapped": 9235,
+          "n_visited_waypoints": 12,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.6516560362714209,
+          "mapped_coverage": 0.6767079074771383,
+          "path_length_m": 117.18067407291561,
+          "coverage_per_meter": 0.005561122099928597,
+          "n_gt_free": 26026,
+          "n_seen": 16960,
+          "n_mapped": 17612,
+          "n_visited_waypoints": 19,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.4606547298854991,
+          "mapped_coverage": 0.5058018904172751,
+          "path_length_m": 113.93591257458593,
+          "coverage_per_meter": 0.004043103877225194,
+          "n_gt_free": 26026,
+          "n_seen": 11989,
+          "n_mapped": 13164,
+          "n_visited_waypoints": 72,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        }
+      }
+    },
+    "office_building_2_without_360_cam": {
+      "n_gt_free": 26026,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 0.7535541381695228,
+          "mapped_coverage": 0.7586644125105664,
+          "path_length_m": 113.51872924915712,
+          "coverage_per_meter": 0.0066381481113621426,
+          "n_gt_free": 26026,
+          "n_seen": 19612,
+          "n_mapped": 19745,
+          "n_visited_waypoints": 80,
+          "ticks": 267,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.2969338353953739,
+          "mapped_coverage": 0.3837316529624222,
+          "path_length_m": 45.75,
+          "coverage_per_meter": 0.00649035705782238,
+          "n_gt_free": 26026,
+          "n_seen": 7728,
+          "n_mapped": 9987,
+          "n_visited_waypoints": 80,
+          "ticks": 124,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 0.3674018289402905,
+          "mapped_coverage": 0.3548374702220856,
+          "path_length_m": 125.62061699968493,
+          "coverage_per_meter": 0.002924693714418008,
+          "n_gt_free": 26026,
+          "n_seen": 9562,
+          "n_mapped": 9235,
+          "n_visited_waypoints": 12,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 0.6516560362714209,
+          "mapped_coverage": 0.6767079074771383,
+          "path_length_m": 117.18067407291561,
+          "coverage_per_meter": 0.005561122099928597,
+          "n_gt_free": 26026,
+          "n_seen": 16960,
+          "n_mapped": 17612,
+          "n_visited_waypoints": 19,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 0.4606547298854991,
+          "mapped_coverage": 0.5058018904172751,
+          "path_length_m": 113.93591257458593,
+          "coverage_per_meter": 0.004043103877225194,
+          "n_gt_free": 26026,
+          "n_seen": 11989,
+          "n_mapped": 13164,
+          "n_visited_waypoints": 72,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        }
+      }
+    },
+    "studio": {
+      "n_gt_free": 511,
+      "algos": {
+        "nearest_frontier": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.8923679060665362,
+          "path_length_m": 17.455492478459927,
+          "coverage_per_meter": 0.05728855838550529,
+          "n_gt_free": 511,
+          "n_seen": 511,
+          "n_mapped": 456,
+          "n_visited_waypoints": 11,
+          "ticks": 47,
+          "done_reason": "complete"
+        },
+        "lawnmower": {
+          "gt_coverage": 0.9334637964774951,
+          "mapped_coverage": 0.8806262230919765,
+          "path_length_m": 34.44630437425971,
+          "coverage_per_meter": 0.027099098537114296,
+          "n_gt_free": 511,
+          "n_seen": 477,
+          "n_mapped": 450,
+          "n_visited_waypoints": 80,
+          "ticks": 115,
+          "done_reason": "complete"
+        },
+        "wall_follow": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.9354207436399217,
+          "path_length_m": 116.57072557885695,
+          "coverage_per_meter": 0.008578483105722174,
+          "n_gt_free": 511,
+          "n_seen": 511,
+          "n_mapped": 478,
+          "n_visited_waypoints": 17,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "nbv": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.7553816046966731,
+          "path_length_m": 113.90830808490796,
+          "coverage_per_meter": 0.00877899089901848,
+          "n_gt_free": 511,
+          "n_seen": 511,
+          "n_mapped": 386,
+          "n_visited_waypoints": 36,
+          "ticks": 300,
+          "done_reason": "max_ticks"
+        },
+        "rrt": {
+          "gt_coverage": 1.0,
+          "mapped_coverage": 0.3385518590998043,
+          "path_length_m": 65.32821699346896,
+          "coverage_per_meter": 0.015307321185575488,
+          "n_gt_free": 511,
+          "n_seen": 511,
+          "n_mapped": 173,
+          "n_visited_waypoints": 80,
+          "ticks": 186,
+          "done_reason": "complete"
+        }
+      }
+    }
+  },
+  "summary": {
+    "ranking_mean_gt_coverage": [
+      {
+        "algo": "nbv",
+        "mean": 0.941273387988369,
+        "n_scenes": 18,
+        "min": 0.6516560362714209,
+        "max": 1.0
+      },
+      {
+        "algo": "rrt",
+        "mean": 0.9335313520562711,
+        "n_scenes": 18,
+        "min": 0.4606547298854991,
+        "max": 1.0
+      },
+      {
+        "algo": "wall_follow",
+        "mean": 0.8849065467261804,
+        "n_scenes": 18,
+        "min": 0.3674018289402905,
+        "max": 1.0
+      },
+      {
+        "algo": "nearest_frontier",
+        "mean": 0.867114987032747,
+        "n_scenes": 18,
+        "min": 0.4544,
+        "max": 1.0
+      },
+      {
+        "algo": "lawnmower",
+        "mean": 0.7851048946031988,
+        "n_scenes": 18,
+        "min": 0.2969338353953739,
+        "max": 1.0
+      }
+    ],
+    "best_algo": "nbv",
+    "best_mean_gt_coverage": 0.941273387988369,
+    "elapsed_s": 147.2663881778717,
+    "per_scene_winner": {
+      "arabic_room": "wall_follow",
+      "chinese_room": "nbv",
+      "home_building_1": "rrt",
+      "home_building_2": "rrt",
+      "hotel_room_1": "wall_follow",
+      "hotel_room_2": "wall_follow",
+      "japanese_room": "nearest_frontier",
+      "livingroom_1": "wall_follow",
+      "livingroom_2": "wall_follow",
+      "livingroom_3": "wall_follow",
+      "livingroom_4": "wall_follow",
+      "loft": "wall_follow",
+      "office_1": "nearest_frontier",
+      "office_2": "wall_follow",
+      "office_building_1": "nbv",
+      "office_building_2": "nearest_frontier",
+      "office_building_2_without_360_cam": "nearest_frontier",
+      "studio": "nearest_frontier"
+    }
+  },
+  "plots": {
+    "arabic_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/arabic_room/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/arabic_room/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/arabic_room/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/arabic_room/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/arabic_room/rrt.png"
+    },
+    "chinese_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/chinese_room/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/chinese_room/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/chinese_room/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/chinese_room/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/chinese_room/rrt.png"
+    },
+    "home_building_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_1/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_1/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_1/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_1/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_1/rrt.png"
+    },
+    "home_building_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_2/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_2/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_2/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_2/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/home_building_2/rrt.png"
+    },
+    "hotel_room_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_1/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_1/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_1/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_1/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_1/rrt.png"
+    },
+    "hotel_room_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_2/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_2/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_2/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_2/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/hotel_room_2/rrt.png"
+    },
+    "japanese_room": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/japanese_room/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/japanese_room/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/japanese_room/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/japanese_room/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/japanese_room/rrt.png"
+    },
+    "livingroom_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_1/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_1/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_1/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_1/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_1/rrt.png"
+    },
+    "livingroom_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_2/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_2/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_2/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_2/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_2/rrt.png"
+    },
+    "livingroom_3": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_3/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_3/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_3/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_3/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_3/rrt.png"
+    },
+    "livingroom_4": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_4/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_4/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_4/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_4/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/livingroom_4/rrt.png"
+    },
+    "loft": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/loft/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/loft/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/loft/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/loft/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/loft/rrt.png"
+    },
+    "office_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_1/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_1/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_1/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_1/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_1/rrt.png"
+    },
+    "office_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_2/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_2/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_2/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_2/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_2/rrt.png"
+    },
+    "office_building_1": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_1/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_1/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_1/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_1/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_1/rrt.png"
+    },
+    "office_building_2": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2/rrt.png"
+    },
+    "office_building_2_without_360_cam": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2_without_360_cam/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2_without_360_cam/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2_without_360_cam/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2_without_360_cam/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/office_building_2_without_360_cam/rrt.png"
+    },
+    "studio": {
+      "nearest_frontier": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/studio/nearest_frontier.png",
+      "lawnmower": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/studio/lawnmower.png",
+      "wall_follow": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/studio/wall_follow.png",
+      "nbv": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/studio/nbv.png",
+      "rrt": "/opt/xiao_hei_vln/exploration_logs/bench_plots_mapfree/studio/rrt.png"
+    }
+  }
+}
