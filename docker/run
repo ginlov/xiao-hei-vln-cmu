@@ -6,7 +6,6 @@
 #
 # Usage:
 #   XIAO_HEI_RESPONDER=dummy   docker/run up -d
-#   XIAO_HEI_RESPONDER=qwen    docker/run up -d
 #
 #   XIAO_HEI_RESPONDER=perception \
 #     XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room \
@@ -30,16 +29,13 @@ PROFILE_ARGS=()
 
 case "$RESPONDER" in
   dummy)
-    # No extra profile — vllm/perception stay down.
-    ;;
-  qwen)
-    PROFILE_ARGS=(--profile qwen)
+    # No extra profile — the perception sidecar stays down.
     ;;
   perception)
     PROFILE_ARGS=(--profile perception)
     ;;
   *)
-    echo "error: XIAO_HEI_RESPONDER='$RESPONDER' not recognised (use: dummy, qwen, perception)" >&2
+    echo "error: XIAO_HEI_RESPONDER='$RESPONDER' not recognised (use: dummy, perception)" >&2
     exit 2
     ;;
 esac

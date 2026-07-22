@@ -17,8 +17,8 @@ graph LR
         PUB[VLMOutputPublisher]
     end
 
-    subgraph vllm Container
-        VLLM[vLLM Server<br/>OpenAI API]
+    subgraph perception Container
+        PERCS[YOLO-World + SAM 2.1<br/>FastAPI]
     end
 
     SIM --> ROS
@@ -26,8 +26,8 @@ graph LR
     SUB -->|overwrite latest| CACHE
     TICK -->|snapshot| CACHE
     CACHE -->|VLMInput| RESP
-    RESP -->|HTTP /v1/chat| VLLM
-    VLLM -->|JSON| RESP
+    RESP -->|HTTP /detect| PERCS
+    PERCS -->|detections + masks| RESP
     RESP -->|VLMOutput| PUB
     PUB -->|ROS publish| ROS
     ROS --> SIM
@@ -40,20 +40,22 @@ graph TB
     subgraph Docker Compose
         SYS[iros2026_system<br/>Challenge simulator + ROS]
         AI[xiao_hei_ai_module<br/>Python responder + ROS node]
-        VLLM["xiao_hei_vllm<br/>vLLM OpenAI server<br/>(profile: qwen)"]
         PERC["xiao_hei_perception<br/>YOLO-World + SAM 2.1<br/>(profile: perception)"]
+        GEM["Gemini API<br/>(external, HTTPS)"]
     end
 
     SYS <-->|ROS 2 DDS<br/>network_mode: host| AI
-    AI -.->|HTTP :8000/v1| VLLM
     AI -.->|HTTP :8001| PERC
+    AI -.->|HTTPS| GEM
 ```
 
-`system` and `ai_module` always start. The `vllm` and `perception`
-sidecars are profile-gated — the wrapper maps `XIAO_HEI_RESPONDER=qwen`
-to `--profile qwen` and `XIAO_HEI_RESPONDER=perception` to
-`--profile perception`, so only the sidecar the active responder needs
-ever runs. See [Docker setup](getting-started/docker.md) and
+`system` and `ai_module` always start. The `perception` sidecar is
+profile-gated — the wrapper maps `XIAO_HEI_RESPONDER=perception` to
+`--profile perception`, so it only runs when a responder needs it. The
+submission stack (`scene_gemini`) brings up the sim, the sidecar and our
+node together via `docker/compose_scene_gemini.yml`, and reaches Gemini
+over the network rather than running a local inference server. See
+[Docker setup](getting-started/docker.md) and
 [Perception Sidecar](perception-sidecar.md).
 
 All containers share `network_mode: host` so ROS 2 DDS discovery and
@@ -92,7 +94,8 @@ src/xiao_hei_vln/
 ├── logger.py      # VLM tick logger (model-agnostic)
 ├── image_utils.py # Shared image conversion helpers
 ├── dummy/         # Reference responder (no GPU)
-├── qwen/          # Qwen3.5 responder, engine, prompts
+├── gemini/        # Gemini engine, prompts, offline batch evaluator, tracer
+├── scene_gemini/  # Submission responder: exploration + scene graph + Gemini
 ├── scene/         # Three-level scene graph (Room/Viewpoint/Object) + renderer
 ├── trajectory/    # Offline coverage-trajectory planner (Task 7)
 ├── perception/    # PerceptionResponder + HTTP client + lifter + vocabulary
@@ -112,8 +115,8 @@ sequenceDiagram
     participant Cache as LatestCache
     participant Exp as Explorer
     participant Resp as Responder
-    participant Engine as HTTPQwenEngine
-    participant vLLM as vLLM Server
+    participant Engine as GeminiEngine
+    participant Gemini as Gemini API
 
     Timer->>Cache: snapshot(tick_id, timestamp)
     Cache-->>Timer: VLMInput
@@ -125,9 +128,9 @@ sequenceDiagram
     else question active or exploration done
         Timer->>Resp: respond(VLMInput)
         Resp->>Resp: build prompts (system + user)
-        Resp->>Engine: infer(system, user_text, image)
-        Engine->>vLLM: POST /v1/chat/completions
-        vLLM-->>Engine: JSON response
+        Resp->>Engine: infer_multimodal(system, user_text, images)
+        Engine->>Gemini: generate_content
+        Gemini-->>Engine: JSON response
         Engine-->>Resp: VLMOutput
         Resp-->>Timer: VLMOutput
         Timer->>Timer: publisher.publish(output)

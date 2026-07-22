@@ -70,7 +70,6 @@ nav:
       - Messages & I/O: concepts/messages.md
       - Responder Protocol: concepts/responder.md
       - Tick Loop: concepts/tick-loop.md
-      - Qwen Engine: concepts/qwen-engine.md
       - Exploration Phase: concepts/exploration.md
       - Frontier Explorer: concepts/frontier-explorer.md
       - Scene Representation: scene-representation.md
@@ -88,16 +87,41 @@ nav:
       - messages: api/messages.md
       - logger: api/logger.md
       - image_utils: api/image_utils.md
-      - qwen: api/qwen.md
       - evaluator: api/evaluator.md
       - sync: api/sync.md
       - trajectory: api/trajectory.md
   - Task Reports:
-      - tasks/index.md
+      - Overview: tasks/index.md
+      - Reports:
+          - "1 — Consolidate I/O format": "tasks/TASK 1 - Consolidate input-output format for the VLM model.md"
+          - "2 — End-to-end Docker integration": "tasks/TASK 2 - End-to-end integrate to docker container.md"
+          - "3 — VLA-3D dataset pipeline": "tasks/TASK 3 - VLA-3D generated dataset pipeline.md"
+          - "4 — Integrate Qwen3.5 VL": "tasks/TASK 4 - Integrate Qwen3.5 VL for testing.md"
+          - "5 — VLM tick logger": "tasks/TASK 5 - VLM tick logger for debugging and visualization.md"
+          - "6 — Documentation webpage": "tasks/TASK 6 - Documentation webpage.md"
+          - "7 — Data coupling": "tasks/TASK 7 - Data coupling.md"
+          - "7 — Data sample visualization": "tasks/TASK 7 - Data sample visualization script.md"
+          - "7 — Evaluation pipeline integration": "tasks/TASK 7 - Evaluation pipeline integration.md"
+          - "8 — Frontier-based room exploration": "tasks/TASK 8 - Frontier-based room exploration.md"
+          - "8 — Ref dataset ambiguity audit": "tasks/TASK 8 - Ref dataset ambiguity audit and label-vocab fix.md"
+          - "9 — Expand ref corpus": "tasks/TASK 9 - Expand ref corpus and match official phrasing distribution.md"
+          - "9 — Gemini-backed responder": "tasks/TASK 9 - Gemini-backed responder for Task 1 and Task 2.md"
+          - "10 — Offline Gemini evaluation": "tasks/TASK 10 - Offline Gemini evaluation pipeline for Task 1 and Task 2.md"
+          - "10 — Scene representation": "tasks/TASK 10 - Scene representation.md"
+          - "11 — Perception responder": "tasks/TASK 11 - Perception responder.md"
+          - "12 — Consolidate exploration + scene-building": "tasks/TASK 12 - Consolidate exploration + scene-building pipeline.md"
+          - "13 — Merge perception enhancements": "tasks/TASK 13 - Merge perception enhancements into the pipeline.md"
+          - "14 — Consolidate submission pipeline": "tasks/TASK 14 - Consolidate submission pipeline into the scene_gemini responder.md"
+          - "15 — Retire Phase-A exploration stack": "tasks/TASK 15 - Retire the unreachable Phase-A exploration stack.md"
+          - "16 — Move task reports into docs/tasks": "tasks/TASK 16 - Move task reports into docs-tasks.md"
+          - "17 — Retire the qwen responder": "tasks/TASK 17 - Retire the qwen responder.md"
+          - "18 — Deduplicate the responder factory": "tasks/TASK 18 - Deduplicate the responder factory.md"
+          - "19 — Remove the near-relation subsystem": "tasks/TASK 19 - Remove the near-relation subsystem.md"
       - Design Docs:
           - I/O Specification: task1_io_spec.md
           - Sensor Measurements: task1_phase1_measurements.md
-          - Framework Design: task3_phase1_framework.md
-          - Prompt Design: task3_phase3_prompt.md
+      - Historical design records:
+          - "Qwen serving framework (retired)": task3_phase1_framework.md
+          - "Qwen numerical prompt design (retired)": task3_phase3_prompt.md
 
 strict: true

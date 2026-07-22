@@ -47,7 +47,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-DEFAULT_NEAR_THRESHOLD = 2.0       # m — "near" relation threshold
 DEFAULT_SCORE_THRESHOLD = 0.25
 DEFAULT_IOU_THRESHOLD = 0.5
 
@@ -62,7 +61,6 @@ class PerceptionResponder:
         client: HTTPPerceptionClient,
         lifter: PointLifter,
         vocabulary: Vocabulary,
-        near_threshold: float = DEFAULT_NEAR_THRESHOLD,
         trajectory_path: Path | None = None,
         score_threshold: float = DEFAULT_SCORE_THRESHOLD,
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
@@ -80,8 +78,6 @@ class PerceptionResponder:
                 pushes the current question's vocabulary to the sidecar
                 via :meth:`HTTPPerceptionClient.set_classes` whenever
                 the set changes.
-            near_threshold: XY radius (m) for the on-demand
-                ``derive_near_relations`` call at answer time.
             trajectory_path: optional Task 7 coverage-trajectory JSON.
                 Walked during Phase A. Without it, the responder
                 answers from tick 0 with no movement.
@@ -122,7 +118,6 @@ class PerceptionResponder:
         self._object_map = object_map
         self._scan_accum = scan_accumulator or ScanAccumulator()
         self._vocab = vocabulary
-        self._near_threshold = float(near_threshold)
         self._score_threshold = float(score_threshold)
         self._iou_threshold = float(iou_threshold)
 
@@ -244,9 +239,7 @@ class PerceptionResponder:
                 ),
             )
 
-        # Phase B — answer from the live scene graph. Derive ``near``
-        # edges now so the logged snapshot has them at answer time.
-        self._scene.derive_near_relations(self._near_threshold)
+        # Phase B — answer from the live scene graph.
         if qtype is QuestionType.NUMERICAL:
             ans = self._answer_numerical(snapshot.question.text)
         elif qtype is QuestionType.OBJECT_REFERENCE:

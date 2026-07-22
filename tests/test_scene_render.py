@@ -38,8 +38,7 @@ def _vp(tick_id: int, x: float, y: float, yaw: float = 0.0) -> dict:
     return {"tick_id": tick_id, "position": [x, y, 0.0], "yaw": yaw}
 
 
-def _obj(label: str, x: float, y: float, *, observed_from=(0,), conf=1.0,
-         relations=None) -> dict:
+def _obj(label: str, x: float, y: float, *, observed_from=(0,), conf=1.0) -> dict:
     return {
         "label": label,
         "position": [x, y, 0.0],
@@ -48,7 +47,6 @@ def _obj(label: str, x: float, y: float, *, observed_from=(0,), conf=1.0,
         "first_tick_id": observed_from[0] if observed_from else 0,
         "last_tick_id": observed_from[-1] if observed_from else 0,
         "observing_viewpoint_ids": list(observed_from),
-        "spatial_relations": list(relations or []),
     }
 
 
@@ -111,9 +109,7 @@ class TestGraph:
             vps=[_vp(0, 0, 0), _vp(2, 3, 0), _vp(4, 6, 0)],
             objs=[
                 _obj("chair", 1, 1, observed_from=(0,)),
-                _obj("table", 1, 2, observed_from=(0, 2),
-                     relations=[{"target_label": "chair", "target_index": 0,
-                                 "relation": "near"}]),
+                _obj("table", 1, 2, observed_from=(0, 2)),
                 _obj("lamp",  6, 0, observed_from=(4,)),
             ],
         )
@@ -184,14 +180,10 @@ class TestTables:
         # 3 data rows, not the placeholder.
         assert "no viewpoints yet" not in html
 
-    def test_object_rows_and_near_summary(self) -> None:
+    def test_object_rows(self) -> None:
         scene = _scene(
             objs=[
-                _obj("chair", 0, 0, observed_from=(0, 2),
-                     relations=[
-                         {"target_label": "table", "target_index": 1, "relation": "near"},
-                         {"target_label": "lamp",  "target_index": 2, "relation": "near"},
-                     ]),
+                _obj("chair", 0, 0, observed_from=(0, 2)),
                 _obj("table", 1, 0, observed_from=(2,)),
                 _obj("lamp",  2, 0, observed_from=(2,)),
             ],
@@ -199,8 +191,6 @@ class TestTables:
         html = render_node_tables(scene)
         assert "Objects (3)" in html
         assert "chair" in html and "table" in html and "lamp" in html
-        # near summary "table, lamp" listed for chair
-        assert "table, lamp" in html
 
     def test_html_is_well_formed_ish(self) -> None:
         html = render_node_tables(_scene(
@@ -250,9 +240,7 @@ def test_renders_a_full_fixture_session(tmp_path) -> None:
             vps=[_vp(1, 0, 0), _vp(5, 4, 0)],
             objs=[
                 _obj("chair", 1, 0, observed_from=(1,)),
-                _obj("table", 4, 0, observed_from=(5,),
-                     relations=[{"target_label": "chair", "target_index": 0,
-                                 "relation": "near"}]),
+                _obj("table", 4, 0, observed_from=(5,)),
             ],
             bounds=[[-1, -1, 0], [6, 5, 0]],
         ),

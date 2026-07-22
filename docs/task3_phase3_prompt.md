@@ -1,5 +1,14 @@
 # Task 3 — Phase 3: Numerical question prompt design
 
+!!! warning "Historical record"
+
+    This document describes the **retired `qwen` responder** (Qwen3.5 via a
+    vLLM sidecar), removed in
+    [TASK 17](tasks/TASK%2017%20-%20Retire%20the%20qwen%20responder.md).
+    It is kept for the recorded rationale — the sidecar-vs-in-process
+    reasoning here still informs how the perception sidecar is structured.
+    Nothing on this page describes code that currently exists.
+
 This document records the prompt + responder-loop design used to
 answer the **numerical** ("How many ...") question type with the
 Qwen3.5 responder. The other two question types continue to use the

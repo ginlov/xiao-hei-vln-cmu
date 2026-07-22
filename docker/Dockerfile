@@ -20,10 +20,10 @@ COPY src ./src
 #
 # Build arg `XIAO_HEI_EXTRA` controls which optional dep group is installed:
 #   - "" (default): no extras → dummy responder only. Fast build.
-#   - "qwen":       installs `openai` + `pillow` for the HTTP sidecar engine
-#                   (lightweight, no CUDA conflicts).
-#   - "qwen-local": installs vLLM + torch + CUDA wheels in-process (heavy,
-#                   may conflict with apt packages — not recommended).
+#   - "perception": installs `httpx` + `pillow` + `pycocotools` — the client
+#                   side of the perception sidecar (lightweight, no CUDA).
+#   - "perception,gemini,exploration": the full submission stack
+#                   (scene_gemini responder). See compose_scene_gemini.yml.
 ARG XIAO_HEI_EXTRA=""
 RUN if [ -n "$XIAO_HEI_EXTRA" ]; then \
         python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed -e ".[${XIAO_HEI_EXTRA}]"; \

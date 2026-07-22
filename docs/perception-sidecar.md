@@ -17,7 +17,7 @@ A real, model-driven detector → segmenter → 3D-lift perception path feeding 
 
 ## Why a sidecar (not in-process)
 
-Same reasoning as the `vllm` container: the GPU stack (torch+CUDA+ultralytics+sam2) is ~5 GB and conflicts badly with the ROS base image. Keeping it isolated:
+The GPU stack (torch+CUDA+ultralytics+sam2) is ~5 GB and conflicts badly with the ROS base image. Keeping it isolated:
 
 - The `ai_module` image stays small (~9 GB ROS+Python, no CUDA stack).
 - The sidecar can be swapped (different YOLO variant, different segmenter) without rebuilding the responder.
@@ -331,7 +331,7 @@ export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json   # optional
 XIAO_HEI_RESPONDER=perception docker/run up -d --build
 
-# Wait for vllm/perception to be ready, then launch Unity
+# Wait for the perception sidecar to be ready, then launch Unity
 docker logs -f xiao_hei_perception        # look for "pipeline ready"
 docker exec -it iros2026_system \
     /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
@@ -349,7 +349,6 @@ docker exec iros2026_system bash -lc \
 | Env var | Default | Description |
 |---|---|---|
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Where the responder reaches the sidecar. |
-| `XIAO_HEI_PERCEPTION_NEAR_THRESHOLD` | `2.0` | XY radius (m) for `derive_near_relations` at answer time. |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | Forwarded to YOLO-World on every `/detect`. Lower → more detections, more noise. |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR return count below which a mask is dropped (no 3D point committed). |
 | `XIAO_HEI_TRAJECTORY_JSON` (via `_HOST` bind mount) | unset | Optional pre-planned coverage trajectory; the responder walks it during Phase A. |
@@ -375,4 +374,4 @@ Plus 33 pre-existing tests for the sidecar-side geometry (`perception/tests/test
 - Optionally add cross-face NMS in the sidecar if seam-spanning duplicates hurt quality.
 - Add a "Perception" tab to the HTML report (overlay detections + masks on the camera image).
 
-See `TASK 11 - Perception responder.md` at the repo root for the full design doc + open questions.
+See [TASK 11 - Perception responder](tasks/TASK%2011%20-%20Perception%20responder.md) for the full design doc + open questions.

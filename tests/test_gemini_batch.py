@@ -81,13 +81,6 @@ def test_build_scene_disables_same_label_merge() -> None:
     assert len(scene.objects) == 2
 
 
-def test_build_scene_derives_near_relations() -> None:
-    scene = batch.build_scene(OBJECT_LIST, near_threshold=2.0)
-    d = scene.to_dict()
-    rels = [r for o in d["objects"] for r in o["spatial_relations"]]
-    assert any(r["relation"] == "near" for r in rels)
-
-
 def test_build_scene_sets_scene_bounds() -> None:
     scene = batch.build_scene(OBJECT_LIST)
     assert scene.room.scene_bounds is not None

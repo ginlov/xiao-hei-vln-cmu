@@ -34,8 +34,8 @@ Resets internal state (tick counter, evidence log, done flag). Called when:
 
 ### `close()`
 
-Cleanup hook called during shutdown. Used by `QwenResponder` to flush the
-VLM tick logger.
+Cleanup hook called during shutdown. Used by `SceneGeminiResponder` to flush
+the VLM tick logger.
 
 ## Implementations
 
@@ -48,14 +48,22 @@ answers without any model inference. No GPU required.
 - Object reference: returns a fixed marker position
 - Instruction following: returns a single waypoint `(1.0, 0.0)`
 
-### QwenResponder
+### PerceptionResponder
 
-Production responder using Qwen3.5-VL. Features:
+Sidecar-backed perception responder. Detects and segments objects per tick
+via YOLO-World + SAM 2.1, projects each mask through the LiDAR scan to lift
+it to 3D, and answers from the live scene graph.
 
-- Multi-tick reasoning for numerical questions (evidence accumulation)
-- Timeout safety cap (30 ticks default)
-- Optional tick logging for debugging
-- Pluggable engine (`HTTPQwenEngine` or `QwenEngine`)
+### SceneGeminiResponder
+
+The submission responder. Features:
+
+- Driven by the shared app-level `FrontierExplorer` via `ingest()`
+- Builds the object scene graph during the sweep (delegates to
+  `PerceptionResponder`)
+- Defers the answer until exploration completes, then sends the populated
+  graph + panorama + occupancy map to the Gemini API
+- Optional tick logging for debugging (API key stripped from `session.json`)
 
 ## Lifecycle in the tick loop
 
@@ -73,6 +81,7 @@ stateDiagram-v2
 Set `XIAO_HEI_RESPONDER` environment variable:
 
 ```bash
-XIAO_HEI_RESPONDER=dummy   # DummyResponder (no GPU)
-XIAO_HEI_RESPONDER=qwen    # QwenResponder (requires vLLM)
+XIAO_HEI_RESPONDER=dummy         # DummyResponder (no GPU)
+XIAO_HEI_RESPONDER=perception    # PerceptionResponder (needs the sidecar)
+XIAO_HEI_RESPONDER=scene_gemini  # SceneGeminiResponder (sidecar + Gemini API key)
 ```

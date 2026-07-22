@@ -136,9 +136,9 @@ class. Run with `uv run pytest -q`.
 uv sync
 xhost +local:
 
-# bring up the challenge sim + our VLM container (vllm sidecar auto-starts
-# because XIAO_HEI_RESPONDER=qwen activates the `qwen` compose profile)
-XIAO_HEI_RESPONDER=qwen docker/run up -d --build
+# bring up the challenge sim + our VLM container (the perception sidecar
+# auto-starts because XIAO_HEI_RESPONDER=perception activates its profile)
+XIAO_HEI_RESPONDER=perception docker/run up -d --build
 
 # inside iros2026_system: start the sim
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
@@ -308,8 +308,8 @@ together. Question texts come from the GT, so they align exactly.
 
 The batch does **not** send Gemini the raw `SceneRepresentation.to_dict()`
 — that graph is ~20–25× larger (it repeats each bbox as min+max, plus
-confidence, viewpoint/tick ids, and pre-derived `near` edges) and
-overruns the free-tier input-token/minute quota. Each call is **text
+confidence and viewpoint/tick ids) and overruns the free-tier
+input-token/minute quota. Each call is **text
 only** (no images), built as:
 
 - **System prompt** (`offline_system_prompt`, one per task type) — the
@@ -343,7 +343,6 @@ above — see `request.user_text` in the `--trace-file`.
 | `--max-retries N` | `5` | retries on a 429 rate-limit (honours the server `retryDelay`) |
 | `--debug-dir DIR` | – | dump one JSON per prediction (scene graph + prompts + parsed output) |
 | `--trace-file FILE` | – | append a full-fidelity JSONL trace of every Gemini call (see below) |
-| `--near-threshold M` | `2.0` | XY radius for `near` edges in the reconstructed graph |
 
 Passing **either** `--task1` or `--task2` restricts the run to those task
 type(s) — e.g. `--task2 10` evaluates 10 object-reference examples and no
@@ -403,11 +402,10 @@ src/xiao_hei_vln/
 ├── sync/           LatestCache + tick snapshot
 ├── adapters/       ROS 2 subscribers + publishers (lazy rclpy import)
 ├── dummy/          reference responder ported from dummyVLM.cpp
-├── qwen/           Qwen2.5-VL responder (vLLM-backed, separate container)
 ├── gemini/         Gemini engine + offline batch evaluator + call tracer
 ├── scene_gemini/   submission responder: exploration + perception graph + Gemini
 ├── perception/     YOLO-World + SAM sidecar client, 3D lifter, scene-graph fusion
-├── exploration/    frontier exploration strategies (occupancy grid + planner)
+├── exploration/    frontier exploration strategy (occupancy grid + explorer)
 ├── scene/          SceneRepresentation (Room → Viewpoints → Objects graph)
 ├── evaluator/      offline metrics (numerical + object-reference)
 ├── eval_sampler/   GT ↔ prediction matcher, GT format converter
@@ -426,5 +424,6 @@ tests/              pytest suite (no ROS required)
 
 - Always run Python via `uv` (Python 3.12 venv created on first
   `uv sync`).
-- After each numbered task, write a short report at the repo root:
-  `TASK N - <purpose>.md`.
+- After each numbered task, write a short report in
+  [`docs/tasks/`](docs/tasks/): `TASK N - <purpose>.md`, and index it in
+  [`docs/tasks/index.md`](docs/tasks/index.md).

@@ -28,36 +28,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class SpatialRelation:
-    """A directed spatial relation from one object to another.
-
-    Stored on the source `ObjectObservation`. ``relation`` is a free
-    string set by the caller (e.g. ``"left_of"``, ``"near"``,
-    ``"on_top_of"``). Three identifiers point at the target:
-
-    - ``target_index`` is the positional index into
-      ``SceneRepresentation._objects`` at the time the edge was created.
-      Currently authoritative; suitable for direct list lookup.
-    - ``target_object_id`` is the stable id assigned by
-      :meth:`SceneRepresentation.add_object` (monotonic, never reused).
-      Designed to remain valid even if a future sweeper removes or
-      reorders objects (which would silently corrupt ``target_index``).
-    - ``target_label`` is the target's label at edge-creation time,
-      kept for human-readable display and JSON-replay debugging only —
-      it is not authoritative.
-
-    For now ``target_object_id`` is informational; dedup and renderer
-    lookup still go through ``target_index``. Migrating to id-based
-    lookup is the next step once an object-removal path lands.
-    """
-
-    target_label: str
-    target_index: int
-    relation: str
-    target_object_id: int = 0
-
-
 @dataclass
 class RoomNode:
     """Global scene node — exactly one per `SceneRepresentation`.
@@ -124,7 +94,6 @@ class ObjectObservation:
     # tick) so this list always doubles as the reverse Viewpoint→Object
     # edge.
     observing_viewpoint_ids: list[int] = field(default_factory=list)  # edge: Viewpoint → Object (reverse)
-    spatial_relations: list[SpatialRelation] = field(default_factory=list)  # edge: Object → Object
 
 
 # ---------------------------------------------------------------------------
@@ -296,82 +265,8 @@ class SceneRepresentation:
                 first_tick_id=existing.first_tick_id if existing else self._tick_id,
                 last_tick_id=self._tick_id,
                 observing_viewpoint_ids=vp_ids,
-                spatial_relations=list(existing.spatial_relations) if existing else [],
             ))
         self._objects = new_objects
-
-    def add_spatial_relation_by_index(
-        self, idx_a: int, idx_b: int, relation: str,
-    ) -> bool:
-        """Record a directed spatial relation from object ``idx_a`` to
-        object ``idx_b``. Index-keyed (positional in :attr:`objects`).
-
-        Dedup key is ``(target_index, relation)``. Idempotent —
-        re-asserting the same edge is a no-op, so callers can replay
-        every tick without inflating the graph.
-
-        Returns ``True`` if a new edge was added, ``False`` if the edge
-        already existed or either index is out of range.
-        """
-        n = len(self._objects)
-        if not (0 <= idx_a < n and 0 <= idx_b < n):
-            return False
-        src = self._objects[idx_a]
-        for existing in src.spatial_relations:
-            if existing.target_index == idx_b and existing.relation == relation:
-                return False
-        tgt = self._objects[idx_b]
-        src.spatial_relations.append(
-            SpatialRelation(
-                target_label=tgt.label,
-                target_index=idx_b,
-                relation=relation,
-                target_object_id=tgt.object_id,
-            ),
-        )
-        return True
-
-    def add_spatial_relation(self, label_a: str, label_b: str, relation: str) -> None:
-        """Label-keyed convenience wrapper around
-        :meth:`add_spatial_relation_by_index`.
-
-        Resolves ``label_a`` and ``label_b`` to their first matching
-        object index, then forwards. No-op when either label is missing.
-
-        When multiple nodes share the same label only the first match is
-        used — for full multi-instance edges, call
-        :meth:`add_spatial_relation_by_index` directly with the indices
-        you want.
-        """
-        idx_a = next((i for i, o in enumerate(self._objects) if o.label == label_a), None)
-        idx_b = next((i for i, o in enumerate(self._objects) if o.label == label_b), None)
-        if idx_a is None or idx_b is None:
-            return
-        self.add_spatial_relation_by_index(idx_a, idx_b, relation)
-
-    def derive_near_relations(self, threshold: float = 2.0) -> int:
-        """Add bidirectional ``near`` edges for every object pair within
-        ``threshold`` metres (XY distance).
-
-        Pairs are matched by *index*, so multiple objects sharing the
-        same label each get their own edges. Idempotent — replaying the
-        same call every tick collapses to one edge per ordered pair.
-
-        Returns the number of new edges added on this call.
-        """
-        added = 0
-        n = len(self._objects)
-        for i in range(n):
-            a = self._objects[i]
-            for j in range(i + 1, n):
-                b = self._objects[j]
-                dx = a.position.x - b.position.x
-                dy = a.position.y - b.position.y
-                if dx * dx + dy * dy > threshold * threshold:
-                    continue
-                added += int(self.add_spatial_relation_by_index(i, j, "near"))
-                added += int(self.add_spatial_relation_by_index(j, i, "near"))
-        return added
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -417,15 +312,6 @@ class SceneRepresentation:
                     "first_tick_id": o.first_tick_id,
                     "last_tick_id": o.last_tick_id,
                     "observing_viewpoint_ids": list(o.observing_viewpoint_ids),
-                    "spatial_relations": [
-                        {
-                            "target_label": r.target_label,
-                            "target_index": r.target_index,
-                            "target_object_id": r.target_object_id,
-                            "relation": r.relation,
-                        }
-                        for r in o.spatial_relations
-                    ],
                 }
                 for o in self._objects
             ],

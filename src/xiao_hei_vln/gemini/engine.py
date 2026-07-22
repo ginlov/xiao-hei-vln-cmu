@@ -58,10 +58,9 @@ class GeminiClientProtocol(Protocol):
 class GeminiEngineProtocol(Protocol):
     """The engine surface :class:`SceneGeminiResponder` depends on.
 
-    Wider than :class:`xiao_hei_vln.qwen.engine.EngineProtocol` because
-    we always go multimodal (panorama + occupancy map) plus a JSON
-    scene-graph dump. The Qwen ``EngineProtocol`` only takes a single
-    ``ImageFrame``; this one takes pre-serialised image bytes.
+    Always multimodal: a panorama plus an occupancy map, alongside a JSON
+    scene-graph dump. Takes pre-serialised image bytes rather than a raw
+    ``ImageFrame``, so the caller controls encoding and downscaling.
     """
 
     def infer_multimodal(
@@ -106,8 +105,8 @@ class GeminiEngine:
         """Issue a minimal request to confirm credentials + reachability.
 
         Fails fast with a clear error if the API key is rejected or the
-        SDK can't reach the model — matches the warmup pattern used by
-        :class:`xiao_hei_vln.qwen.engine.HTTPQwenEngine`.
+        SDK can't reach the model, so a misconfigured container dies at
+        boot rather than on the first question.
         """
         try:
             self.infer_multimodal(

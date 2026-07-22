@@ -31,7 +31,7 @@ A typed Python framework that sits between the challenge's ROS 2 sensor topics a
 
 ## Project status
 
-The system currently uses **Qwen3.5-4B** served via a vLLM HTTP sidecar. The responder implements multi-tick reasoning for numerical questions (counting objects from multiple viewpoints) and single-tick waypoint emission for instruction-following questions.
+The submission stack is **`scene_gemini`**: a shared frontier sweep drives the robot while the perception sidecar (YOLO-World + SAM) builds a 3D object scene graph; once the sweep completes, the populated graph plus a panorama and an occupancy map go to the **Gemini API** for the final answer (Task 1) or route plan (Task 2).
 
 Active areas of development:
 

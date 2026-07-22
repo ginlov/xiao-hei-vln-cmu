@@ -3,10 +3,6 @@
 Pick the responder with `XIAO_HEI_RESPONDER`:
 
   - `dummy` (default) — the deterministic port of `dummyVLM.cpp`. No GPU.
-  - `qwen`            — Qwen3.5 via vLLM. By default talks to a vLLM
-                        HTTP sidecar (`XIAO_HEI_QWEN_VLLM_BASE_URL`).
-                        Falls back to in-process vLLM when the URL is
-                        unset (`pip install .[qwen-local]` + CUDA GPU).
   - `perception`      — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny via the
                         perception sidecar (`XIAO_HEI_PERCEPTION_BASE_URL`).
                         Detects + segments objects per tick, projects
@@ -30,6 +26,7 @@ import json
 import math
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from xiao_hei_vln.messages.common import Stamp
@@ -49,6 +46,122 @@ _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
 
 
+@dataclass(frozen=True)
+class _PerceptionSettings:
+    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` / `XIAO_HEI_OBJECT_MAP`
+    knobs shared by every perception-backed responder.
+
+    Split out from `_build_responder` so the `perception` and `scene_gemini`
+    branches read the environment through one code path — they used to parse
+    the same nine variables independently, which meant a default could drift
+    between the two responders without anything failing.
+    """
+
+    base_url: str
+    score_threshold: float
+    min_inliers: int
+    use_object_map: bool
+    scan_keyframes: int
+    scan_min_move_m: float
+    scan_min_rot_deg: float
+    scan_voxel_m: float
+
+    @classmethod
+    def from_env(cls) -> _PerceptionSettings:
+        # Imported lazily: these modules pull in httpx/pycocotools (the
+        # `perception` extra), and the package must stay importable without it.
+        from xiao_hei_vln.perception.client import DEFAULT_BASE_URL
+        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS
+        from xiao_hei_vln.perception.responder import DEFAULT_SCORE_THRESHOLD
+
+        return cls(
+            base_url=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL),
+            score_threshold=float(os.environ.get(
+                "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
+            )),
+            min_inliers=int(os.environ.get(
+                "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
+            )),
+            # Opt-in: fuse detections across frames with ObjectMap (converged
+            # 3D boxes + NMS + wall-sheet rejection) instead of per-detection
+            # add_object. Off by default → the pipeline behaves as before.
+            use_object_map=os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
+                "1", "true", "yes", "on",
+            ),
+            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            scan_min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
+            scan_min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
+            scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+        )
+
+    def as_log_config(self) -> dict[str, object]:
+        """The knobs worth recording in `session.json` for *any* responder
+        that builds the perception stack.
+
+        """
+        return {
+            "perception_base_url": self.base_url,
+            "score_threshold": self.score_threshold,
+            "min_inliers": self.min_inliers,
+            "object_map": self.use_object_map,
+        }
+
+
+def _build_perception_responder(
+    scene: SceneRepresentation,
+    settings: _PerceptionSettings,
+    *,
+    trajectory_path: Path | None = None,
+    take_waypoint_reached_signals: Callable[[], int] | None = None,
+    logger=None,
+):
+    """Build the sidecar-backed `PerceptionResponder`.
+
+    Blocks until the sidecar's `/healthz` is green, so this must not be called
+    before the sidecar container is up.
+    """
+    from xiao_hei_vln.perception import PerceptionResponder
+    from xiao_hei_vln.perception.client import HTTPPerceptionClient
+    from xiao_hei_vln.perception.lifter import PointLifter
+    from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+    from xiao_hei_vln.perception.vocab import Vocabulary
+
+    client = HTTPPerceptionClient(base_url=settings.base_url)
+    client.wait_until_ready()       # blocks until /healthz is green
+
+    # The z-buffer occlusion gate is always on: a camera can't see through a
+    # foreground object, so background returns falling inside a mask must be
+    # rejected (default in PointLifter). Independent of ObjectMap fusion.
+    lifter = PointLifter(min_inliers=settings.min_inliers)
+
+    # Densify the sparse single sweep before lifting so small objects clear
+    # min_inliers with genuine on-surface returns (env-tunable).
+    scan_accum = ScanAccumulator(
+        max_keyframes=settings.scan_keyframes,
+        min_move_m=settings.scan_min_move_m,
+        min_rot_deg=settings.scan_min_rot_deg,
+        voxel_m=settings.scan_voxel_m,
+    )
+
+    object_map = None
+    if settings.use_object_map:
+        from xiao_hei_vln.perception.object_map import ObjectMap
+        object_map = ObjectMap()
+
+    return PerceptionResponder(
+        scene,
+        client=client,
+        lifter=lifter,
+        vocabulary=Vocabulary(),
+        score_threshold=settings.score_threshold,
+        trajectory_path=trajectory_path,
+        take_waypoint_reached_signals=take_waypoint_reached_signals,
+        logger=logger,
+        object_map=object_map,
+        scan_accumulator=scan_accum,
+    )
+
+
 def _build_responder(
     name: str,
     scene: SceneRepresentation,
@@ -59,86 +172,12 @@ def _build_responder(
         from xiao_hei_vln.dummy import DummyResponder
 
         return DummyResponder(), None
-    if name == "qwen":
-        from dataclasses import asdict
-
-        from xiao_hei_vln.logger import VLMLogger
-        from xiao_hei_vln.qwen import HTTPQwenEngine, QwenConfig, QwenEngine, QwenResponder
-
-        config = QwenConfig.from_env()
-        engine = HTTPQwenEngine(config) if config.vllm_base_url else QwenEngine(config)
-        engine.warmup()
-
-        logger = None
-        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
-        if log_dir:
-            logger = VLMLogger(
-                log_dir,
-                config=asdict(config),
-                responder_name="qwen",
-                tick_hz=TICK_HZ,
-            )
-        return QwenResponder(engine, config, logger=logger), logger
     if name == "perception":
         from xiao_hei_vln.logger import VLMLogger
-        from xiao_hei_vln.perception import PerceptionResponder
-        from xiao_hei_vln.perception.client import (
-            DEFAULT_BASE_URL,
-            HTTPPerceptionClient,
-        )
-        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
-        from xiao_hei_vln.perception.responder import (
-            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
-        )
-        from xiao_hei_vln.perception.responder import (
-            DEFAULT_SCORE_THRESHOLD,
-        )
-        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
-        from xiao_hei_vln.perception.vocab import Vocabulary
 
-        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
-        near_t = float(os.environ.get(
-            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD",
-            str(PERCEPTION_NEAR_THRESHOLD),
-        ))
-        score_t = float(os.environ.get(
-            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
-            str(DEFAULT_SCORE_THRESHOLD),
-        ))
-        min_inliers = int(os.environ.get(
-            "XIAO_HEI_PERCEPTION_MIN_INLIERS",
-            str(DEFAULT_MIN_INLIERS),
-        ))
-        # Opt-in: fuse detections across frames with ObjectMap (converged 3D
-        # boxes + NMS + wall-sheet rejection) instead of per-detection
-        # add_object. Off by default → the pipeline behaves exactly as before.
-        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
-            "1", "true", "yes", "on",
-        )
+        settings = _PerceptionSettings.from_env()
         traj_str = os.environ.get("XIAO_HEI_TRAJECTORY_JSON", "")
         traj_path = Path(traj_str) if traj_str else None
-
-        client = HTTPPerceptionClient(base_url=base_url)
-        client.wait_until_ready()       # blocks until /healthz is green
-        # The z-buffer occlusion gate is always on: a camera can't see
-        # through a foreground object, so background returns falling inside
-        # a mask must be rejected (default in PointLifter). Independent of
-        # whether ObjectMap fusion is enabled.
-        lifter = PointLifter(min_inliers=min_inliers)
-        # Densify the sparse single sweep before lifting so small objects
-        # clear min_inliers with genuine on-surface returns (env-tunable).
-        scan_accum = ScanAccumulator(
-            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
-            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
-            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
-            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
-        )
-        vocab = Vocabulary()
-
-        object_map = None
-        if use_object_map:
-            from xiao_hei_vln.perception.object_map import ObjectMap
-            object_map = ObjectMap()
 
         logger = None
         log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
@@ -146,28 +185,19 @@ def _build_responder(
             logger = VLMLogger(
                 log_dir,
                 config={
-                    "perception_base_url": base_url,
-                    "near_threshold_m": near_t,
-                    "score_threshold": score_t,
-                    "min_inliers": min_inliers,
-                    "object_map": use_object_map,
+                    **settings.as_log_config(),
+                    # Phase-B-only: only this responder walks a trajectory.
                     "trajectory_json": traj_str or None,
                 },
                 responder_name="perception",
                 tick_hz=TICK_HZ,
             )
-        responder = PerceptionResponder(
+        responder = _build_perception_responder(
             scene,
-            client=client,
-            lifter=lifter,
-            vocabulary=vocab,
-            near_threshold=near_t,
-            score_threshold=score_t,
+            settings,
             trajectory_path=traj_path,
             take_waypoint_reached_signals=take_waypoint_reached_signals,
             logger=logger,
-            object_map=object_map,
-            scan_accumulator=scan_accum,
         )
         return responder, logger
     if name == "scene_gemini":
@@ -175,68 +205,14 @@ def _build_responder(
 
         from xiao_hei_vln.gemini import GeminiConfig, GeminiEngine
         from xiao_hei_vln.logger import VLMLogger
-        from xiao_hei_vln.perception import PerceptionResponder
-        from xiao_hei_vln.perception.client import (
-            DEFAULT_BASE_URL,
-            HTTPPerceptionClient,
-        )
-        from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS, PointLifter
-        from xiao_hei_vln.perception.responder import (
-            DEFAULT_NEAR_THRESHOLD as PERCEPTION_NEAR_THRESHOLD,
-        )
-        from xiao_hei_vln.perception.responder import (
-            DEFAULT_SCORE_THRESHOLD,
-        )
-        from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
-        from xiao_hei_vln.perception.vocab import Vocabulary
         from xiao_hei_vln.scene_gemini import SceneGeminiResponder
 
         # --- Perception sidecar → scene-graph building (used via ingest()) ---
-        base_url = os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL)
-        near_t = float(os.environ.get(
-            "XIAO_HEI_PERCEPTION_NEAR_THRESHOLD", str(PERCEPTION_NEAR_THRESHOLD),
-        ))
-        score_t = float(os.environ.get(
-            "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
-        ))
-        min_inliers = int(os.environ.get(
-            "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
-        ))
-        # Opt-in ObjectMap fusion (converged 3D boxes + NMS) — same flag as
-        # the perception responder. Off by default.
-        use_object_map = os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
-            "1", "true", "yes", "on",
-        )
-
-        client = HTTPPerceptionClient(base_url=base_url)
-        client.wait_until_ready()       # blocks until the sidecar /healthz is green
-        lifter = PointLifter(min_inliers=min_inliers)
-        scan_accum = ScanAccumulator(
-            max_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
-            min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
-            min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
-            voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
-        )
-        vocab = Vocabulary()
-        object_map = None
-        if use_object_map:
-            from xiao_hei_vln.perception.object_map import ObjectMap
-            object_map = ObjectMap()
-
         # No trajectory walk / no logger on the perception responder: it is
         # driven purely via ingest() during the shared exploration sweep, and
         # scene_gemini owns all logging.
-        perception = PerceptionResponder(
-            scene,
-            client=client,
-            lifter=lifter,
-            vocabulary=vocab,
-            near_threshold=near_t,
-            score_threshold=score_t,
-            trajectory_path=None,
-            object_map=object_map,
-            scan_accumulator=scan_accum,
-        )
+        settings = _PerceptionSettings.from_env()
+        perception = _build_perception_responder(scene, settings)
 
         # --- Gemini reasoning ------------------------------------------------
         config = GeminiConfig.from_env()
@@ -250,13 +226,7 @@ def _build_responder(
             safe_cfg = {k: v for k, v in asdict(config).items() if k != "api_key"}
             logger = VLMLogger(
                 log_dir,
-                config={
-                    **safe_cfg,
-                    "perception_base_url": base_url,
-                    "score_threshold": score_t,
-                    "min_inliers": min_inliers,
-                    "object_map": use_object_map,
-                },
+                config={**safe_cfg, **settings.as_log_config()},
                 responder_name="scene_gemini",
                 tick_hz=TICK_HZ,
             )
@@ -266,7 +236,7 @@ def _build_responder(
         return responder, logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; "
-        "expected one of: dummy, qwen, perception, scene_gemini",
+        "expected one of: dummy, perception, scene_gemini",
     )
 
 
@@ -341,7 +311,6 @@ def main() -> None:
 
     rclpy.init()
     node_name = {
-        "qwen": "xiao_hei_qwen_vlm",
         "perception": "xiao_hei_perception_vlm",
         "scene_gemini": "xiao_hei_scene_gemini_vlm",
     }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
@@ -501,7 +470,7 @@ def main() -> None:
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
             # perception detect→lift→add_object cycle without ever emitting an
             # answer (so a pending question stays deferred). Responders without
-            # a scene path (dummy/qwen) simply don't expose ingest().
+            # a scene path (dummy) simply don't expose ingest().
             scene.update(snapshot)
             if hasattr(responder, "ingest"):
                 responder.ingest(snapshot)

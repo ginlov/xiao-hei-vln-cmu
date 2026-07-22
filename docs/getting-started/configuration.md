@@ -7,34 +7,39 @@ are required — docker-compose sets them for you, but they can be overridden.
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_RESPONDER` | `qwen` (GPU) / `dummy` (CPU) | Which responder implementation to use |
+| `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`, or `scene_gemini` (the submission stack) |
 | `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz |
 
-## Qwen engine
+## Gemini engine
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_QWEN_VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM sidecar URL. Empty string = in-process mode |
-| `XIAO_HEI_QWEN_MODEL` | `/models/Qwen3.5-4B` | Model path (local) or HuggingFace ID |
-| `XIAO_HEI_QWEN_DTYPE` | `bfloat16` | Model dtype for vLLM |
-| `XIAO_HEI_QWEN_MAX_MODEL_LEN` | `4096` | Maximum context length |
-| `XIAO_HEI_QWEN_GPU_MEM_UTIL` | `0.85` | GPU memory fraction for vLLM |
-| `XIAO_HEI_QWEN_TRUST_REMOTE` | `1` | Trust remote code (HuggingFace models) |
-
-## Sampling parameters
-
-| Variable | Default | Description |
-|---|---|---|
-| `XIAO_HEI_QWEN_TEMPERATURE` | `0.0` | Sampling temperature (0 = greedy) |
-| `XIAO_HEI_QWEN_MAX_OUTPUT_TOKENS` | `256` | Maximum tokens per response |
-| `XIAO_HEI_QWEN_SEED` | `0` | Random seed for reproducibility |
-| `XIAO_HEI_QWEN_IMAGE_LONG_EDGE` | `1280` | Downscale target for camera images |
+| `XIAO_HEI_GEMINI_API_KEY` | **(required)** | API key. `GeminiEngine.warmup()` validates it at boot, so an invalid key crash-loops the container |
+| `XIAO_HEI_GEMINI_MODEL` | `gemini-2.5-flash` | Model id |
+| `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | Sampling temperature |
+| `XIAO_HEI_GEMINI_MAX_OUTPUT_TOKENS` | `2048` | Response token cap |
+| `XIAO_HEI_GEMINI_THINKING_BUDGET` | `0` | Thinking tokens. `0` disables (keeps the JSON answer from being truncated); `-1` = dynamic |
+| `XIAO_HEI_GEMINI_IMAGE_LONG_EDGE` | `1280` | Downscale long edge before send |
 
 ## Responder loop
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_QWEN_MAX_TICKS` | `30` | Max ticks per question before timeout |
+| `XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS` | `120` | Ticks without a reachable frontier before committing to an answer (60 s at 2 Hz) |
+| `XIAO_HEI_GEMINI_MAX_TICKS` | `240` | Hard cap on ticks per question |
+
+## Perception sidecar
+
+| Variable | Default | Description |
+|---|---|---|
+| `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Sidecar URL the responder talks to |
+| `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate. Lower → more detections, more noise |
+| `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped |
+| `XIAO_HEI_OBJECT_MAP` | (off) | `1` fuses detections into converged 3D boxes (NMS + wall-sheet rejection) |
+| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Keyframes accumulated to densify the sparse single sweep before lifting |
+| `XIAO_HEI_SCAN_MIN_MOVE_M` | `0.25` | Minimum translation (m) between accumulated keyframes |
+| `XIAO_HEI_SCAN_MIN_ROT_DEG` | `15` | Minimum rotation (deg) between accumulated keyframes |
+| `XIAO_HEI_SCAN_VOXEL_M` | `0.05` | Voxel size (m) for downsampling the accumulated scan |
 
 ## Exploration
 
@@ -51,27 +56,21 @@ are required — docker-compose sets them for you, but they can be overridden.
 |---|---|---|
 | `XIAO_HEI_VLM_LOG_DIR` | `/vlm_logs` (GPU compose) | Directory for VLM tick logs. Unset = logging disabled |
 
-## Authentication
-
-| Variable | Default | Description |
-|---|---|---|
-| `HUGGING_FACE_HUB_TOKEN` | (unset) | HuggingFace token for gated model downloads |
-
 ## Docker build-time
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_EXTRA` | `qwen` (GPU) | pip optional extra to install at build time |
+| `XIAO_HEI_EXTRA` | `perception` | pip optional extra to install at build time. The submission image uses `perception,gemini,exploration` |
 
 ## Configuration in code
 
-All Qwen-related variables are loaded by `QwenConfig.from_env()`:
+All Gemini-related variables are loaded by `GeminiConfig.from_env()`, which
+raises if the API key is missing:
 
 ```python
-from xiao_hei_vln.qwen import QwenConfig
+from xiao_hei_vln.gemini import GeminiConfig
 
-config = QwenConfig.from_env()
-print(config.model)           # /models/Qwen3.5-4B
-print(config.vllm_base_url)   # http://localhost:8000/v1
-print(config.temperature)     # 0.0
+config = GeminiConfig.from_env()
+print(config.model)         # gemini-2.5-flash
+print(config.temperature)   # 0.2
 ```

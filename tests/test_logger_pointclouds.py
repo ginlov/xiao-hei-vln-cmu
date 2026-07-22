@@ -20,7 +20,7 @@ from xiao_hei_vln.messages import (
 )
 from xiao_hei_vln.messages.sensors import LidarScan, TerrainMap
 from xiao_hei_vln.logger import VLMLogger
-from xiao_hei_vln.qwen.config import QwenConfig
+from xiao_hei_vln.gemini.config import GeminiConfig
 
 
 def _stamp(t: float = 0.0) -> Stamp:
@@ -58,7 +58,10 @@ def logger(tmp_path: Path) -> VLMLogger:
     from dataclasses import asdict
 
     lg = VLMLogger(
-        tmp_path, config=asdict(QwenConfig()), responder_name="qwen", tick_hz=2.0,
+        tmp_path,
+        config=asdict(GeminiConfig(api_key="test-key")),
+        responder_name="scene_gemini",
+        tick_hz=2.0,
     )
     yield lg
     lg.close()

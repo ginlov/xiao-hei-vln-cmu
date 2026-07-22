@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from xiao_hei_vln.gemini.config import GeminiConfig
 from xiao_hei_vln.logger import VLMLogger
 from xiao_hei_vln.messages import (
     ChallengeQuestion,
@@ -23,7 +24,6 @@ from xiao_hei_vln.messages import (
     WaypointPathResponse,
 )
 from xiao_hei_vln.messages.sensors import ImageFrame
-from xiao_hei_vln.qwen.config import QwenConfig
 
 _has_pillow = importlib.util.find_spec("PIL") is not None
 _needs_pillow = pytest.mark.skipif(not _has_pillow, reason="pillow not installed")
@@ -72,8 +72,10 @@ def _snapshot(
 def logger(tmp_path: Path) -> VLMLogger:
     from dataclasses import asdict
 
-    cfg = QwenConfig()
-    lg = VLMLogger(tmp_path, config=asdict(cfg), responder_name="qwen", tick_hz=2.0)
+    cfg = GeminiConfig(api_key="test-key")
+    lg = VLMLogger(
+        tmp_path, config=asdict(cfg), responder_name="scene_gemini", tick_hz=2.0,
+    )
     yield lg
     lg.close()
 
@@ -85,10 +87,10 @@ def test_session_json_written(logger: VLMLogger) -> None:
     session_json = logger.session_dir / "session.json"
     assert session_json.exists()
     data = json.loads(session_json.read_text())
-    assert data["responder"] == "qwen"
+    assert data["responder"] == "scene_gemini"
     assert data["tick_hz"] == 2.0
     assert "config" in data
-    assert data["config"]["model"] == "/models/Qwen3.5-4B"
+    assert data["config"]["model"] == "gemini-2.5-flash"
     assert "start_time" in data
 
 
@@ -327,7 +329,7 @@ def test_scene_field_round_trips(logger: VLMLogger) -> None:
                      "confidence": 1.0,
                      "bbox_min": None, "bbox_max": None,
                      "first_tick_id": 1, "last_tick_id": 1,
-                     "observing_viewpoint_ids": [1], "spatial_relations": []}],
+                     "observing_viewpoint_ids": [1]}],
     }
     logger.log_tick(
         _snapshot(tick_id=1), "sys", "usr", NumericalResponse(value=1), 5.0, [],

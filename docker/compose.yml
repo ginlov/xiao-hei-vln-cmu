@@ -3,15 +3,16 @@
 # Single compose file for all responders. Use the `docker/run` wrapper,
 # which maps XIAO_HEI_RESPONDER to the right compose profile:
 #
-#   XIAO_HEI_RESPONDER=dummy       docker/run up -d   # dummy responder, no vllm
-#   XIAO_HEI_RESPONDER=qwen        docker/run up -d   # qwen responder + vllm sidecar
+#   XIAO_HEI_RESPONDER=dummy       docker/run up -d   # dummy responder, no sidecars
 #   XIAO_HEI_RESPONDER=perception  docker/run up -d   # perception sidecar (YOLO+SAM)
 #
 # Or call docker compose directly if you'd rather manage the profile yourself:
 #
 #   docker compose -f docker/compose.yml up -d                          # dummy (no sidecars)
-#   docker compose -f docker/compose.yml --profile qwen up -d           # qwen (starts vllm)
 #   docker compose -f docker/compose.yml --profile perception up -d     # perception sidecar
+#
+# The full submission stack (frontier exploration + perception + Gemini)
+# has its own file: docker/compose_scene_gemini.yml.
 #
 # Perception responder options (all optional):
 #   export XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room  # sim scene to load
@@ -45,14 +46,14 @@ services:
               capabilities: [gpu]
 
   # Our AI module — single image, env-driven responder choice. The image
-  # always installs `qwen,perception` (the lightweight HTTP clients for
-  # the two sidecars), so the same build serves dummy / qwen / perception.
+  # always installs `perception` (the lightweight HTTP client for the
+  # sidecar), so the same build serves dummy / perception.
   ai_module:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-qwen,perception}
+        XIAO_HEI_EXTRA: ${XIAO_HEI_EXTRA:-perception}
     image: xiao-hei/ai_module:latest
     container_name: xiao_hei_ai_module
     network_mode: host
@@ -70,9 +71,6 @@ services:
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
       # Periodic scene-graph dump for offline dataset building. Empty → off.
       - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
-      # Qwen — read only when XIAO_HEI_RESPONDER=qwen.
-      - XIAO_HEI_QWEN_VLLM_BASE_URL=${XIAO_HEI_QWEN_VLLM_BASE_URL:-http://localhost:8000/v1}
-      - XIAO_HEI_QWEN_MODEL
       # Perception — used only when XIAO_HEI_RESPONDER=perception (the
       # wrapper activates --profile perception, which starts the sidecar
       # below). Ignored otherwise.
@@ -103,41 +101,6 @@ services:
     depends_on:
       - system
     restart: unless-stopped
-
-  # vLLM OpenAI-compatible inference server (sidecar). Only starts when the
-  # `qwen` profile is active — i.e. when XIAO_HEI_RESPONDER=qwen. Other
-  # responders never instantiate this container.
-  vllm:
-    profiles: [qwen]
-    image: vllm/vllm-openai:latest
-    container_name: xiao_hei_vllm
-    network_mode: host
-    environment:
-      - HUGGING_FACE_HUB_TOKEN
-      - HF_HOME=/root/.cache/huggingface
-    volumes:
-      - hf_cache:/root/.cache/huggingface
-      - ../models:/models
-    command:
-      - "${XIAO_HEI_QWEN_MODEL:-/models/Qwen3.5-4B}"
-      - "--dtype"
-      - "${XIAO_HEI_QWEN_DTYPE:-bfloat16}"
-      - "--max-model-len"
-      - "${XIAO_HEI_QWEN_MAX_MODEL_LEN:-4096}"
-      - "--gpu-memory-utilization"
-      - "${XIAO_HEI_QWEN_GPU_MEM_UTIL:-0.85}"
-      - "--trust-remote-code"
-      - "--limit-mm-per-prompt"
-      - '{"image": 4}'
-      - "--port"
-      - "8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
   # Perception sidecar — YOLOv8m-World v2 + SAM 2.1 Hiera Tiny.
   # Only starts under `--profile perception`, i.e. when
@@ -178,6 +141,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-volumes:
-  hf_cache: {}

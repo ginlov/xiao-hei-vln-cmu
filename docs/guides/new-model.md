@@ -70,9 +70,9 @@ def _build_responder(name: str):
     if name == "dummy":
         from xiao_hei_vln.dummy import DummyResponder
         return DummyResponder(), None
-    if name == "qwen":
-        # ... existing Qwen setup ...
-        return QwenResponder(engine, config, logger=logger), logger
+    if name == "scene_gemini":
+        # ... existing submission-stack setup ...
+        return SceneGeminiResponder(engine, config, scene, ...), logger
     if name == "my_model":
         from xiao_hei_vln.my_model.responder import MyModelResponder
         return MyModelResponder(), None
@@ -112,8 +112,8 @@ export XIAO_HEI_RESPONDER=my_model
 # [project.optional-dependencies]
 # my_model = ["transformers>=4.40", ...]
 
-# Rebuild and start. If your model talks to a GPU sidecar (like the qwen
-# path), add it as a profile-gated service in docker/compose.yml.
+# Rebuild and start. If your model talks to a GPU sidecar (like the
+# perception path), add it as a profile-gated service in docker/compose.yml.
 XIAO_HEI_RESPONDER=my_model docker/run up -d --build
 ```
 
@@ -121,7 +121,7 @@ XIAO_HEI_RESPONDER=my_model docker/run up -d --build
 
 - **Multi-tick reasoning**: Don't set `_done = True` immediately. Accumulate
   observations across ticks before committing to an answer. See
-  `QwenResponder` for the evidence-accumulation pattern.
+  `SceneGeminiResponder` for the explore-then-commit pattern.
 
 - **Use the image**: `snapshot.image` is a 1920x640 panoramic BGR8 frame.
   Convert to your model's expected format (RGB PIL, tensor, etc.).

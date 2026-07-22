@@ -14,8 +14,8 @@ time from the ground-truth ``object_list``:
 
 The JSON is byte-for-byte the shape
 :meth:`xiao_hei_vln.scene.SceneRepresentation.to_dict` emits in the live
-path (Room → Viewpoints → Objects, each with a 3D bbox and spatial
-relations), so what Gemini reasons over here matches production — minus
+path (Room → Viewpoints → Objects, each with a 3D bbox), so what Gemini
+reasons over here matches production — minus
 the rendered panorama / occupancy images, which don't exist offline.
 
 Because we send a scene graph instead of images, the live
@@ -268,7 +268,7 @@ def offline_system_prompt(qtype: QuestionType) -> str:
 # --- scene-graph reconstruction --------------------------------------------
 
 
-def build_scene(object_list: list[str], *, near_threshold: float = 2.0) -> SceneRepresentation:
+def build_scene(object_list: list[str]) -> SceneRepresentation:
     """Rebuild a :class:`SceneRepresentation` from a VLA-3D ``object_list``.
 
     Each object becomes one :class:`ObjectObservation` with an
@@ -292,7 +292,6 @@ def build_scene(object_list: list[str], *, near_threshold: float = 2.0) -> Scene
                 color_name=e.color,
             )
         )
-    scene.derive_near_relations(threshold=near_threshold)
     _set_scene_bounds(scene)
     return scene
 
@@ -361,8 +360,6 @@ def build_user_message(question: str, qtype: QuestionType, scene_text: str) -> s
 def predict_entry(
     engine: GeminiEngineProtocol,
     entry: dict,
-    *,
-    near_threshold: float = 2.0,
 ) -> EntryPrediction | None:
     """Turn one GT entry into an :class:`EntryPrediction`.
 
@@ -390,7 +387,7 @@ def predict_entry(
     raw_list = detected if isinstance(detected, list) else entry.get("object_list")
     object_list = raw_list if isinstance(raw_list, list) else []
 
-    scene = build_scene(object_list, near_threshold=near_threshold)
+    scene = build_scene(object_list)
     scene_text = scene_to_text(scene)
     system = offline_system_prompt(qtype)
     user_text = build_user_message(question, qtype, scene_text)
@@ -428,7 +425,6 @@ def run(
     *,
     task1: int | None = None,
     task2: int | None = None,
-    near_threshold: float = 2.0,
     debug_dir: Path | None = None,
 ) -> int:
     """Generate predictions and write an evaluator-ready JSONL.
@@ -471,7 +467,7 @@ def run(
             if qtype in caps and attempted[qtype] >= caps[qtype]:
                 continue
             try:
-                result = predict_entry(engine, line, near_threshold=near_threshold)
+                result = predict_entry(engine, line)
             except Exception as exc:  # unexpected (e.g. scene build) — keep going
                 log.warning("entry %d: %s", lineno, exc)
                 errors += 1
@@ -581,12 +577,6 @@ def main() -> None:
         help="Max Task 2 (object_reference) examples to evaluate. Default: all in the file.",
     )
     parser.add_argument(
-        "--near-threshold",
-        type=float,
-        default=2.0,
-        help="XY distance (m) for deriving `near` spatial edges in the scene graph.",
-    )
-    parser.add_argument(
         "--rpm",
         type=int,
         default=DEFAULT_RPM,
@@ -650,7 +640,6 @@ def main() -> None:
         engine=engine,
         task1=args.task1,
         task2=args.task2,
-        near_threshold=args.near_threshold,
         debug_dir=args.debug_dir,
     )
 

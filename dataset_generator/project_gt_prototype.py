@@ -22,7 +22,7 @@ World convention (verified from the CSVs): Z is up; bbox heading is a yaw
 elevation = atan2(dz, hypot(dx,dy)) clipped to the vertical FOV.
 
 Usage:
-    uv run --extra qwen python dataset_generator/project_gt_prototype.py \
+    uv run --with pillow python dataset_generator/project_gt_prototype.py \
         --scene livingroom_1 --yaw 0 --out /tmp/gt_proj.png
 """
 from __future__ import annotations

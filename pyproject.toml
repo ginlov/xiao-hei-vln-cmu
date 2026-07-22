@@ -12,18 +12,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Lightweight HTTP client for the vLLM sidecar (default Qwen path).
-qwen = [
-    "openai>=1.30",
-    "pillow>=10",
-]
-# Heavy in-process vLLM engine. Requires CUDA GPU in the same process.
-# Use this only for single-process local development without docker-compose.
-qwen-local = [
-    "vllm>=0.7,<0.10",
-    "pillow>=10",
-    "huggingface-hub>=0.24",
-]
 # Gemini API responder — explores via the perception pipeline, then asks
 # Gemini for the final answer / route. Lazy-imported so test/CI environments
 # without the SDK installed can still import `xiao_hei_vln.gemini` for typing.
@@ -78,11 +66,15 @@ viz = [
 
 [project.scripts]
 # `xiao-hei-vlm` is the canonical entry; pick the responder via the
-# `XIAO_HEI_RESPONDER=dummy|qwen` env var. `xiao-hei-dummy-vlm` is kept
-# as an alias so the Task-2 docker image / docs keep working.
+# `XIAO_HEI_RESPONDER=dummy|perception|scene_gemini` env var.
+# `xiao-hei-dummy-vlm` is kept as an alias so the Task-2 docker image /
+# docs keep working.
 xiao-hei-vlm = "xiao_hei_vln.app.main:main"
 xiao-hei-dummy-vlm = "xiao_hei_vln.app.main:main"
-xiao-hei-eval = "xiao_hei_vln.evaluator.__main__:main"
+# Takes --gt/--pred and assembles samples itself, matching the documented
+# usage. The lower-level `python -m xiao_hei_vln.evaluator <samples.jsonl>`
+# still scores a pre-assembled samples file.
+xiao-hei-eval = "xiao_hei_vln.eval_pipeline.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

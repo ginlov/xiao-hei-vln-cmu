@@ -3,7 +3,7 @@
 HTTP service that wraps the open-vocabulary perception pipeline
 (YOLOv8x-World v2 + SAM 2.1 Hiera Tiny) used by
 `xiao_hei_vln.perception.PerceptionResponder`. Same sidecar pattern as
-the `vllm` service — keeps the heavy CUDA deps off the ai_module image
+its own service — keeps the heavy CUDA deps off the ai_module image
 and lets us swap models without rebuilding the responder.
 
 This is **Phase 2**: real models. Equirect frames come in; equirect
@@ -44,7 +44,7 @@ curl -s http://localhost:8001/healthz   # smoke
 
 The wrapper maps `XIAO_HEI_RESPONDER=perception` to
 `docker compose --profile perception`, which is what starts the
-sidecar. Other responders (`dummy`, `qwen`) leave the
+sidecar. The `dummy` responder leaves the
 sidecar dormant.
 
 ## Smoke test the round trip
