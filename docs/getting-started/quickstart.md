@@ -25,16 +25,16 @@ No ROS or GPU required — all tests use pure Python with mock engines.
 
 ## Run the full stack
 
-Pick the responder with one env var; `docker/run` handles compose profiles
-and validates prerequisites.
+Pass the responder as the first argument — `docker/run` picks the compose
+file/profile and validates prerequisites. No environment variables needed.
 
 ```bash
 # Allow X11 forwarding for the simulator GUI
 xhost +local:
 
-# Build and start all containers (the perception sidecar auto-starts
-# under XIAO_HEI_RESPONDER=perception)
-XIAO_HEI_RESPONDER=perception docker/run up -d --build
+# Build and start all containers (the `perception` argument also starts
+# the YOLO-World + SAM sidecar)
+docker/run perception up -d --build
 
 # Wait for the sidecar to load its models
 docker logs -f xiao_hei_perception
@@ -58,7 +58,7 @@ docker exec iros2026_system bash -lc \
 ## Run dummy mode (no sidecars)
 
 ```bash
-XIAO_HEI_RESPONDER=dummy docker/run up -d --build
+docker/run dummy up -d --build
 ```
 
 The dummy responder always returns a fixed answer — useful for testing
@@ -77,7 +77,7 @@ unzip -oq $SCENES/arabic_room.zip -d $SCENES/
 
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room                # for system (Unity)
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json   # optional
-XIAO_HEI_RESPONDER=perception docker/run up -d --build
+docker/run perception up -d --build
 ```
 
 First boot pulls + builds the perception image (~5 GB, mostly torch +

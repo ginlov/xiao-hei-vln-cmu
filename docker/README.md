@@ -6,18 +6,23 @@ ROS 2 simulator.
 
 ## TL;DR
 
-Pick the responder with one environment variable; `docker/run` does the rest.
+Pick the responder as the first argument; `docker/run` does the rest — no
+environment variables needed.
 
 ```bash
-# Dummy responder (no sidecars)
-XIAO_HEI_RESPONDER=dummy docker/run up -d
+# Dummy responder (no sidecars, no GPU)
+docker/run dummy up -d
+
+# Submission stack: frontier exploration + perception scene graph + Gemini.
+# Reads the Gemini key from ./.env (or an exported XIAO_HEI_GEMINI_API_KEY).
+docker/run scene_gemini up -d
 
 # Perception responder (YOLO-World + SAM 2.1 sidecar) — one scene env var
 # drives the sim (Unity scene); optional trajectory walks coverage in Phase A.
 SCENES=/path/to/CMU-VLN-Challenge-data/unity_env_models
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room              # for system (Unity)
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json  # optional
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 ```
 
 All trailing args to `docker/run` are forwarded to `docker compose`:
@@ -25,7 +30,7 @@ All trailing args to `docker/run` are forwarded to `docker compose`:
 
 > **Switching scenes**: extract `<scene>.zip` once on the host (e.g.
 > `unzip -o arabic_room.zip -d CMU-VLN-Challenge-data/unity_env_models/`)
-> then set `XIAO_HEI_SCENE_DIR_HOST`. `docker/run up -d` swaps the bind
+> then set `XIAO_HEI_SCENE_DIR_HOST`. `docker/run perception up -d` swaps the bind
 > mount; no more `docker cp` required.
 
 ## What's here
@@ -49,7 +54,7 @@ The `perception` sidecar is profile-gated (`profiles: [perception]` in `compose.
 If you'd rather call `docker compose` directly:
 
 ```bash
-# Equivalent to XIAO_HEI_RESPONDER=perception docker/run up -d
+# Equivalent to docker/run perception up -d
 XIAO_HEI_RESPONDER=perception docker compose -f docker/compose.yml --profile perception up -d
 ```
 
@@ -63,7 +68,7 @@ docker/run build ai_module
 
 ```bash
 xhost +local:
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 
 # Wait for the sidecar to load YOLO-World + SAM weights.
 docker logs -f xiao_hei_perception
@@ -103,7 +108,7 @@ uv run python -m xiao_hei_vln.trajectory $SCENES/arabic_room.zip --out trajector
 #    --profile perception is activated by the wrapper automatically.
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 
 # 4. Launch Unity in the sim container.
 docker exec -it iros2026_system \
@@ -118,7 +123,7 @@ docker exec iros2026_system bash -lc \
 ```
 
 To switch scenes later, just change `XIAO_HEI_SCENE_DIR_HOST` (and the
-trajectory) and run `docker/run up -d` again — the bind mount swaps, no
+trajectory) and run `docker/run perception up -d` again — the bind mount swaps, no
 `docker cp`.
 
 ## Architecture: why sidecars
@@ -137,7 +142,7 @@ calls the Gemini API over HTTPS, so no inference weights live in
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`. The `docker/run` wrapper maps `perception` to `--profile perception` (starts the YOLO+SAM sidecar). The submission responder `scene_gemini` has its own compose file. |
+| `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`, `scene_gemini`. **You normally don't set this** — pass the responder as the first argument to `docker/run` instead, which sets it and selects the matching compose file/profile. |
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Perception sidecar URL the responder talks to. |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | Forwarded to YOLO-World on every `/detect`. Lower → more detections, more noise. |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped (no 3D point committed). |
@@ -249,5 +254,5 @@ python -m xiao_hei_vln.eval_pipeline \
 To disable logging, unset the env var:
 
 ```bash
-XIAO_HEI_VLM_LOG_DIR="" XIAO_HEI_RESPONDER=perception docker/run up -d
+XIAO_HEI_VLM_LOG_DIR="" docker/run perception up -d
 ```

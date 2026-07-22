@@ -114,7 +114,7 @@ export XIAO_HEI_RESPONDER=my_model
 
 # Rebuild and start. If your model talks to a GPU sidecar (like the
 # perception path), add it as a profile-gated service in docker/compose.yml.
-XIAO_HEI_RESPONDER=my_model docker/run up -d --build
+docker/run my_model up -d --build
 ```
 
 ## Tips

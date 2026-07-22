@@ -138,7 +138,7 @@ xhost +local:
 
 # bring up the challenge sim + our VLM container (the perception sidecar
 # auto-starts because XIAO_HEI_RESPONDER=perception activates its profile)
-XIAO_HEI_RESPONDER=perception docker/run up -d --build
+docker/run perception up -d --build
 
 # inside iros2026_system: start the sim
 docker exec -it iros2026_system /home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh

@@ -112,14 +112,14 @@ The wrapper handles compose-profile activation; one env var picks the responder:
 
 ```bash
 # Standalone (no responder yet — sidecar serves curl directly)
-XIAO_HEI_RESPONDER=perception docker/run up -d --build perception
+docker/run perception up -d --build perception
 
 # Wait for the model load
 docker logs -f xiao_hei_perception            # look for "pipeline ready"
 curl -s http://localhost:8001/healthz         # → "model_loaded":true
 
 # Stand it up alongside the rest of the stack
-XIAO_HEI_RESPONDER=perception docker/run up -d
+docker/run perception up -d
 ```
 
 ### Smoke test from the host
@@ -165,7 +165,7 @@ SAM segmented each box.
 ```bash
 # Enable and restart the sidecar (pipeline.py is bind-mounted, no rebuild).
 PERCEPTION_DEBUG=1 XIAO_HEI_RESPONDER=perception \
-  docker/run up -d --no-deps --force-recreate perception
+  docker/run perception up -d --no-deps --force-recreate perception
 
 # Each subsequent /detect (live ticks or a manual curl) writes a detect_NNNNNN/ folder.
 ls perception/debug/
@@ -216,7 +216,7 @@ uv run --with pytest --with numpy pytest perception/tests/test_geometry.py -q
 End-to-end smoke (requires the built image + GPU):
 
 ```bash
-XIAO_HEI_RESPONDER=perception docker/run up -d perception
+docker/run perception up -d perception
 # wait for healthz, then curl /reload_classes + /detect — see "Smoke test" above
 ```
 
@@ -246,7 +246,7 @@ YOLO-World accepts a new class list per call but re-encoding the prompt embeddin
 
 Because the detector can only ever emit labels from this list, the **prior controls how well the output matches a scene's ground truth**. It is currently **pinned to the arabic_room ground-truth labels** (its `object_list.txt`, minus the `unknown` placeholder) so detection precision/recall can be measured against GT without vocabulary mismatch. To target a different scene, edit `DEFAULT_PRIOR`:
 
-- `src/` is bind-mounted read-only into the `ai_module` container and installed editable, so the change takes effect on `docker/run up -d --no-deps --force-recreate ai_module` — no image rebuild needed.
+- `src/` is bind-mounted read-only into the `ai_module` container and installed editable, so the change takes effect on `docker/run perception up -d --no-deps --force-recreate ai_module` — no image rebuild needed.
 - Caveat: question-derived nouns are still merged on top, so generic words like `room` from *"how many chairs are in the room"* enter the class list and YOLO-World may emit spurious `room` boxes. Filtering non-object nouns is a known follow-up.
 
 ```python
@@ -329,7 +329,7 @@ unzip -oq $SCENES/arabic_room.zip -d $SCENES/
 
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
 export XIAO_HEI_TRAJECTORY_JSON_HOST=$PWD/trajectories/arabic_room.json   # optional
-XIAO_HEI_RESPONDER=perception docker/run up -d --build
+docker/run perception up -d --build
 
 # Wait for the perception sidecar to be ready, then launch Unity
 docker logs -f xiao_hei_perception        # look for "pipeline ready"

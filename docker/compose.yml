@@ -1,12 +1,15 @@
 # Unified xiao-hei VLN stack.
 #
-# Single compose file for all responders. Use the `docker/run` wrapper,
-# which maps XIAO_HEI_RESPONDER to the right compose profile:
+# Covers the `dummy` and `perception` responders. Use the `docker/run`
+# wrapper, which takes the responder as its first argument and sets both the
+# compose profile and XIAO_HEI_RESPONDER for you:
 #
-#   XIAO_HEI_RESPONDER=dummy       docker/run up -d   # dummy responder, no sidecars
-#   XIAO_HEI_RESPONDER=perception  docker/run up -d   # perception sidecar (YOLO+SAM)
+#   docker/run dummy      up -d   # dummy responder, no sidecars
+#   docker/run perception up -d   # perception sidecar (YOLO+SAM)
 #
-# Or call docker compose directly if you'd rather manage the profile yourself:
+# Or call docker compose directly if you'd rather manage it yourself — but
+# note the profile alone is not enough: without XIAO_HEI_RESPONDER=perception
+# the sidecar starts while the node quietly stays on `dummy`.
 #
 #   docker compose -f docker/compose.yml up -d                          # dummy (no sidecars)
 #   docker compose -f docker/compose.yml --profile perception up -d     # perception sidecar
@@ -17,6 +20,11 @@
 # Perception responder options (all optional):
 #   export XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room  # sim scene to load
 #   export XIAO_HEI_TRAJECTORY_JSON_HOST=/abs/path/trajectory.json         # Phase-A coverage walk
+
+# Pin the project name: Compose otherwise derives it from the parent dir
+# ("docker"), which collides with every other checkout of this repo and with
+# the challenge template — causing stacks to merge and clobber each other.
+name: xiao-hei
 
 services:
   # Challenge simulator (unmodified official image).
@@ -82,11 +90,9 @@ services:
       # Dev-only perception scoreboard: point at a scene's object_list.txt on
       # the host to score the live map vs GT in rviz. Empty → scoreboard off.
       - XIAO_HEI_GT_OBJECT_LIST=${XIAO_HEI_GT_OBJECT_LIST_HOST:+/data/gt_object_list.txt}
-      # Gemini — read only when XIAO_HEI_RESPONDER=gemini. Build with
-      # XIAO_HEI_EXTRA=gemini to install the SDK into the image.
-      - XIAO_HEI_GEMINI_API_KEY
-      - XIAO_HEI_GEMINI_MODEL
-      - XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS
+      # NOTE: no Gemini vars here. This file only runs `dummy` / `perception`,
+      # neither of which calls Gemini; the submission stack that does lives in
+      # docker/compose_scene_gemini.yml.
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
@@ -102,10 +108,9 @@ services:
       - system
     restart: unless-stopped
 
-  # Perception sidecar — YOLOv8m-World v2 + SAM 2.1 Hiera Tiny.
-  # Only starts under `--profile perception`, i.e. when
-  # XIAO_HEI_RESPONDER=perception. Phase 1 is a FastAPI stub returning
-  # empty detection lists; Phase 2 swaps in the real models.
+  # Perception sidecar — YOLOv8x-World v2 + SAM 2.1 Hiera Tiny, served over
+  # HTTP on :8001. Only starts under `--profile perception`, which
+  # `docker/run perception` activates for you.
   perception:
     profiles: [perception]
     build:

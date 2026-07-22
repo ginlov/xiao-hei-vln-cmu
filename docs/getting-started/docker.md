@@ -14,16 +14,17 @@
 |---|---|
 | `docker/compose.yml` | Single unified stack. Profile-gated `perception` (only starts under `--profile perception`). |
 | `docker/compose_scene_gemini.yml` | The submission stack: sim + perception sidecar + `scene_gemini` node, Gemini env wired. |
-| `docker/run` | Wrapper that maps `XIAO_HEI_RESPONDER` → the right compose profile. |
+| `docker/run` | **The entry point.** Takes the responder as its first argument and selects the matching compose file, profile and prerequisites. |
 
 ## Driving the stack
 
-One env var picks the responder; the wrapper handles profile selection
-and prerequisite validation:
+The first argument picks the responder; the wrapper handles compose file /
+profile selection and prerequisite validation. No environment variables:
 
 ```bash
-XIAO_HEI_RESPONDER=dummy      docker/run up -d    # system + ai_module
-XIAO_HEI_RESPONDER=perception docker/run up -d    # + perception sidecar (YOLO-World + SAM 2.1)
+docker/run dummy        up -d   # system + ai_module
+docker/run perception   up -d   # + perception sidecar (YOLO-World + SAM 2.1)
+docker/run scene_gemini up -d   # submission stack: + Gemini (key from ./.env)
 ```
 
 All other args pass through verbatim: `docker/run logs -f ai_module`,
@@ -41,7 +42,7 @@ without `docker cp`.
 SCENES=/path/to/CMU-VLN-Challenge-data/unity_env_models
 unzip -oq $SCENES/arabic_room.zip -d $SCENES/                # one-time
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room
-XIAO_HEI_RESPONDER=perception docker/run up -d              # sim loads arabic_room
+docker/run perception up -d              # sim loads arabic_room
 ```
 
 ## Building

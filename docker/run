@@ -1,53 +1,137 @@
 #!/usr/bin/env bash
-# docker/run — ergonomic wrapper around `docker compose` for xiao-hei.
+# docker/run — the single entry point for every xiao-hei stack.
 #
-# Pick the responder with one env var (XIAO_HEI_RESPONDER); the wrapper
-# maps it to the right compose profile and validates prerequisites.
+# The responder is a POSITIONAL argument, so no environment variables are
+# needed to pick one; the wrapper selects the right compose file(s), profile
+# and prerequisites for you.
 #
 # Usage:
-#   XIAO_HEI_RESPONDER=dummy   docker/run up -d
+#   docker/run <responder> [docker compose args...]
 #
-#   XIAO_HEI_RESPONDER=perception \
-#     XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room \
-#     XIAO_HEI_TRAJECTORY_JSON_HOST=/abs/path/trajectory.json \
-#     docker/run up -d
+#   docker/run dummy        up -d     # sim + ai_module          (no sidecar, no GPU)
+#   docker/run perception   up -d     # + YOLO-World/SAM sidecar (GPU)
+#   docker/run scene_gemini up -d     # + sidecar + Gemini       (submission stack)
 #
-#   docker/run down
-#   docker/run logs -f ai_module
-#   docker/run build ai_module
+#   docker/run scene_gemini logs -f ai_module
+#   docker/run dummy build ai_module
+#   docker/run down                   # tear down whatever is up
+#   docker/run ps
 #
-# All trailing args are forwarded verbatim to `docker compose`.
+# Anything after the responder is forwarded verbatim to `docker compose`.
+#
+# Optional:
+#   XIAO_HEI_SCENE_DIR_HOST=/abs/path/unity_env_models/arabic_room
+#       Layers docker/compose.scene.yml so Unity loads that scene.
+#
+# The Gemini key for `scene_gemini` is read from the repo-root .env; export
+# XIAO_HEI_GEMINI_API_KEY instead if you prefer.
 
 set -euo pipefail
 
-# Always run from repo root so the relative bind mounts (../src, ../vlm_logs)
-# in docker/compose.yml resolve correctly.
+# Always run from repo root so relative bind mounts (../src, ../vlm_logs) and
+# `--env-file .env` resolve correctly.
 cd "$(dirname "$(readlink -f "$0")")/.."
 
-RESPONDER=${XIAO_HEI_RESPONDER:-dummy}
-PROFILE_ARGS=()
-
-case "$RESPONDER" in
-  dummy)
-    # No extra profile — the perception sidecar stays down.
+RESPONDER=""
+case "${1:-}" in
+  dummy|perception|scene_gemini)
+    RESPONDER="$1"; shift
     ;;
-  perception)
-    PROFILE_ARGS=(--profile perception)
+  -h|--help|help)
+    sed -n '2,27p' "$(readlink -f "$0")" | sed 's/^# \?//'
+    exit 0
+    ;;
+  "")
+    echo "error: expected a responder or a compose command." >&2
+    echo "       try: docker/run --help" >&2
+    exit 2
     ;;
   *)
-    echo "error: XIAO_HEI_RESPONDER='$RESPONDER' not recognised (use: dummy, perception)" >&2
-    exit 2
+    # Not a responder — a bare compose command like `down` / `ps` / `logs`.
+    # The project name is pinned in the compose files, so these still resolve.
     ;;
 esac
 
-# When XIAO_HEI_SCENE_DIR_HOST is set, layer docker/compose.scene.yml on
-# top — this bind-mounts the host's extracted scene `environment/` over
-# the sim's prebaked Unity environment, so `system` (Unity) loads that scene.
 COMPOSE_FILES=(-f docker/compose.yml)
+PROFILE_ARGS=()
+ENV_FILE_ARGS=()
+_need_gpu=0
+
+case "$RESPONDER" in
+  dummy)
+    export XIAO_HEI_RESPONDER=dummy
+    ;;
+
+  perception)
+    # The profile starts the sidecar, but XIAO_HEI_RESPONDER must be set too —
+    # otherwise the sidecar comes up while the node quietly stays on `dummy`.
+    export XIAO_HEI_RESPONDER=perception
+    PROFILE_ARGS=(--profile perception)
+    _need_gpu=1
+    ;;
+
+  scene_gemini)
+    # The full submission stack has its own compose file (sim + sidecar +
+    # ai_module) and defaults XIAO_HEI_RESPONDER=scene_gemini itself.
+    COMPOSE_FILES=(-f docker/compose_scene_gemini.yml)
+    _need_gpu=1
+    [ -f .env ] && ENV_FILE_ARGS=(--env-file .env)
+    # Fail early and clearly: GeminiEngine.warmup() makes a live API call at
+    # boot, so a missing key otherwise shows up as an ai_module crash-loop.
+    if [ -z "${XIAO_HEI_GEMINI_API_KEY:-}" ] && ! grep -qs '^XIAO_HEI_GEMINI_API_KEY=.' .env; then
+      echo "error: scene_gemini needs a Gemini API key." >&2
+      echo "       put XIAO_HEI_GEMINI_API_KEY=<key> in ./.env, or export it." >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# Optional scene overlay — bind-mounts a host scene over the sim's prebaked
+# Unity environment. Applies to any stack that runs `system`.
 if [ -n "${XIAO_HEI_SCENE_DIR_HOST:-}" ]; then
   COMPOSE_FILES+=(-f docker/compose.scene.yml)
 fi
 
-export XIAO_HEI_RESPONDER
+if [ "$_need_gpu" = 1 ] && ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "warning: '$RESPONDER' needs an NVIDIA GPU (the sidecar runs YOLO-World" >&2
+  echo "         + SAM), but nvidia-smi was not found. Continuing anyway." >&2
+fi
 
-exec docker compose "${COMPOSE_FILES[@]}" "${PROFILE_ARGS[@]}" "$@"
+# Pre-flight: `container_name:` is GLOBAL, not scoped to a compose project.
+# A container left behind by another project — another checkout of this repo,
+# the challenge template, or this repo from before the project name was pinned
+# — squats on the name, and `up` fails with a confusing daemon error. Detect
+# it and say exactly what to do. We never auto-remove: it could be a
+# teammate's running stack.
+if [ "${1:-}" = "up" ]; then
+  _conflicts=()
+  for _n in iros2026_system xiao_hei_ai_module xiao_hei_perception; do
+    _id="$(docker ps -aq -f "name=^${_n}$" 2>/dev/null || true)"
+    if [ -n "$_id" ]; then
+      _proj="$(docker inspect "$_id" --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)"
+      if [ "$_proj" != "xiao-hei" ]; then
+        _state="$(docker inspect "$_id" --format '{{.State.Status}}' 2>/dev/null || true)"
+        _conflicts+=("$_n  (project=${_proj:-<none>}, $_state)")
+      fi
+    fi
+  done
+  if [ "${#_conflicts[@]}" -gt 0 ]; then
+    echo "error: these container names are held by a different compose project:" >&2
+    printf '         %s\n' "${_conflicts[@]}" >&2
+    echo "       container_name is global, so 'up' cannot reuse them." >&2
+    echo "       If none of these is a teammate's running stack, remove them:" >&2
+    echo "         docker rm -f iros2026_system xiao_hei_ai_module xiao_hei_perception" >&2
+    exit 2
+  fi
+fi
+
+# Switching stacks reuses the pinned `xiao-hei` project, so drop containers
+# left over from the previous stack instead of orphaning them.
+EXTRA_ARGS=()
+[ "${1:-}" = "up" ] && EXTRA_ARGS=(--remove-orphans)
+
+exec docker compose \
+  "${ENV_FILE_ARGS[@]}" \
+  "${COMPOSE_FILES[@]}" \
+  "${PROFILE_ARGS[@]}" \
+  "$@" "${EXTRA_ARGS[@]}"

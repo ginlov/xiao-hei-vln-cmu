@@ -123,7 +123,7 @@ spatial view on the left, scene-graph topology on the right, node tables below).
 Unset the environment variable:
 
 ```bash
-XIAO_HEI_VLM_LOG_DIR="" XIAO_HEI_RESPONDER=perception docker/run up -d
+XIAO_HEI_VLM_LOG_DIR="" docker/run perception up -d
 ```
 
 ## Performance impact
