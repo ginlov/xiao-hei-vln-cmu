@@ -1,41 +1,30 @@
 """Offline batch evaluation harness for the Gemini responder.
 
 Produces a ``predictions.jsonl`` for Task 1 (numerical) and Task 2
-(object_reference) *without* the ROS simulator, so we can score Gemini
-with the offline evaluator (``xiao_hei_vln.eval_pipeline``).
+(object_reference) for scoring with ``xiao_hei_vln.eval_pipeline``.
 
-The live :class:`~xiao_hei_vln.scene_gemini.SceneGeminiResponder` consumes
-raw sensor snapshots (camera / lidar / pose) and renders occupancy maps.
-There is no offline dataset of such snapshots, so this harness instead
-reconstructs the **same scene-graph representation** Gemini sees at test
-time from the ground-truth ``object_list``:
+Object source:
 
-    object_list (VLA-3D text) → SceneRepresentation → to_dict() JSON → Gemini
+  - ``--object-source gt`` (default) — rebuild the scene from the VLA-3D
+    ``object_list`` (perfect-perception upper bound; no simulator).
+  - ``--object-source live`` — load ``<live-scenes-dir>/<scene>/scene.json``
+    captured from a live explore run (end-to-end perception + Gemini).
 
-The JSON is byte-for-byte the shape
-:meth:`xiao_hei_vln.scene.SceneRepresentation.to_dict` emits in the live
-path (Room → Viewpoints → Objects, each with a 3D bbox), so what Gemini
-reasons over here matches production — minus
-the rendered panorama / occupancy images, which don't exist offline.
-
-Because we send a scene graph instead of images, the live
-image-centric system prompts in :mod:`xiao_hei_vln.gemini.prompts` don't
-apply; this module carries scene-graph-driven prompts of its own.
-
-Scoring note: object_reference is scored by 3D bbox IoU, so this
-measures Gemini's ability to *pick the referred object and return its
-bbox* from the graph; numerical measures spatial-relation filtering +
-counting. Both isolate Gemini's reasoning over the scene representation,
-with perception assumed perfect.
+Both paths feed Gemini the same compact scene-graph text format.
 
 Usage::
 
     export XIAO_HEI_GEMINI_API_KEY=<key>
+    # GT upper bound
     uv run python -m xiao_hei_vln.gemini.batch \\
-        --gt   /path/to/vla3d_ref.jsonl \\
-        --out  pred_ref.jsonl \\
-        --limit 50
-    uv run python -m xiao_hei_vln.eval_pipeline --gt <GT> --pred pred_ref.jsonl
+        --gt /path/to/vla3d_ref.jsonl --object-source gt \\
+        --out pred_ref.jsonl --limit 50
+    # Live dump (after explore + export)
+    uv run python -m xiao_hei_vln.gemini.batch \\
+        --gt studio_ref.jsonl --object-source live \\
+        --live-scenes-dir artifacts/.../explored_scenes \\
+        --out pred_live.jsonl --limit 10
+    uv run python -m xiao_hei_vln.eval_pipeline --gt <GT> --pred <PRED>
 """
 
 from __future__ import annotations
@@ -48,6 +37,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from xiao_hei_vln.eval_sampler.object_list import parse_object_list
 from xiao_hei_vln.gemini.engine import GeminiEngineProtocol
@@ -296,6 +286,56 @@ def build_scene(object_list: list[str]) -> SceneRepresentation:
     return scene
 
 
+def scene_from_to_dict(data: dict[str, Any]) -> SceneRepresentation:
+    """Rebuild a scene from a ``SceneRepresentation.to_dict()`` dump."""
+    scene = SceneRepresentation(merge_radius=0.0)
+    for obj in data.get("objects") or []:
+        pos = obj.get("position") or [0.0, 0.0, 0.0]
+        bmin = obj.get("bbox_min")
+        bmax = obj.get("bbox_max")
+        color_rgb = obj.get("color_rgb")
+        scene.add_object(
+            ObjectObservation(
+                label=str(obj.get("label") or "unknown"),
+                position=Vector3(x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+                confidence=float(obj.get("confidence", 1.0)),
+                bbox_min=(
+                    Vector3(x=float(bmin[0]), y=float(bmin[1]), z=float(bmin[2]))
+                    if bmin is not None
+                    else None
+                ),
+                bbox_max=(
+                    Vector3(x=float(bmax[0]), y=float(bmax[1]), z=float(bmax[2]))
+                    if bmax is not None
+                    else None
+                ),
+                color_name=obj.get("color_name"),
+                color_rgb=tuple(color_rgb) if color_rgb is not None else None,
+            )
+        )
+    bounds = (data.get("room") or {}).get("scene_bounds")
+    if isinstance(bounds, list) and len(bounds) == 2:
+        mn, mx = bounds
+        scene.room.scene_bounds = (
+            Vector3(x=float(mn[0]), y=float(mn[1]), z=float(mn[2])),
+            Vector3(x=float(mx[0]), y=float(mx[1]), z=float(mx[2])),
+        )
+    else:
+        _set_scene_bounds(scene)
+    return scene
+
+
+def load_live_scene(scene_dir: Path) -> SceneRepresentation:
+    """Load ``scene.json`` from an explore-export directory."""
+    scene_path = scene_dir / "scene.json"
+    if not scene_path.is_file():
+        raise FileNotFoundError(f"missing live scene dump: {scene_path}")
+    data = json.loads(scene_path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"scene.json must be an object: {scene_path}")
+    return scene_from_to_dict(data)
+
+
 def _compact_objects(scene: SceneRepresentation) -> list[dict]:
     """Token-lean per-object view: id, label, center, size, colour.
 
@@ -360,6 +400,10 @@ def build_user_message(question: str, qtype: QuestionType, scene_text: str) -> s
 def predict_entry(
     engine: GeminiEngineProtocol,
     entry: dict,
+    *,
+    object_source: str = "gt",
+    live_scenes_dir: Path | None = None,
+    live_cache: dict[str, SceneRepresentation] | None = None,
 ) -> EntryPrediction | None:
     """Turn one GT entry into an :class:`EntryPrediction`.
 
@@ -378,22 +422,38 @@ def predict_entry(
         return None
 
     qtype = QuestionType(qtype_str)
-    # Prefer our real detections when the record carries them
-    # (detected_object_list, injected by xiao_hei_vln.detected_dataset) so
-    # the eval measures perception + LLM; fall back to the GT object_list.
-    # The ground-truth converter still reads object_list, so scoring stays
-    # against the authoritative GT.
-    detected = entry.get("detected_object_list")
-    raw_list = detected if isinstance(detected, list) else entry.get("object_list")
-    object_list = raw_list if isinstance(raw_list, list) else []
+    source = object_source.strip().lower()
+    if source not in {"gt", "live"}:
+        raise ValueError(f"object_source must be 'gt' or 'live', got {object_source!r}")
 
-    scene = build_scene(object_list)
+    if source == "live":
+        scene_name = (entry.get("scene") or "").strip()
+        if not scene_name:
+            raise ValueError("live object_source requires entry['scene']")
+        if live_scenes_dir is None:
+            raise ValueError("live object_source requires live_scenes_dir")
+        cache = live_cache if live_cache is not None else {}
+        if scene_name not in cache:
+            cache[scene_name] = load_live_scene(live_scenes_dir / scene_name)
+        scene = cache[scene_name]
+    else:
+        # Prefer our real detections when the record carries them
+        # (detected_object_list, injected by xiao_hei_vln.detected_dataset) so
+        # the eval measures perception + LLM; fall back to the GT object_list.
+        # The ground-truth converter still reads object_list, so scoring stays
+        # against the authoritative GT.
+        detected = entry.get("detected_object_list")
+        raw_list = detected if isinstance(detected, list) else entry.get("object_list")
+        object_list = raw_list if isinstance(raw_list, list) else []
+        scene = build_scene(object_list)
+
     scene_text = scene_to_text(scene)
     system = offline_system_prompt(qtype)
     user_text = build_user_message(question, qtype, scene_text)
     debug: dict = {
         "question": question,
         "type": qtype.value,
+        "object_source": source,
         "scene_graph": scene.to_dict(),
         "system_prompt": system,
         "user_text": user_text,
@@ -425,6 +485,9 @@ def run(
     *,
     task1: int | None = None,
     task2: int | None = None,
+    limit: int | None = None,
+    object_source: str = "gt",
+    live_scenes_dir: Path | None = None,
     debug_dir: Path | None = None,
 ) -> int:
     """Generate predictions and write an evaluator-ready JSONL.
@@ -435,8 +498,12 @@ def run(
     lines don't consume the budget). Specifying **either** flag restricts
     the run to those task type(s): e.g. ``task2=50`` evaluates 50
     object-reference examples and no numerical ones. With **neither** set,
-    every scoreable entry is processed. When ``debug_dir`` is set, dumps
-    one JSON per attempted prediction (including failures).
+    every scoreable entry is processed.
+
+    ``limit`` is a convenience cap on total successful-attempt budget across
+    the types being collected (useful when GT is already filtered to one
+    scene/split). When ``debug_dir`` is set, dumps one JSON per attempted
+    prediction (including failures).
 
     Returns the number of predictions written.
     """
@@ -452,12 +519,15 @@ def run(
     # all, both scoreable types are collected.
     requested = set(caps) if caps else set(SCOREABLE_TYPES)
     attempted: dict[str, int] = {"numerical": 0, "object_reference": 0}
+    live_cache: dict[str, SceneRepresentation] = {}
 
     written = skipped = errors = 0
     with out_path.open("w") as out_f:
         for lineno, line in enumerate(_iter_jsonl(gt_path), 1):
             # Early stop once every requested per-task cap is filled.
             if caps and all(attempted[t] >= c for t, c in caps.items()):
+                break
+            if limit is not None and written >= limit:
                 break
             qtype = line.get("type", "")
             # Not a requested type, or its budget is spent — skip, no Gemini.
@@ -467,7 +537,13 @@ def run(
             if qtype in caps and attempted[qtype] >= caps[qtype]:
                 continue
             try:
-                result = predict_entry(engine, line)
+                result = predict_entry(
+                    engine,
+                    line,
+                    object_source=object_source,
+                    live_scenes_dir=live_scenes_dir,
+                    live_cache=live_cache,
+                )
             except Exception as exc:  # unexpected (e.g. scene build) — keep going
                 log.warning("entry %d: %s", lineno, exc)
                 errors += 1
@@ -494,7 +570,8 @@ def run(
         f"Wrote {written} predictions to {out_path}  "
         f"(task1/numerical={attempted['numerical']}, "
         f"task2/object_reference={attempted['object_reference']}; "
-        f"skipped {skipped} non-scoreable, {errors} errors)",
+        f"skipped {skipped} non-scoreable, {errors} errors; "
+        f"object_source={object_source})",
         file=sys.stderr,
     )
     return written
@@ -558,12 +635,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Offline Gemini predictions for Task 1 (numerical) + Task 2 "
-            "(object_reference) from a VLA-3D GT JSONL. Feeds Gemini the "
-            "reconstructed scene graph; writes an evaluator-ready predictions JSONL."
+            "(object_reference) from a VLA-3D GT JSONL. Feeds Gemini a "
+            "compact scene graph from GT object_list or a live explore dump; "
+            "writes an evaluator-ready predictions JSONL."
         )
     )
     parser.add_argument("--gt", type=Path, required=True, help="VLA-3D GT JSONL file.")
     parser.add_argument("--out", type=Path, required=True, help="Output predictions JSONL path.")
+    parser.add_argument(
+        "--object-source",
+        choices=("gt", "live"),
+        default="gt",
+        help="Scene objects from GT object_list (gt) or live scene.json dumps (live).",
+    )
+    parser.add_argument(
+        "--live-scenes-dir",
+        type=Path,
+        default=None,
+        help="Directory of <scene>/scene.json dumps (required for --object-source live).",
+    )
     parser.add_argument(
         "--task1",
         type=int,
@@ -575,6 +665,12 @@ def main() -> None:
         type=int,
         default=None,
         help="Max Task 2 (object_reference) examples to evaluate. Default: all in the file.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max total predictions to write (across requested types).",
     )
     parser.add_argument(
         "--rpm",
@@ -612,6 +708,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.object_source == "live" and args.live_scenes_dir is None:
+        parser.error("--object-source live requires --live-scenes-dir")
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     # Build the real engine lazily so --help works without the gemini extra
@@ -630,8 +729,8 @@ def main() -> None:
         GeminiEngine(config, tracer=tracer), rpm=args.rpm, max_retries=args.max_retries,
     )
     log.info(
-        "Using Gemini model %s (throttle=%d rpm, max_retries=%d)",
-        config.model, args.rpm, args.max_retries,
+        "Using Gemini model %s (object_source=%s, throttle=%d rpm, max_retries=%d)",
+        config.model, args.object_source, args.rpm, args.max_retries,
     )
 
     run(
@@ -640,6 +739,9 @@ def main() -> None:
         engine=engine,
         task1=args.task1,
         task2=args.task2,
+        limit=args.limit,
+        object_source=args.object_source,
+        live_scenes_dir=args.live_scenes_dir,
         debug_dir=args.debug_dir,
     )
 

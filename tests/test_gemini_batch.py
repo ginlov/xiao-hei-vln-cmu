@@ -420,3 +420,60 @@ def test_run_debug_dir_captures_failures(tmp_path: Path) -> None:
     assert payload["prediction"] is None
     assert payload["error"] is not None
     assert payload["user_text"]  # the exact prompt that failed is preserved
+
+
+def test_scene_from_to_dict_roundtrip() -> None:
+    scene = batch.build_scene(OBJECT_LIST)
+    rebuilt = batch.scene_from_to_dict(scene.to_dict())
+    assert {o.label for o in rebuilt.objects} == {"chair", "table"}
+    assert len(rebuilt.objects) == 2
+
+
+def test_predict_entry_live_object_source(tmp_path: Path) -> None:
+    scene = batch.build_scene(OBJECT_LIST)
+    scene_dir = tmp_path / "studio"
+    scene_dir.mkdir()
+    (scene_dir / "scene.json").write_text(json.dumps(scene.to_dict()))
+
+    engine = FakeEngine(NumericalResponse(value=2))
+    result = batch.predict_entry(
+        engine,
+        {"type": "numerical", "question": "How many chairs?", "scene": "studio"},
+        object_source="live",
+        live_scenes_dir=tmp_path,
+    )
+    assert result is not None
+    assert result.output is not None
+    assert result.debug["object_source"] == "live"
+    assert "chair" in result.debug["user_text"]
+
+
+def test_run_limit_and_live(tmp_path: Path) -> None:
+    scene = batch.build_scene(OBJECT_LIST)
+    scene_dir = tmp_path / "studio"
+    scene_dir.mkdir()
+    (scene_dir / "scene.json").write_text(json.dumps(scene.to_dict()))
+
+    gt = tmp_path / "gt.jsonl"
+    out = tmp_path / "pred.jsonl"
+    rows = [
+        {
+            "type": "numerical",
+            "question": f"How many chairs? #{i}",
+            "scene": "studio",
+            "object_list": OBJECT_LIST,
+        }
+        for i in range(5)
+    ]
+    _write_jsonl(gt, rows)
+
+    written = batch.run(
+        gt,
+        out,
+        FakeEngine(NumericalResponse(value=1)),
+        object_source="live",
+        live_scenes_dir=tmp_path,
+        limit=2,
+    )
+    assert written == 2
+    assert len(out.read_text().strip().splitlines()) == 2

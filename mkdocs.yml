@@ -78,6 +78,7 @@ nav:
       - New Model Integration: guides/new-model.md
       - New Exploration Strategy: guides/new-exploration-strategy.md
       - Evaluation: guides/evaluation.md
+      - E2E Offline Eval (GT + live): guides/e2e-offline-eval.md
       - Online Perception + Scoring: guides/online-perception-eval.md
       - Data Generation: guides/data-generation.md
       - Dataset EDA: eda_report.md
