@@ -60,7 +60,7 @@ cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
 set -a && source .env && set +a
 export DISPLAY=:0
 export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
-export STRATEGY=frontier MAX_SECONDS=540 SPLITS=ref,num LIMIT_Q=5
+export STRATEGY=frontier MAX_SECONDS=180 TIMEOUT=780 SPLITS=ref,num LIMIT_Q=5
 scripts/run_e2e_offline_eval.sh --limit 5 --splits ref,num studio
 ```
 
