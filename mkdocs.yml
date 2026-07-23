@@ -79,6 +79,7 @@ nav:
       - New Exploration Strategy: guides/new-exploration-strategy.md
       - Evaluation: guides/evaluation.md
       - E2E Offline Eval (GT + live): guides/e2e-offline-eval.md
+      - Object-Ref 5-Scene Bench: OBJECT_REF_BENCH_5SCENE.md
       - Online Perception + Scoring: guides/online-perception-eval.md
       - Data Generation: guides/data-generation.md
       - Dataset EDA: eda_report.md
