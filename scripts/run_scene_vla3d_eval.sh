@@ -299,6 +299,8 @@ explore_scene() {
   export XIAO_HEI_RESPONDER=scene_gemini
   export XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-1}
   export XIAO_HEI_VIEWPOINT_RADIUS=${XIAO_HEI_VIEWPOINT_RADIUS:-0.8}
+  export XIAO_HEI_WP_REACHED_M=${XIAO_HEI_WP_REACHED_M:-1.35}
+  export XIAO_HEI_REF_SPATIAL=${XIAO_HEI_REF_SPATIAL:-1}
   # Periodic scene dump so we can export even if question publish / ticks fail.
   export XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-/exploration_logs/${scene}/scene_live.json}
 
@@ -414,6 +416,7 @@ run_offline_for_scene() {
     fi
 
     echo "  gemini.batch ($split, object-source=$object_source)..."
+    export XIAO_HEI_REF_SPATIAL=${XIAO_HEI_REF_SPATIAL:-1}
     uv run python -m xiao_hei_vln.gemini.batch \
       --gt "$gt" \
       --out "$pred" \

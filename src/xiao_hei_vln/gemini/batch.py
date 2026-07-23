@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -41,6 +42,7 @@ from typing import Any
 
 from xiao_hei_vln.eval_sampler.object_list import parse_object_list
 from xiao_hei_vln.gemini.engine import GeminiEngineProtocol
+from xiao_hei_vln.gemini.packaging import compact_objects
 from xiao_hei_vln.messages import QuestionType, VLMOutput
 from xiao_hei_vln.messages.common import Vector3
 from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
@@ -337,35 +339,8 @@ def load_live_scene(scene_dir: Path) -> SceneRepresentation:
 
 
 def _compact_objects(scene: SceneRepresentation) -> list[dict]:
-    """Token-lean per-object view: id, label, center, size, colour.
-
-    The full ``SceneRepresentation.to_dict`` is ~20x larger — it repeats
-    each bbox as min+max, plus confidence, viewpoint ids, tick ids, and
-    pre-derived ``near`` edges. For a 70-object scene that is ~37k input
-    tokens per call, which overruns the free-tier per-minute input-token
-    quota. We drop everything Gemini can infer from the coordinates.
-    """
-    items: list[dict] = []
-    for o in scene.objects:
-        item: dict = {
-            "id": o.object_id,
-            "label": o.label,
-            "center": [round(o.position.x, 2), round(o.position.y, 2), round(o.position.z, 2)],
-        }
-        if o.bbox_min is not None and o.bbox_max is not None:
-            item["size"] = [
-                round(o.bbox_max.x - o.bbox_min.x, 2),
-                round(o.bbox_max.y - o.bbox_min.y, 2),
-                round(o.bbox_max.z - o.bbox_min.z, 2),
-            ]
-        # `color_name` only exists on the color-enabled scene rep (live
-        # perception path); the offline GT never carries colour. getattr
-        # keeps this working on both scene-representation variants.
-        color = getattr(o, "color_name", None)
-        if color:
-            item["color"] = color
-        items.append(item)
-    return items
+    """Back-compat alias — prefer :func:`packaging.compact_objects` (size clamps)."""
+    return compact_objects(scene)
 
 
 def scene_to_text(scene: SceneRepresentation) -> str:
@@ -375,7 +350,7 @@ def scene_to_text(scene: SceneRepresentation) -> str:
     only ``id``, ``label``, ``center`` [x,y,z], ``size`` [x,y,z], and an
     optional ``color``.
     """
-    objects = _compact_objects(scene)
+    objects = compact_objects(scene)
     return (
         "Scene objects (JSON array; each has id, label, center [x,y,z], "
         "size [x,y,z] in metres, optional color):\n"
@@ -459,7 +434,21 @@ def predict_entry(
         "user_text": user_text,
         "prediction": None,
         "error": None,
+        "resolver": None,
     }
+
+    if qtype is QuestionType.OBJECT_REFERENCE:
+        # Set XIAO_HEI_REF_SPATIAL=0 to force Gemini (A/B).
+        if os.environ.get("XIAO_HEI_REF_SPATIAL", "1").strip() not in {"0", "false", "False"}:
+            from xiao_hei_vln.gemini.ref_spatial import try_resolve_object_reference
+
+            spatial = try_resolve_object_reference(question, scene)
+            if spatial is not None:
+                debug["resolver"] = "spatial"
+                debug["prediction"] = spatial.model_dump()
+                debug["system_prompt"] = "(spatial resolver — Gemini skipped)"
+                debug["user_text"] = question
+                return EntryPrediction(question=question, output=spatial, debug=debug)
 
     try:
         output = engine.infer_multimodal(system=system, user_text=user_text, images=[])

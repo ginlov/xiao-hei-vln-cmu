@@ -480,7 +480,9 @@ def main() -> None:
     # Track nav stack's distance to current waypoint; best = closest approach this target.
     _wp_reached_state = {"value": float("inf"), "close_ticks": 0, "best": float("inf"),
                          "settled_ticks": 0, "prev_best": float("inf")}
-    _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
+    # Nav often settles at 1.0–1.35 m near furniture/walls; require that
+    # distance so wall-adjacent goals still ADVANCE instead of skip-spiraling.
+    _WP_REACHED_THRESHOLD = float(os.environ.get("XIAO_HEI_WP_REACHED_M", "1.35"))
 
     def _on_wp_reached(msg) -> None:
         v = float(msg.data)

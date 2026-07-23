@@ -103,7 +103,7 @@ def test_compact_objects_prunes_fields() -> None:
     objs = batch._compact_objects(batch.build_scene(OBJECT_LIST))
     assert len(objs) == 2
     keys = set(objs[0])
-    assert keys <= {"id", "label", "center", "size", "color"}
+    assert keys <= {"id", "label", "center", "size", "color", "conf"}
     assert "center" in keys and "size" in keys
     assert len(objs[0]["center"]) == 3 and len(objs[0]["size"]) == 3
 
