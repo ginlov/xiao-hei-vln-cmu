@@ -9,7 +9,7 @@ Branch: `aryan/object-ref-improvements`
 
 ## Default stack (fair NBV)
 
-After this PR merges, `scripts/run_scene_vla3d_eval.sh` + `docker/compose.aryan.yml`
+After this PR merges, `scripts/run_scene_vla3d_eval.sh` + `docker/compose.eval.yml`
 default to the **fair NBV** configuration that scored **ref mean IoU 0.033**
 on the frozen 50-ref set:
 

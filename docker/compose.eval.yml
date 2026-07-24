@@ -1,0 +1,62 @@
+# Isolated eval overlay for live offline harness runs.
+#
+# Purpose: run explore+score next to a default `compose_scene_gemini` stack
+# without clobbering its container names, ROS domain, or perception port.
+#
+# Usage (from repo root):
+#   export DISPLAY=:0
+#   xhost +local:
+#   docker compose -p "${COMPOSE_PROJECT:-xiao_hei_eval}" \
+#     -f docker/compose_scene_gemini.yml \
+#     -f docker/compose.scene.yml \
+#     -f docker/compose.eval.yml \
+#     up -d --force-recreate
+#
+# Tunables (optional):
+#   XIAO_HEI_EVAL_PREFIX   container-name prefix (default: xiao_hei_eval)
+#   ROS_DOMAIN_ID          default 42
+#   PERCEPTION_PORT        default 8002 (base stack often uses 8001)
+
+services:
+  system:
+    container_name: ${XIAO_HEI_EVAL_PREFIX:-xiao_hei_eval}_iros2026_system
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+
+  perception:
+    container_name: ${XIAO_HEI_EVAL_PREFIX:-xiao_hei_eval}_perception
+    command:
+      [
+        "python3",
+        "-m",
+        "uvicorn",
+        "perception.server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "${PERCEPTION_PORT:-8002}",
+      ]
+    environment:
+      - PERCEPTION_PORT=${PERCEPTION_PORT:-8002}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+
+  ai_module:
+    container_name: ${XIAO_HEI_EVAL_PREFIX:-xiao_hei_eval}_ai_module
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - DISPLAY=${DISPLAY:-:0}
+      - XIAO_HEI_PERCEPTION_BASE_URL=http://localhost:${PERCEPTION_PORT:-8002}
+      # Fair NBV defaults (object-ref improvements PR).
+      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-nbv}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST=${XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST:-3.0}
+      - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
+      - XIAO_HEI_EXPLORATION_MAX_SECONDS=${XIAO_HEI_EXPLORATION_MAX_SECONDS:-540}
+      - XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-1}
+      - XIAO_HEI_VIEWPOINT_RADIUS=${XIAO_HEI_VIEWPOINT_RADIUS:-0.8}
+      - XIAO_HEI_WP_REACHED_M=${XIAO_HEI_WP_REACHED_M:-1.35}
+      - XIAO_HEI_REF_SPATIAL=${XIAO_HEI_REF_SPATIAL:-1}
+      - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
+      - XIAO_HEI_SCENE_DIR_HOST=${XIAO_HEI_SCENE_DIR_HOST}

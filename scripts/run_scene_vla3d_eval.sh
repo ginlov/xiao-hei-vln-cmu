@@ -11,15 +11,16 @@
 #
 # Env (optional):
 #   SCENES_DIR   Unity scenes root (default: ~/Downloads/unity_env_models)
-#   GT_DIR       VLA-3D JSONL dir (default: /home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset)
+#   GT_DIR       VLA-3D JSONL dir (auto-detected, or set explicitly)
 #   OUT_DIR      artefacts root (default: <repo>/artifacts/scene_vla3d_eval)
 #   MAX_WAYPOINTS / MAX_SECONDS / STRATEGY / TIMEOUT / SPLITS / LIMIT_Q
+#   COMPOSE_PROJECT / XIAO_HEI_EVAL_PREFIX / ROS_DOMAIN_ID / PERCEPTION_PORT
+#     — isolated eval stack (see docker/compose.eval.yml)
 
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 SCENES_DIR=${SCENES_DIR:-$HOME/Downloads/unity_env_models}
-GT_DIR=${GT_DIR:-/home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset}
 OUT_DIR=${OUT_DIR:-$REPO/artifacts/scene_vla3d_eval}
 MAX_WAYPOINTS=${MAX_WAYPOINTS:-100}
 MAX_SECONDS=${MAX_SECONDS:-540}
@@ -32,17 +33,34 @@ GT_ONLY=0
 NUM_SCENES=""
 DECLARED_SCENES=()
 
-# Aryan-isolated stack (ROS_DOMAIN_ID=42).
-SYSTEM_CTR=${SYSTEM_CTR:-aryan_iros2026_system}
-AI_CTR=${AI_CTR:-aryan_xiao_hei_ai_module}
+# Isolated eval stack (does not clobber a default compose_scene_gemini stack).
+COMPOSE_PROJECT=${COMPOSE_PROJECT:-xiao_hei_eval}
+XIAO_HEI_EVAL_PREFIX=${XIAO_HEI_EVAL_PREFIX:-xiao_hei_eval}
+ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
 PERCEPTION_PORT=${PERCEPTION_PORT:-8002}
+SYSTEM_CTR=${SYSTEM_CTR:-${XIAO_HEI_EVAL_PREFIX}_iros2026_system}
+AI_CTR=${AI_CTR:-${XIAO_HEI_EVAL_PREFIX}_ai_module}
 DISPLAY_VAL=${DISPLAY:-:0}
 export DISPLAY="$DISPLAY_VAL"
+export XIAO_HEI_EVAL_PREFIX ROS_DOMAIN_ID PERCEPTION_PORT
 COMPOSE=(docker compose
-  -p aryan_nbv
+  -p "$COMPOSE_PROJECT"
   -f "$REPO/docker/compose_scene_gemini.yml"
   -f "$REPO/docker/compose.scene.yml"
-  -f "$REPO/docker/compose.aryan.yml")
+  -f "$REPO/docker/compose.eval.yml")
+
+# Resolve GT_DIR: explicit env wins, else first existing candidate.
+if [[ -z "${GT_DIR:-}" ]]; then
+  for _cand in \
+    "${XIAO_HEI_GT_DIR:-}" \
+    "$REPO/../dataset/xiao-hei-vln-cmu/dataset" \
+    "$HOME/workspace/dataset/xiao-hei-vln-cmu/dataset" \
+    "/home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset"
+  do
+    [[ -n "$_cand" && -f "$_cand/vla3d_ref.jsonl" ]] && GT_DIR=$_cand && break
+  done
+fi
+GT_DIR=${GT_DIR:-}
 
 usage() {
   sed -n '2,17p' "$0" | sed 's/^# \?//'
@@ -75,6 +93,12 @@ mkdir -p "$EXPLORE_LOGS" "$VLM_LOGS"
 
 # --- scene list: intersection of Unity dirs ∩ VLA-3D scenes ---------------
 
+[[ -n "$GT_DIR" && ( -f "$GT_DIR/vla3d_ref.jsonl" || -f "$GT_DIR/vla3d_num.jsonl" ) ]] || {
+  echo "error: set GT_DIR to a directory containing vla3d_ref.jsonl / vla3d_num.jsonl" >&2
+  echo "  (tried XIAO_HEI_GT_DIR and a few common dataset paths)" >&2
+  exit 2
+}
+
 export GT_DIR
 mapfile -t VLA_SCENES < <(python3 - <<'PY'
 import json
@@ -95,10 +119,6 @@ print("\n".join(sorted(scenes)))
 PY
 )
 
-[[ -f "$GT_DIR/vla3d_ref.jsonl" || -f "$GT_DIR/vla3d_num.jsonl" ]] || {
-  echo "error: no vla3d_*.jsonl under GT_DIR=$GT_DIR" >&2
-  exit 2
-}
 available=()
 if [[ ${#DECLARED_SCENES[@]} -gt 0 ]]; then
   available=("${DECLARED_SCENES[@]}")
@@ -147,40 +167,40 @@ start_sim() {
   # (pose can still tick from vehicleSimulator → empty terrain → NBV visited=0).
   docker exec -d "$SYSTEM_CTR" bash -lc "
     export DISPLAY=$DISPLAY_VAL
-    export ROS_DOMAIN_ID=42
+    export ROS_DOMAIN_ID=$ROS_DOMAIN_ID
     export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     cd /home/docker/autonomy_stack_mecanum_wheel_platform
-    nohup ./system_simulation.sh >/tmp/aryan_system_simulation.log 2>&1 &
+    nohup ./system_simulation.sh >/tmp/xiao_hei_system_simulation.log 2>&1 &
   "
 }
 
 arm_autonomy() {
-  docker exec "$SYSTEM_CTR" bash -lc '
+  docker exec "$SYSTEM_CTR" bash -lc "
     source /opt/ros/jazzy/setup.bash
     source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash
-    export ROS_DOMAIN_ID=42
+    export ROS_DOMAIN_ID=$ROS_DOMAIN_ID
     pkill -f keep_autonomy_joy_inner 2>/dev/null || true
-    nohup bash -c "
+    nohup bash -c \"
       # keep_autonomy_joy_inner
       source /opt/ros/jazzy/setup.bash
       source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash
-      export ROS_DOMAIN_ID=42
+      export ROS_DOMAIN_ID=$ROS_DOMAIN_ID
       while true; do
-        ros2 topic pub --once /joy sensor_msgs/msg/Joy \"{axes: [0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0], buttons: [0,0,0,0,0,0,0,0,0,0,0]}\" >/dev/null 2>&1
+        ros2 topic pub --once /joy sensor_msgs/msg/Joy \\\"{axes: [0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0], buttons: [0,0,0,0,0,0,0,0,0,0,0]}\\\" >/dev/null 2>&1
         sleep 5
       done
-    " >/tmp/autonomy_joy_keeper.log 2>&1 &
-  ' >/dev/null 2>&1 || true
+    \" >/tmp/autonomy_joy_keeper.log 2>&1 &
+  " >/dev/null 2>&1 || true
 }
 
 wait_for_terrain() {
   local deadline=$((SECONDS + ${1:-90}))
   while (( SECONDS < deadline )); do
-    if docker exec "$SYSTEM_CTR" bash -lc '
+    if docker exec "$SYSTEM_CTR" bash -lc "
       source /opt/ros/jazzy/setup.bash
-      export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=42
-      timeout 3 ros2 topic hz /terrain_map_ext 2>&1 | grep -q "average rate"
-    ' >/dev/null 2>&1; then
+      export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=$ROS_DOMAIN_ID
+      timeout 3 ros2 topic hz /terrain_map_ext 2>&1 | grep -q \"average rate\"
+    " >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -243,7 +263,7 @@ publish_question() {
   local escaped=${q//\"/\\\"}
   docker exec "$SYSTEM_CTR" bash -lc "
     source /opt/ros/jazzy/setup.bash
-    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=42
+    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=$ROS_DOMAIN_ID
     ros2 topic pub --once /challenge_question std_msgs/msg/String \"{data: \\\"${escaped}\\\"}\"
   " >/dev/null
 }
@@ -308,7 +328,7 @@ explore_scene() {
   kill_sim
   "${COMPOSE[@]}" up -d || { echo "  compose up failed" >&2; return 1; }
 
-  # Wait for perception health briefly (aryan overlay uses 8002).
+  # Wait for perception health briefly (eval overlay uses PERCEPTION_PORT).
   local i=0
   while (( i < 60 )); do
     if curl -sf "http://127.0.0.1:${PERCEPTION_PORT}/healthz" >/dev/null 2>&1 \
@@ -322,7 +342,7 @@ explore_scene() {
   start_sim
   if ! wait_for_terrain 120; then
     echo "  ERROR: /terrain_map_ext never published — Unity likely missing DISPLAY" >&2
-    docker exec "$SYSTEM_CTR" bash -lc 'tail -40 /tmp/aryan_system_simulation.log 2>/dev/null' || true
+    docker exec "$SYSTEM_CTR" bash -lc 'tail -40 /tmp/xiao_hei_system_simulation.log 2>/dev/null' || true
     return 1
   fi
   arm_autonomy
