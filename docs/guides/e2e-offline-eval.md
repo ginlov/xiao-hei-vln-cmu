@@ -15,9 +15,10 @@ Harness entry points:
 - `scripts/export_live_scene_for_offline_eval.py`
 - `scripts/freeze_bench_gt.py` (freeze first N Qs per scene/split)
 
-Default exploration strategy is **frontier** (main default). Use an
-isolated Aryan compose project (`-p aryan_nbv` + `docker/compose.aryan.yml`,
-`ROS_DOMAIN_ID=42`) so you do not clobber a shared stack.
+Live explore uses an **isolated eval compose overlay**
+(`docker/compose.eval.yml`, project `xiao_hei_eval` by default) so a second
+stack can run next to a shared `compose_scene_gemini` stack without
+clobbering container names, ROS domain, or the perception port.
 
 ## Prerequisites
 
@@ -25,21 +26,21 @@ isolated Aryan compose project (`-p aryan_nbv` + `docker/compose.aryan.yml`,
 export XIAO_HEI_GEMINI_API_KEY=...   # or source .env
 export DISPLAY=:0
 xhost +local:
+# Optional: export GT_DIR=/path/to/dir/with/vla3d_{ref,num}.jsonl
+# Optional: export SCENES_DIR=~/Downloads/unity_env_models
 ```
 
-Unity scenes under `~/Downloads/unity_env_models/<scene>/environment`.
-VLA-3D JSONL under
-`/home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset/vla3d_{ref,num}.jsonl`.
+Unity scenes under `$SCENES_DIR/<scene>/environment`
+(default `~/Downloads/unity_env_models`).
 
-## Verified smoke commands (PR harness)
+## Verified smoke commands
 
-Commands below are the exact smoke run used to validate this harness.
-Artifact root: `artifacts/e2e_harness_smoke`.
+Artifact root: `artifacts/e2e_harness_smoke`. Run from the repo root.
 
 ### 1) GT-only offline (5 ref + 5 num on studio)
 
 ```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
+cd /path/to/xiao-hei-vln-cmu
 set -a && source .env && set +a
 export DISPLAY=:0
 export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
@@ -56,7 +57,7 @@ Expected:
 ### 2) Live explore + offline (same 5+5 on studio, frontier)
 
 ```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
+cd /path/to/xiao-hei-vln-cmu
 set -a && source .env && set +a
 export DISPLAY=:0
 export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
@@ -66,15 +67,15 @@ scripts/run_e2e_offline_eval.sh --limit 5 --splits ref,num studio
 
 Expected:
 
-- RViz / robot motion on `ROS_DOMAIN_ID=42` containers
-  (`aryan_iros2026_system`, `aryan_xiao_hei_ai_module`)
+- RViz / robot motion on the isolated eval containers
+  (`xiao_hei_eval_iros2026_system`, `xiao_hei_eval_ai_module`, `ROS_DOMAIN_ID=42`)
 - `artifacts/e2e_harness_smoke/explored_scenes/studio/scene.json`
 - preds + metrics under the same `OUT_DIR` as above
 
 ### 3) Reuse an existing live dump
 
 ```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
+cd /path/to/xiao-hei-vln-cmu
 set -a && source .env && set +a
 export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
 export SPLITS=ref,num LIMIT_Q=5
@@ -116,7 +117,7 @@ uv run python -m xiao_hei_vln.eval_pipeline \
 
 ## Smoke results
 
-Verified on branch `aryan/e2e-eval-harness` (studio, `LIMIT_Q=5`).
+Verified on the e2e-eval-harness branch (studio, `LIMIT_Q=5`).
 
 | Arm | Split | Metric | Value |
 |---|---|---|---|
@@ -132,22 +133,12 @@ Live explore ended with `DONE visited=3 skipped=21 reason=max_consecutive_skips`
 (short smoke cap). Dump present at
 `artifacts/e2e_harness_smoke/explored_scenes/studio/scene.json`.
 
-Exact commands used:
+## Isolated eval stack knobs
 
-```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
-set -a && source .env && set +a
-export DISPLAY=:0
-export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
-export SPLITS=ref,num LIMIT_Q=5
-scripts/run_e2e_offline_eval.sh --gt-only --limit 5 --splits ref,num studio
-```
-
-```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-e2e-harness
-set -a && source .env && set +a
-export DISPLAY=:0
-export OUT_DIR=$PWD/artifacts/e2e_harness_smoke
-export STRATEGY=frontier MAX_SECONDS=180 TIMEOUT=780 SPLITS=ref,num LIMIT_Q=5
-scripts/run_e2e_offline_eval.sh --limit 5 --splits ref,num studio
-```
+| Env | Default | Meaning |
+|---|---|---|
+| `COMPOSE_PROJECT` | `xiao_hei_eval` | `docker compose -p …` project name |
+| `XIAO_HEI_EVAL_PREFIX` | `xiao_hei_eval` | container name prefix |
+| `ROS_DOMAIN_ID` | `42` | ROS domain for the eval stack |
+| `PERCEPTION_PORT` | `8002` | perception uvicorn port (base often 8001) |
+| `GT_DIR` / `XIAO_HEI_GT_DIR` | auto | directory with `vla3d_{ref,num}.jsonl` |

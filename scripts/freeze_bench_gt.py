@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
@@ -43,14 +44,33 @@ def main() -> None:
     p.add_argument(
         "--gt-dir",
         type=Path,
-        default=Path("/home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset"),
-        help="Directory containing vla3d_ref.jsonl / vla3d_num.jsonl",
+        default=None,
+        help="Directory containing vla3d_ref.jsonl / vla3d_num.jsonl "
+        "(default: $XIAO_HEI_GT_DIR or common dataset paths)",
     )
     p.add_argument("--scenes", nargs="+", required=True)
     p.add_argument("--ref", type=int, default=10, help="Object-reference Qs per scene")
     p.add_argument("--num", type=int, default=10, help="Numerical Qs per scene")
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
+
+    if args.gt_dir is None:
+        candidates = []
+        env = os.environ.get("XIAO_HEI_GT_DIR") or os.environ.get("GT_DIR")
+        if env:
+            candidates.append(Path(env))
+        candidates.extend(
+            [
+                Path.home() / "workspace/dataset/xiao-hei-vln-cmu/dataset",
+                Path("/home/ubuntu/workspace/dataset/xiao-hei-vln-cmu/dataset"),
+            ]
+        )
+        for cand in candidates:
+            if (cand / "vla3d_ref.jsonl").is_file() or (cand / "vla3d_num.jsonl").is_file():
+                args.gt_dir = cand
+                break
+        if args.gt_dir is None:
+            p.error("could not find vla3d_*.jsonl; pass --gt-dir or set XIAO_HEI_GT_DIR")
 
     args.out.mkdir(parents=True, exist_ok=True)
     ref_src = args.gt_dir / "vla3d_ref.jsonl"
