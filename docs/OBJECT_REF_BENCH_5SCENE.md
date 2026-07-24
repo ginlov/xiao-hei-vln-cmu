@@ -1,17 +1,16 @@
 # Object-reference 5-scene bench (100 questions)
 
-Frozen GT: first 10 ref + first 10 num per scene for
-`studio`, `chinese_room`, `livingroom_3`, `office_2`, `home_building_1`
-(50 + 50 = 100 questions). Same IDs scored across arms.
+Same question slice for every arm: first 10 ref + first 10 num per scene
+(`LIMIT_Q=10`) for `studio`, `chinese_room`, `livingroom_3`, `office_2`,
+`home_building_1` (50 + 50 = 100 questions).
 
-Worktree: `/home/ubuntu/workspace/aryan/worktrees/xiao-hei-object-ref`
 Branch: `aryan/object-ref-improvements`
 
 ## Default stack (fair NBV)
 
 After this PR merges, `scripts/run_scene_vla3d_eval.sh` + `docker/compose.eval.yml`
 default to the **fair NBV** configuration that scored **ref mean IoU 0.033**
-on the frozen 50-ref set:
+on the 50-ref set:
 
 | Knob | Default |
 |---|---|
@@ -24,20 +23,10 @@ on the frozen 50-ref set:
 | `XIAO_HEI_REF_SPATIAL` | `1` |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` | `3.0` |
 
-## Freeze command
-
-```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-object-ref
-uv run python scripts/freeze_bench_gt.py \
-  --scenes studio chinese_room livingroom_3 office_2 home_building_1 \
-  --num 10 --ref 10 \
-  --out artifacts/bench_5scene_100q/gt
-```
-
 ## How to run (defaults = fair NBV, 50 ref)
 
 ```bash
-cd /home/ubuntu/workspace/aryan/worktrees/xiao-hei-object-ref
+cd /path/to/xiao-hei-vln-cmu
 set -a && source .env && set +a
 export DISPLAY=:0
 export OUT_DIR=$PWD/artifacts/bench_nbv_fair_50
@@ -57,7 +46,7 @@ export XIAO_HEI_VIEWPOINT_RADIUS=0.8
 export XIAO_HEI_OBJECT_MAP=1
 ```
 
-## Comparison on the same frozen 50 ref questions
+## Comparison on the same 50 ref questions
 
 | Arm | Ref mean IoU | Ref SR@0.25 | Challenge /2 | Notes |
 |---|---:|---:|---:|---|

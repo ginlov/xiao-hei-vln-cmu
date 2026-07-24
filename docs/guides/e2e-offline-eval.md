@@ -13,7 +13,6 @@ Harness entry points:
 - `scripts/run_e2e_offline_eval.sh` / `scripts/run_scene_vla3d_eval.sh`
 - `python -m xiao_hei_vln.gemini.batch`
 - `scripts/export_live_scene_for_offline_eval.py`
-- `scripts/freeze_bench_gt.py` (freeze first N Qs per scene/split)
 
 Live explore uses an **isolated eval compose overlay**
 (`docker/compose.eval.yml`, project `xiao_hei_eval` by default) so a second
@@ -82,17 +81,8 @@ export SPLITS=ref,num LIMIT_Q=5
 scripts/run_e2e_offline_eval.sh --skip-explore --limit 5 --splits ref,num studio
 ```
 
-## Freeze a multi-scene bench slice
-
-```bash
-uv run python scripts/freeze_bench_gt.py \
-  --scenes studio chinese_room livingroom_3 office_2 home_building_1 \
-  --num 10 --ref 10 \
-  --out artifacts/bench_5scene_100q/gt
-```
-
-`--limit N` on the eval scripts also freezes the **first N GT rows** per
-scene/split (not only a prediction cap), so scored IDs stay fixed.
+`--limit N` on the eval scripts keeps the **first N GT rows** per
+scene/split (not only a prediction cap), so scored IDs stay fixed for that run.
 
 ## Direct `gemini.batch` usage
 
