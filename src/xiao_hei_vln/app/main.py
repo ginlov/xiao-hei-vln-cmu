@@ -38,11 +38,17 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
 # Exploration is NOT interrupted when a question arrives: it runs until the
-# strategy completes (budget exhausted, consecutive-skip hatch, or no frontiers
-# remain), and only then does the responder answer — from the fully-built scene.
+# strategy completes (budget exhausted, consecutive-skip hatch, no frontiers,
+# or hard wall-clock stop), and only then does the responder answer — from the
+# fully-built scene.
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "500"))
-_EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
-_EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
+# Default nbv: fair 50-ref live bench (spatial on) scored mean IoU ~0.033.
+_EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "nbv").lower()
+_EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "3.0"))
+# Hard wall-clock stop for the whole exploration phase (seconds). Default 9
+# minutes. Set to 0 to disable the time cap (waypoint/frontier stop only).
+# Must be honored here — env alone is ignored if this wiring is missing.
+_EXPLORATION_MAX_SECONDS = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_SECONDS", "540"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
 # Scene the sim is running. Only the basename is meaningful here — the value is
 # a *host* path (compose bind-mounts it into the sim, not into this container),
@@ -259,7 +265,7 @@ def _build_responder(
 def _build_explorer(node):
     """Instantiate the configured exploration strategy, or None if disabled.
 
-    Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: frontier).
+    Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: nbv).
     Add new strategies here as additional elif branches.
     """
     if _EXPLORATION_MAX_WAYPOINTS <= 0:
@@ -276,20 +282,28 @@ def _build_explorer(node):
         )
     elif _EXPLORATION_STRATEGY == "nbv":
         from xiao_hei_vln.exploration import NextBestViewExplorer
-        explorer = NextBestViewExplorer(
-            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
-            waypoint_reach_dist=0.3,
-        )
+        # Only override max_waypoints; keep class defaults (reach_dist=0.45,
+        # stuck_timeout_s=12, max_consecutive_skips=25, …). Forcing 0.3 was a
+        # regression vs the fair NBV live-bench wiring.
+        explorer = NextBestViewExplorer(max_waypoints=_EXPLORATION_MAX_WAYPOINTS)
     else:
         node.get_logger().error(
             f"Unknown exploration strategy {_EXPLORATION_STRATEGY!r} — disabling exploration."
         )
         return None
 
+    time_cap = (
+        f"{_EXPLORATION_MAX_SECONDS:.0f}s"
+        if _EXPLORATION_MAX_SECONDS > 0
+        else "disabled"
+    )
+    reach = getattr(explorer, "_reach_dist", None)
+    reach_s = f"{reach:.2f}m" if isinstance(reach, (int, float)) else "n/a"
     node.get_logger().info(
         f"Exploration enabled: {type(explorer).__name__} "
         f"(strategy={_EXPLORATION_STRATEGY}, max_waypoints={_EXPLORATION_MAX_WAYPOINTS}, "
-        f"reach_dist=0.3m, max_waypoint_dist={_EXPLORATION_MAX_WAYPOINT_DIST}m)"
+        f"max_seconds={time_cap}, "
+        f"reach_dist={reach_s}, max_waypoint_dist={_EXPLORATION_MAX_WAYPOINT_DIST}m)"
     )
     return explorer
 
@@ -496,6 +510,7 @@ def main() -> None:
         "tick_id": 0,
         "last_question_text": None,
         "exploration_started": False,
+        "exploration_start_time": None,  # ROS-clock seconds when exploration began
         "last_exploration_wp": None,
         "wp_start_time": None,
     }
@@ -521,114 +536,149 @@ def main() -> None:
             if hasattr(responder, "ingest"):
                 responder.ingest(snapshot)
 
+            now_s = node.get_clock().now().nanoseconds / 1e9
+
             if not state["exploration_started"]:
                 node.get_logger().info("Exploration started.")
                 state["exploration_started"] = True
+                state["exploration_start_time"] = now_s
                 _exp_log("START",
                          max_waypoints=explorer._max_waypoints,
+                         max_seconds=_EXPLORATION_MAX_SECONDS,
                          threshold=_WP_REACHED_THRESHOLD,
                          stuck_timeout=f"{explorer._stuck_timeout_s}s",
                          max_skips=explorer._max_consecutive_skips)
 
-            now_s = node.get_clock().now().nanoseconds / 1e9
+            # Hard wall-clock stop for the whole exploration phase.
+            if (
+                _EXPLORATION_MAX_SECONDS > 0
+                and state["exploration_start_time"] is not None
+                and (now_s - state["exploration_start_time"]) >= _EXPLORATION_MAX_SECONDS
+                and not explorer.is_complete()
+            ):
+                elapsed = now_s - state["exploration_start_time"]
+                if hasattr(explorer, "force_complete"):
+                    explorer.force_complete()
+                else:
+                    explorer._done = True  # noqa: SLF001 — strategies without force_complete
+                node.get_logger().info(
+                    f"Exploration hard-stop: elapsed={elapsed:.1f}s "
+                    f"(limit={_EXPLORATION_MAX_SECONDS:.0f}s)"
+                )
+                _exp_log(
+                    "HARD_STOP",
+                    elapsed=f"{elapsed:.1f}s",
+                    limit=f"{_EXPLORATION_MAX_SECONDS:.0f}s",
+                    visited=len(explorer._visited),
+                )
+
             pose = snapshot.pose
             robot_pos = (
                 f"({pose.position.x:.2f},{pose.position.y:.2f})" if pose is not None else "unknown"
             )
 
-            # Advance when nav stack has settled within threshold for 3 consecutive ticks.
-            if explorer._current_target is not None:
-                if _wp_reached_state["value"] < _WP_REACHED_THRESHOLD:
-                    _wp_reached_state["close_ticks"] += 1
-                    if _wp_reached_state["close_ticks"] >= 3:
-                        best = _wp_reached_state["best"]
-                        _exp_log("WP_ADVANCE",
-                                 target=f"({explorer._current_target.x:.2f},{explorer._current_target.y:.2f})",
-                                 nav_dist=f"{best:.2f}",
-                                 visited=len(explorer._visited) + 1)
-                        node.get_logger().info(
-                            f"Nav stack settled at {best:.2f}m "
-                            f"— advancing waypoint (visited={len(explorer._visited) + 1})"
-                        )
-                        explorer.advance()
+            # After a hard-stop, skip further exploration work this tick and
+            # fall through to the is_complete() DONE handler below.
+            if not explorer.is_complete():
+                # Advance when nav stack has settled within threshold for 3 consecutive ticks.
+                if explorer._current_target is not None:
+                    if _wp_reached_state["value"] < _WP_REACHED_THRESHOLD:
+                        _wp_reached_state["close_ticks"] += 1
+                        if _wp_reached_state["close_ticks"] >= 3:
+                            best = _wp_reached_state["best"]
+                            _exp_log("WP_ADVANCE",
+                                     target=f"({explorer._current_target.x:.2f},{explorer._current_target.y:.2f})",
+                                     nav_dist=f"{best:.2f}",
+                                     visited=len(explorer._visited) + 1)
+                            node.get_logger().info(
+                                f"Nav stack settled at {best:.2f}m "
+                                f"— advancing waypoint (visited={len(explorer._visited) + 1})"
+                            )
+                            explorer.advance()
+                            _wp_reached_state["close_ticks"] = 0
+                            _wp_reached_state["value"] = float("inf")
+                            _wp_reached_state["best"] = float("inf")
+                            state["last_exploration_wp"] = None  # force WP_SET for next target
+                    else:
                         _wp_reached_state["close_ticks"] = 0
-                        _wp_reached_state["value"] = float("inf")
-                        _wp_reached_state["best"] = float("inf")
-                        state["last_exploration_wp"] = None  # force WP_SET for next target
-                else:
-                    _wp_reached_state["close_ticks"] = 0
 
-            prev_skipped = explorer.skipped_count
-            prev_visited = len(explorer._visited)
+                prev_skipped = explorer.skipped_count
+                prev_visited = len(explorer._visited)
 
-            # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
-            # 4s minimum delay gives the nav stack time to respond before we start counting.
-            if (
-                explorer._current_target is not None
-                and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
-                and state["wp_start_time"] is not None
-                and now_s - state["wp_start_time"] > 4.0
-            ):
-                if _wp_reached_state["best"] >= _wp_reached_state["prev_best"] - 0.02:
-                    _wp_reached_state["settled_ticks"] += 1
-                else:
-                    _wp_reached_state["settled_ticks"] = 0
-                _wp_reached_state["prev_best"] = _wp_reached_state["best"]
-                if _wp_reached_state["settled_ticks"] >= 5:
-                    explorer.force_skip()
-                    _wp_reached_state["settled_ticks"] = 0
-                    _wp_reached_state["prev_best"] = float("inf")
+                # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
+                # 4s minimum delay gives the nav stack time to respond before we start counting.
+                if (
+                    explorer._current_target is not None
+                    and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
+                    and state["wp_start_time"] is not None
+                    and now_s - state["wp_start_time"] > 4.0
+                ):
+                    if _wp_reached_state["best"] >= _wp_reached_state["prev_best"] - 0.02:
+                        _wp_reached_state["settled_ticks"] += 1
+                    else:
+                        _wp_reached_state["settled_ticks"] = 0
+                    _wp_reached_state["prev_best"] = _wp_reached_state["best"]
+                    if _wp_reached_state["settled_ticks"] >= 5:
+                        explorer.force_skip()
+                        _wp_reached_state["settled_ticks"] = 0
+                        _wp_reached_state["prev_best"] = float("inf")
 
-            wp = explorer.update(snapshot)
+                wp = explorer.update(snapshot)
 
-            # Log odometry-reach advances (update() clears the target internally — no nav event fired).
-            if len(explorer._visited) > prev_visited and explorer.skipped_count == prev_skipped:
-                _exp_log("WP_ADVANCE",
-                         target=f"({explorer._visited[-1].x:.2f},{explorer._visited[-1].y:.2f})",
-                         nav_dist="odom",
-                         visited=len(explorer._visited))
+                # Log odometry-reach advances (update() clears the target internally — no nav event fired).
+                if len(explorer._visited) > prev_visited and explorer.skipped_count == prev_skipped:
+                    _exp_log("WP_ADVANCE",
+                             target=f"({explorer._visited[-1].x:.2f},{explorer._visited[-1].y:.2f})",
+                             nav_dist="odom",
+                             visited=len(explorer._visited))
 
-            if explorer.skipped_count > prev_skipped:
-                elapsed = round(now_s - state["wp_start_time"], 1) if state["wp_start_time"] else "?"
-                last_wp = state["last_exploration_wp"]
-                skip_target = f"({last_wp[0]:.2f},{last_wp[1]:.2f})" if last_wp else "unknown"
-                _exp_log("WP_SKIP",
-                         target=skip_target,
-                         robot=robot_pos,
-                         elapsed=f"{elapsed}s",
-                         best_nav_dist=f"{_wp_reached_state['best']:.2f}",
-                         last_nav_dist=f"{_wp_reached_state['value']:.2f}",
-                         consecutive=explorer._consecutive_skip_count)
-                node.get_logger().info(
-                    f"Exploration SKIP: target={skip_target}  "
-                    f"best_nav_dist={_wp_reached_state['best']:.2f}m  "
-                    f"consecutive={explorer._consecutive_skip_count}"
-                )
-                state["last_exploration_wp"] = None
-                _wp_reached_state["best"] = float("inf")
-
-            if wp is not None:
-                wp_key = (round(wp.x, 2), round(wp.y, 2))
-                if wp_key != state["last_exploration_wp"]:
-                    dist_to_wp = math.hypot(
-                        wp.x - (pose.position.x if pose else 0.0),
-                        wp.y - (pose.position.y if pose else 0.0),
-                    )
-                    _exp_log("WP_SET",
-                             target=f"({wp.x:.2f},{wp.y:.2f})",
+                if explorer.skipped_count > prev_skipped:
+                    elapsed = round(now_s - state["wp_start_time"], 1) if state["wp_start_time"] else "?"
+                    last_wp = state["last_exploration_wp"]
+                    skip_target = f"({last_wp[0]:.2f},{last_wp[1]:.2f})" if last_wp else "unknown"
+                    _exp_log("WP_SKIP",
+                             target=skip_target,
                              robot=robot_pos,
-                             dist=f"{dist_to_wp:.2f}")
-                    state["last_exploration_wp"] = wp_key
-                    state["wp_start_time"] = now_s
+                             elapsed=f"{elapsed}s",
+                             best_nav_dist=f"{_wp_reached_state['best']:.2f}",
+                             last_nav_dist=f"{_wp_reached_state['value']:.2f}",
+                             consecutive=explorer._consecutive_skip_count)
+                    node.get_logger().info(
+                        f"Exploration SKIP: target={skip_target}  "
+                        f"best_nav_dist={_wp_reached_state['best']:.2f}m  "
+                        f"consecutive={explorer._consecutive_skip_count}"
+                    )
+                    state["last_exploration_wp"] = None
                     _wp_reached_state["best"] = float("inf")
-                    _wp_reached_state["value"] = float("inf")
-                    _wp_reached_state["close_ticks"] = 0
-                    _wp_reached_state["settled_ticks"] = 0
-                    _wp_reached_state["prev_best"] = float("inf")
-                publisher.publish(WaypointPathResponse(waypoints=[wp]))
+
+                if wp is not None:
+                    wp_key = (round(wp.x, 2), round(wp.y, 2))
+                    if wp_key != state["last_exploration_wp"]:
+                        dist_to_wp = math.hypot(
+                            wp.x - (pose.position.x if pose else 0.0),
+                            wp.y - (pose.position.y if pose else 0.0),
+                        )
+                        _exp_log("WP_SET",
+                                 target=f"({wp.x:.2f},{wp.y:.2f})",
+                                 robot=robot_pos,
+                                 dist=f"{dist_to_wp:.2f}")
+                        state["last_exploration_wp"] = wp_key
+                        state["wp_start_time"] = now_s
+                        _wp_reached_state["best"] = float("inf")
+                        _wp_reached_state["value"] = float("inf")
+                        _wp_reached_state["close_ticks"] = 0
+                        _wp_reached_state["settled_ticks"] = 0
+                        _wp_reached_state["prev_best"] = float("inf")
+                    publisher.publish(WaypointPathResponse(waypoints=[wp]))
 
             if explorer.is_complete():
-                if len(explorer._visited) >= explorer._max_waypoints:
+                if (
+                    _EXPLORATION_MAX_SECONDS > 0
+                    and state["exploration_start_time"] is not None
+                    and (now_s - state["exploration_start_time"]) >= _EXPLORATION_MAX_SECONDS
+                ):
+                    reason = "time_limit"
+                elif len(explorer._visited) >= explorer._max_waypoints:
                     reason = "budget_exhausted"
                 elif explorer._consecutive_skip_count >= explorer._max_consecutive_skips:
                     reason = "max_consecutive_skips"
