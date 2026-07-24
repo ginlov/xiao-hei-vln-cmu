@@ -27,7 +27,7 @@ MAX_SECONDS=${MAX_SECONDS:-540}
 STRATEGY=${STRATEGY:-frontier}
 TIMEOUT=${TIMEOUT:-$(( MAX_SECONDS + 600 ))}   # explore cap + sim startup slack
 SPLITS=${SPLITS:-ref,num}                      # comma-separated: ref and/or num
-LIMIT_Q=${LIMIT_Q:-}                           # freeze first N GT Qs per scene/split
+LIMIT_Q=${LIMIT_Q:-}                           # keep first N GT Qs per scene/split
 SKIP_EXPLORE=0
 GT_ONLY=0
 NUM_SCENES=""
@@ -212,7 +212,7 @@ filter_gt() {
   local scene=$1 split=$2 out=$3
   local src=$GT_DIR/vla3d_${split}.jsonl
   [[ -f "$src" ]] || { echo "  missing $src" >&2; return 1; }
-  # LIMIT_Q freezes the first N questions for this scene/split (not just pred cap).
+  # LIMIT_Q keeps the first N questions for this scene/split (not just a pred cap).
   GT_DIR="$GT_DIR" SCENE="$scene" SPLIT="$split" OUT="$out" LIMIT_Q="${LIMIT_Q:-}" python3 - <<'PY'
 import json, os
 from pathlib import Path
