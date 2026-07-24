@@ -133,6 +133,56 @@ class OccupancyGrid:
                         return cand
         return None
 
+    def has_nav_clearance(self, cell: tuple[int, int], radius_cells: int = 1) -> bool:
+        """True if the cell's immediate neighbourhood is not OCCUPIED (drivable)."""
+        ix, iy = cell
+        for dx in range(-radius_cells, radius_cells + 1):
+            for dy in range(-radius_cells, radius_cells + 1):
+                if (ix + dx, iy + dy) in self._occupied:
+                    return False
+        return True
+
+    def wall_view_score(self, cell: tuple[int, int], *, inner: int = 2, outer: int = 6) -> int:
+        """Occupied cells in an annulus — near walls but not colliding with them."""
+        if not self.has_nav_clearance(cell, radius_cells=1):
+            return 0
+        ix, iy = cell
+        n = 0
+        for dx in range(-outer, outer + 1):
+            for dy in range(-outer, outer + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                man = max(abs(dx), abs(dy))
+                if man < inner:
+                    continue
+                if (ix + dx, iy + dy) in self._occupied:
+                    n += 1
+        return n
+
+    def nearest_occupied_world(
+        self,
+        x: float,
+        y: float,
+        *,
+        max_cells: int = 25,
+    ) -> tuple[float, float] | None:
+        """World XY of the nearest OCCUPIED cell (for look-at-wall headings)."""
+        if not self._occupied:
+            return None
+        ox, oy = self._to_grid(x, y)
+        best: tuple[int, int] | None = None
+        best_d2 = None
+        for ix, iy in self._occupied:
+            if abs(ix - ox) > max_cells or abs(iy - oy) > max_cells:
+                continue
+            d2 = (ix - ox) ** 2 + (iy - oy) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best = (ix, iy)
+        if best is None:
+            return None
+        return self.to_world(*best)
+
     # ------------------------------------------------------------------
     # Coordinate helpers
 
