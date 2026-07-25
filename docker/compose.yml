@@ -79,6 +79,10 @@ services:
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
       # Periodic scene-graph dump for offline dataset building. Empty → off.
       - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
+      # Raw-frame capture for the offline perception replay (image + scan +
+      # pose + stamps per tick). Empty → off. Lands in ./frames on the host.
+      - XIAO_HEI_FRAME_RECORD_DIR=${XIAO_HEI_FRAME_RECORD_DIR:-}
+      - XIAO_HEI_FRAME_RECORD_STRIDE=${XIAO_HEI_FRAME_RECORD_STRIDE:-}
       # Names the per-run log dir (exploration_logs/<scene>/). Only the basename
       # is used — the path itself points at the host, not into this container.
       - XIAO_HEI_SCENE_DIR_HOST=${XIAO_HEI_SCENE_DIR_HOST:-}
@@ -103,6 +107,8 @@ services:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs
       - ../exploration_logs:/exploration_logs
+      # Recorded replay corpora (XIAO_HEI_FRAME_RECORD_DIR=/frames/<name>).
+      - ../frames:/frames
       # X socket, so the node can reach the display RViz drew into. Needs
       # `xhost +local:` on the host, same as the sim container.
       - /tmp/.X11-unix:/tmp/.X11-unix:rw

@@ -56,7 +56,11 @@ def test_defaults_track_the_source_constants(clean_env: None) -> None:
 def test_scan_accumulator_defaults(clean_env: None) -> None:
     s = _PerceptionSettings.from_env()
 
-    assert s.scan_keyframes == 10
+    # Accumulation is off by default: merging sweeps taken metres apart
+    # inflates every fused box, measurably on both scenes we have corpora for.
+    # The remaining knobs still carry their tuned values for when it is
+    # switched back on.
+    assert s.scan_keyframes == 0
     assert s.scan_min_move_m == pytest.approx(0.25)
     assert s.scan_min_rot_deg == pytest.approx(15.0)
     assert s.scan_voxel_m == pytest.approx(0.05)
