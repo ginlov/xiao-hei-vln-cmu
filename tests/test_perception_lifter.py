@@ -259,7 +259,12 @@ class TestZBuffer:
         return np.concatenate([near, far], axis=0)
 
     def test_disabled_keeps_both_surfaces(self) -> None:
-        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=False)
+        # Depth clustering is off here too: it is an independent second gate
+        # that would also drop the far surface, and this test is about what
+        # the z-buffer alone does.
+        lifter = PointLifter(
+            min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=False, depth_gap_m=None,
+        )
         pose_p, pose_q = _identity_pose()
         result = lifter.lift(_full_mask(), self._two_depth_scan(), pose_p, pose_q)
         assert result.position is not None
@@ -294,3 +299,77 @@ class TestValidation:
         pose_p, pose_q = _identity_pose()
         with pytest.raises(ValueError, match="scan_points_map must be"):
             lifter.lift(_full_mask(), np.zeros((5, 2)), pose_p, pose_q)
+
+
+class TestDepthClustering:
+    """The mask is a 2D silhouette; wherever it overshoots the object, the
+    nearest surface at those pixels genuinely *is* the background, so the
+    z-buffer passes it. Depth clustering is the gate that catches that."""
+
+    def _object_plus_overshoot(self) -> np.ndarray:
+        """A compact object at 2 m plus a rim of wall returns at 7 m, both
+        along bearings the mask covers — the mask-overshoot case."""
+        obj = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=80, spread=0.05)
+        wall = _scatter_around(Vector3(x=7.0, y=0.6, z=0.0), n=25, spread=0.05)
+        return np.concatenate([obj, wall], axis=0)
+
+    def test_keeps_only_the_object(self) -> None:
+        lifter = PointLifter(min_inliers=10, enable_zbuffer=False, depth_gap_m=0.3)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._object_plus_overshoot(), pose_p, pose_q)
+        assert result.position is not None
+        assert result.n_inliers == 80
+        assert result.position.x == pytest.approx(2.0, abs=0.1)
+        # The whole point: the retained cloud is object-sized, not room-sized.
+        pts = result.inlier_points
+        assert pts is not None
+        assert float(np.ptp(pts[:, 0])) < 0.5
+
+    def test_disabled_lets_the_overshoot_through(self) -> None:
+        lifter = PointLifter(min_inliers=10, enable_zbuffer=False, depth_gap_m=None)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._object_plus_overshoot(), pose_p, pose_q)
+        assert result.n_inliers == 105
+        pts = result.inlier_points
+        assert pts is not None
+        assert float(np.ptp(pts[:, 0])) > 4.0      # spans the room
+
+    def test_a_single_surface_is_untouched(self) -> None:
+        lifter = PointLifter(min_inliers=10, enable_zbuffer=False, depth_gap_m=0.3)
+        pose_p, pose_q = _identity_pose()
+        scan = _scatter_around(Vector3(x=3.0, y=0.0, z=0.0), n=60, spread=0.05)
+        result = lifter.lift(_full_mask(), scan, pose_p, pose_q)
+        assert result.n_inliers == 60
+
+    def test_cluster_below_min_inliers_falls_back_to_all_points(self) -> None:
+        # A sparse object whose dominant cluster is thinner than the gate: we
+        # would rather keep the raw (worse) cloud than silently drop the
+        # detection, which is what the caller does on position=None.
+        lifter = PointLifter(min_inliers=10, enable_zbuffer=False, depth_gap_m=0.3)
+        pose_p, pose_q = _identity_pose()
+        a = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=6, spread=0.02)
+        b = _scatter_around(Vector3(x=5.0, y=0.0, z=0.0), n=6, spread=0.02)
+        result = lifter.lift(_full_mask(), np.concatenate([a, b]), pose_p, pose_q)
+        assert result.position is not None
+        assert result.n_inliers == 12
+
+
+class TestDominantDepthCluster:
+    def test_picks_the_most_populous_run(self) -> None:
+        from xiao_hei_vln.perception.lifter import _dominant_depth_cluster
+
+        d = np.array([1.0, 1.1, 1.2, 5.0, 5.1, 5.15, 5.2, 5.25])
+        sel = _dominant_depth_cluster(d, 0.3)
+        assert sel.tolist() == [False, False, False, True, True, True, True, True]
+
+    def test_ties_go_to_the_nearer_cluster(self) -> None:
+        from xiao_hei_vln.perception.lifter import _dominant_depth_cluster
+
+        d = np.array([1.0, 1.1, 8.0, 8.1])
+        sel = _dominant_depth_cluster(d, 0.3)
+        assert sel.tolist() == [True, True, False, False]
+
+    def test_empty_input(self) -> None:
+        from xiao_hei_vln.perception.lifter import _dominant_depth_cluster
+
+        assert _dominant_depth_cluster(np.zeros(0), 0.3).size == 0

@@ -63,7 +63,7 @@ def _object_center_size(obj: dict) -> tuple[tuple[float, float, float], tuple[fl
 
 
 def scene_graph_to_object_list(
-    scene: dict | Sequence[dict], *, precision: int = 4
+    scene: dict | Sequence[dict], *, precision: int = 4, include_structure: bool = False
 ) -> list[str]:
     """Convert a scene graph into GT-style ``object_list`` strings.
 
@@ -75,6 +75,12 @@ def scene_graph_to_object_list(
     (we don't estimate orientation).
     """
     objects = scene.get("objects", []) if isinstance(scene, dict) else list(scene)
+    if not include_structure:
+        # Walls / floors / ceilings are surfaces, not instances: each fuses
+        # into many overlapping nodes and none of them is ever the answer to
+        # a reference question. Older scene graphs predate the flag and simply
+        # carry everything through.
+        objects = [o for o in objects if not o.get("is_structure", False)]
 
     lines: list[str] = []
     for i, obj in enumerate(objects):

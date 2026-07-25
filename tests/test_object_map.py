@@ -105,3 +105,4 @@ def test_sync_keeps_object_id_stable_across_ticks():
     scene.sync_from_object_map(om.export(min_pts=15))
     assert len(scene.objects) == 1
     assert scene.objects[0].object_id == oid          # identity preserved
+

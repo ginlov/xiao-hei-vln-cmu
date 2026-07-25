@@ -45,6 +45,11 @@ from xiao_hei_vln.perception.geometry import (
 log = logging.getLogger(__name__)
 
 DEFAULT_MIN_INLIERS: int = 10
+# Mask inliers are grouped into depth runs; a gap wider than this starts a new
+# surface. Indoor clutter sits within a few tens of centimetres of the object
+# it belongs to, while the wall behind is metres away, so this cleanly splits
+# "the object" from "whatever the mask overshot onto".
+DEFAULT_DEPTH_GAP_M: float = 0.3
 # A scan return is "front" (not occluded) if its range is within this margin of
 # the nearest range seen at its equirect pixel. Matches the z-buffer tolerance
 # from the offline lifter prototype the gate was ported from.
@@ -75,6 +80,7 @@ class PointLifter:
         min_inliers: int = DEFAULT_MIN_INLIERS,
         max_depth_m: float | None = None,
         enable_zbuffer: bool = True,
+        depth_gap_m: float | None = DEFAULT_DEPTH_GAP_M,
     ) -> None:
         """
         Args:
@@ -97,10 +103,18 @@ class PointLifter:
                 lifted position is pulled onto the wall behind it. Kept as
                 a flag only so tests can exercise the raw (no-occlusion)
                 projection with ``False``.
+            depth_gap_m: Keep only the dominant depth cluster among the mask
+                inliers — ranges are grouped into runs separated by gaps
+                larger than this, and the most populous run wins. This is
+                what stops a mask that overshoots its object from dragging
+                the wall behind it (or the street outside a window) into the
+                cloud. ``None`` disables clustering and restores the raw
+                behaviour.
         """
         self._min_inliers = int(min_inliers)
         self._max_depth_m = max_depth_m
         self._enable_zbuffer = bool(enable_zbuffer)
+        self._depth_gap_m = depth_gap_m
         self._R_sc, self._t_sc = sensor_to_camera_transform()
 
     def lift(
@@ -188,6 +202,21 @@ class PointLifter:
             return LiftResult(position=None, n_inliers=n_inliers)
 
         inliers = xyz_map[in_mask]
+        # 5. depth clustering: keep only the dominant surface along the
+        # bearing. The z-buffer rejects background *behind the object at the
+        # same pixel*, but wherever the mask overshoots the true silhouette
+        # the nearest surface at that pixel already is the background — so it
+        # survives the gate and drags the cloud across the room. Objects and
+        # the wall behind them separate cleanly in depth, so the largest
+        # gap-free run of ranges is the object.
+        if self._depth_gap_m is not None and n_inliers >= self._min_inliers:
+            selected = _dominant_depth_cluster(
+                depth[in_mask], self._depth_gap_m,
+            )
+            if int(selected.sum()) >= self._min_inliers:
+                inliers = inliers[selected]
+                n_inliers = int(selected.sum())
+
         med = np.median(inliers, axis=0)
         return LiftResult(
             position=Vector3(x=float(med[0]), y=float(med[1]), z=float(med[2])),
@@ -199,6 +228,35 @@ class PointLifter:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _dominant_depth_cluster(depths: np.ndarray, gap_m: float) -> np.ndarray:
+    """Boolean mask selecting the most populous gap-free run of ``depths``.
+
+    Sorting the ranges and cutting wherever consecutive values differ by more
+    than ``gap_m`` splits the mask's returns into the surfaces it actually
+    covers: the object, and whatever lies beyond it where the mask overshot.
+    The biggest run is the object — the overshoot is a rim of pixels, the
+    object is the bulk of the mask.
+
+    Ties go to the nearer cluster: an object is in front of the things its
+    silhouette leaks onto, never behind them.
+    """
+    if depths.size == 0:
+        return np.zeros(0, dtype=bool)
+
+    order = np.argsort(depths, kind="stable")
+    ordered = depths[order]
+    # Run boundaries: index i starts a new run when it jumps from i-1.
+    starts = np.flatnonzero(np.diff(ordered) > gap_m) + 1
+    bounds = np.concatenate(([0], starts, [ordered.size]))
+    sizes = np.diff(bounds)
+    best = int(np.argmax(sizes))          # argmax returns the first maximum,
+    lo, hi = bounds[best], bounds[best + 1]   # i.e. the nearest on a tie
+
+    selected = np.zeros(depths.size, dtype=bool)
+    selected[order[lo:hi]] = True
+    return selected
 
 
 def _rotation_from_quaternion(q: Quaternion) -> np.ndarray:

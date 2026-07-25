@@ -34,11 +34,28 @@ import numpy as np
 # ── merge / prune tuning (identical to the offline objectmap) ──────────────────
 MERGE_IOU = 0.3        # same-label nodes merge if 3D IoU exceeds this ...
 MERGE_DIST = 0.4       # ... or centres are within this many metres
+#
+# Two further merge criteria were tried and rejected on measurement: growing
+# the distance gate with the object's diagonal, and consolidating same-label
+# nodes whose boxes nest (intersection-over-smaller, which IoU cannot see
+# across a size gap). Both raised precision — livingroom_3 0.169 to 0.265 —
+# by merging duplicates, but they also merged genuinely distinct instances in
+# dense scenes: chinese_room recall fell 0.500 to 0.402 and mAP 0.415 to
+# 0.332, and no setting of the two thresholds was neutral on both corpora.
+# Whatever fixes duplication has to distinguish "two views of one couch" from
+# "two chairs at one table", which box overlap alone does not.
 NMS_IOU = 0.5          # cross-label: suppress the weaker of two boxes above this
 PTS_CAP = 4000         # cap accumulated points per node (subsample beyond this)
 
 MIN_LIDAR_3D = 5       # need >= this many inlier lidar pts for a 3D centre
 LIDAR_GATE_M = 1.5     # drop pts >this far from the instance median before averaging
+
+# Box estimation. Percentiles rather than min/max, because the node's cloud is
+# the union of every observation ever merged into it and a single stray return
+# would otherwise define a corner forever.
+BOX_PCT = 2.0              # per-axis percentile for the box (2nd .. 98th)
+CLUSTER_MAX_DIM_M = 3.0    # above this the cloud is probably two things ...
+CLUSTER_VOXEL_M = 0.25     # ... so fall back to connected-component clustering
 
 # Flat wall-decor classes whose box-prompted masks frequently grab the co-planar
 # bare wall, lifting to a large, thin, vertical "sheet" that is a phantom rather
@@ -48,6 +65,18 @@ FLAT_LABELS = {"wall decal", "picture", "painting", "photo", "poster",
 WALL_MIN_EXTENT = 2.0      # a real picture/decal's long side is well under this (m)
 WALL_MAX_THICK = 0.12      # essentially planar (m)
 WALL_NORMAL_MAX_Z = 0.4    # plane normal ~horizontal => a vertical wall surface
+
+
+def _is_structure(label: str) -> bool:
+    """Architecture ("stuff") vs a real object instance.
+
+    Imported lazily-ish here rather than duplicating the label set: the
+    vocabulary module owns what counts as structure, this module only records
+    the verdict on each node so consumers can filter.
+    """
+    from xiao_hei_vln.perception.vocab import is_structure
+
+    return is_structure(label)
 
 
 def robust_center(pts: np.ndarray):
@@ -64,6 +93,89 @@ def robust_center(pts: np.ndarray):
 
 def _aabb(pts: np.ndarray):
     return pts.min(0), pts.max(0)
+
+
+def _percentile_box(pts: np.ndarray):
+    """AABB from per-axis percentiles instead of raw min/max.
+
+    ``min``/``max`` are the least robust statistics there are: one stray
+    return through a doorway sets a corner, and since the node's cloud is the
+    union of every observation, one bad frame out of hundreds ruins the box
+    permanently. Measured on livingroom_3, raw min/max gave a median size
+    error of 6.8x and stretched one sofa to 58 m. Percentiles clip the tail
+    while leaving a genuinely large object at its true extent.
+    """
+    if len(pts) < 8:                      # too few to have a meaningful tail
+        return _aabb(pts)
+    lo = np.percentile(pts, BOX_PCT, axis=0)
+    hi = np.percentile(pts, 100.0 - BOX_PCT, axis=0)
+    return lo, hi
+
+
+def _voxel_largest_cluster(pts: np.ndarray, voxel_m: float) -> np.ndarray:
+    """Keep the points of the largest 26-connected voxel component.
+
+    The percentile box handles a thin tail of outliers, but not a node whose
+    cloud is genuinely bimodal — a mask that straddled two rooms, or a merge
+    that swallowed a second instance. There the outliers are a *cluster*, and
+    trimming percentiles just shaves its edges. Connectivity separates them.
+    """
+    if len(pts) < 8:
+        return pts
+
+    keys = np.floor(pts / voxel_m).astype(np.int64)
+    uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
+    index = {tuple(k): i for i, k in enumerate(uniq)}
+
+    # Iterative flood fill over occupied voxels; 26-neighbourhood so a
+    # diagonal contact still counts as one surface.
+    offsets = [(dx, dy, dz)
+               for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+               if (dx, dy, dz) != (0, 0, 0)]
+    comp = np.full(len(uniq), -1, dtype=np.int64)
+    n_comp = 0
+    for start in range(len(uniq)):
+        if comp[start] != -1:
+            continue
+        stack = [start]
+        comp[start] = n_comp
+        while stack:
+            cur = stack.pop()
+            kx, ky, kz = uniq[cur]
+            for dx, dy, dz in offsets:
+                nb = index.get((kx + dx, ky + dy, kz + dz))
+                if nb is not None and comp[nb] == -1:
+                    comp[nb] = n_comp
+                    stack.append(nb)
+        n_comp += 1
+
+    if n_comp <= 1:
+        return pts
+    point_comp = comp[inverse]
+    counts = np.bincount(point_comp, minlength=n_comp)
+    return pts[point_comp == int(np.argmax(counts))]
+
+
+def _core_points(pts: np.ndarray) -> np.ndarray:
+    """The subset of a node's cloud that plausibly belongs to one object.
+
+    Two passes, cheapest first: a median-distance gate (the same
+    ``LIDAR_GATE_M`` the centre already used), then — only if the result is
+    still implausibly large for any indoor object — connected-component
+    clustering to drop a whole second blob.
+    """
+    if len(pts) < MIN_LIDAR_3D:
+        return pts
+    med = np.median(pts, axis=0)
+    gated = pts[np.linalg.norm(pts - med, axis=1) <= LIDAR_GATE_M]
+    if len(gated) < MIN_LIDAR_3D:
+        gated = pts
+
+    lo, hi = _percentile_box(gated)
+    if float(np.max(hi - lo)) <= CLUSTER_MAX_DIM_M:
+        return gated
+    clustered = _voxel_largest_cluster(gated, CLUSTER_VOXEL_M)
+    return clustered if len(clustered) >= MIN_LIDAR_3D else gated
 
 
 def _pca_extents(pts: np.ndarray):
@@ -98,11 +210,12 @@ def iou_3d(a_min, a_max, b_min, b_max) -> float:
 
 class _Node:
     __slots__ = ("node_id", "label", "score", "n_obs", "pts", "cmin", "cmax",
-                 "center", "color_rgb", "color_name")
+                 "center", "color_rgb", "color_name", "is_structure")
 
     def __init__(self, node_id, label, score, pts, color_rgb=None, color_name=None):
         self.node_id = node_id
         self.label = label
+        self.is_structure = _is_structure(label)
         self.score = score
         self.n_obs = 1
         self.pts = pts
@@ -113,16 +226,21 @@ class _Node:
     def _recompute(self):
         if len(self.pts) > PTS_CAP:                       # keep memory bounded
             self.pts = self.pts[np.random.choice(len(self.pts), PTS_CAP, False)]
-        self.cmin, self.cmax = _aabb(self.pts)
-        c, _ = robust_center(self.pts)
-        med = np.median(self.pts, axis=0)
-        self.center = np.array(c) if c is not None else med
+        # Box and centre come from the SAME gated cloud. Taking the raw
+        # min/max for the box while the centre used a median gate is what let
+        # a node report a centre 1.3 m outside its own box: one scan return
+        # that slipped through a doorway moved the corner but not the median.
+        core = _core_points(self.pts)
+        self.cmin, self.cmax = _percentile_box(core)
+        c, _ = robust_center(core)
+        self.center = np.array(c) if c is not None else np.median(core, axis=0)
 
     def merge(self, label, score, pts, color_rgb=None, color_name=None):
         self.pts = np.vstack([self.pts, pts])
         self.n_obs += 1
         if score >= self.score:                           # new best observation
             self.label = label                            # follow the stronger label
+            self.is_structure = _is_structure(label)
             if color_rgb is not None:                     # keep colour in step
                 self.color_rgb = color_rgb
                 self.color_name = color_name
@@ -209,6 +327,7 @@ class ObjectMap:
             out.append({
                 "node_id": int(nd.node_id),
                 "label": nd.label, "score": round(float(nd.score), 4),
+                "is_structure": bool(nd.is_structure),
                 "n_obs": nd.n_obs, "n_pts": int(len(nd.pts)),
                 "center_3d": [round(float(x), 4) for x in nd.center],
                 "bbox_aabb": {"min": [round(float(x), 4) for x in nd.cmin],
