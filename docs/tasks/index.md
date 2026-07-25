@@ -34,6 +34,7 @@ Every row below links to a distinct document.
 | 18 | [Deduplicate the responder factory](TASK%2018%20-%20Deduplicate%20the%20responder%20factory.md) | Done |
 | 19 | [Remove the near-relation subsystem](TASK%2019%20-%20Remove%20the%20near-relation%20subsystem.md) | Done |
 | 20 | [Exploration benchmarking across Unity scenes](TASK%2020%20-%20Exploration%20benchmarking%20across%20Unity%20scenes.md) | Done |
+| 21 | [Offline perception replay harness & 3D lift repair](TASK%2021%20-%20Offline%20perception%20replay%20harness%20and%203D%20lift%20repair.md) | Done — dedup pending |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
