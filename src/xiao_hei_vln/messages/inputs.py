@@ -27,6 +27,13 @@ class VLMInput(BaseModel):
     terrain_local: TerrainMap | None = None
     terrain_ext: TerrainMap | None = None
     pose: OdomPose | None = None
+    # The pose rewound to `image.header.stamp`. The camera lags the odometry
+    # (a frame period at best), so pairing a mask with the *newest* pose
+    # offsets every lifted point by however far the robot travelled in
+    # between. Consumers that project image data into the world should prefer
+    # this; consumers that ask "where is the robot now" (exploration) want
+    # `pose`. `None` when there is no image or no pose history yet.
+    image_pose: OdomPose | None = None
     question: ChallengeQuestion | None = None
 
     @property

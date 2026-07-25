@@ -62,12 +62,36 @@ def bind_subscribers(node: Node, cache: LatestCache) -> dict[str, object]:
     hold references and later destroy them.
     """
     # Local imports — see module docstring.
+    import functools
+
     from nav_msgs.msg import Odometry
+    from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import Image, PointCloud2
     from std_msgs.msg import String
 
-    qos = QoSProfile(
+    # Sensor streams: keep only the newest sample.
+    #
+    # RELIABLE + depth=5 makes DDS retain and replay stale samples in order
+    # whenever the subscriber falls behind — and ours does, because the tick
+    # blocks for ~1 s in the perception sidecar. The steady-state lag is then
+    # `depth x message period`, which measured at 1.2 s on /camera/image
+    # (5 x 250 ms) and 1.0 s on /registered_scan. Lifting a 1.2 s old mask
+    # against the current pose put every object off by however far the robot
+    # had driven since.
+    #
+    # BEST_EFFORT + depth=1 is the standard sensor profile: old frames are
+    # dropped rather than queued, so a snapshot always sees the freshest
+    # frame available. A RELIABLE publisher can serve a BEST_EFFORT
+    # subscriber, so this cannot break the connection to the sim.
+    sensor_qos = QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        history=HistoryPolicy.KEEP_LAST,
+    )
+    # The question arrives once and must not be dropped — that one stays
+    # reliable, and its depth costs nothing.
+    question_qos = QoSProfile(
         depth=5,
         reliability=ReliabilityPolicy.RELIABLE,
         history=HistoryPolicy.KEEP_LAST,
@@ -154,22 +178,23 @@ def bind_subscribers(node: Node, cache: LatestCache) -> dict[str, object]:
             ChallengeQuestion.from_text(str(msg.data), _stamp_from_ros(now))
         )
 
+    # Sensor callbacks go in a reentrant group so they keep draining while the
+    # tick timer is parked in the sidecar's /detect call. Without this the
+    # single-threaded executor cannot service them at all during that ~1 s,
+    # and depth=1 would just mean the one buffered frame also goes stale.
+    group = ReentrantCallbackGroup()
+    sub = functools.partial(node.create_subscription, callback_group=group)
+
     return {
-        "image": node.create_subscription(Image, "/camera/image", on_image, qos),
-        "registered_scan": node.create_subscription(
-            PointCloud2, "/registered_scan", on_registered, qos
+        "image": sub(Image, "/camera/image", on_image, sensor_qos),
+        "registered_scan": sub(
+            PointCloud2, "/registered_scan", on_registered, sensor_qos
         ),
-        "sensor_scan": node.create_subscription(
-            PointCloud2, "/sensor_scan", on_sensor, qos
+        "sensor_scan": sub(PointCloud2, "/sensor_scan", on_sensor, sensor_qos),
+        "terrain_local": sub(PointCloud2, "/terrain_map", on_terrain, sensor_qos),
+        "terrain_ext": sub(
+            PointCloud2, "/terrain_map_ext", on_terrain_ext, sensor_qos
         ),
-        "terrain_local": node.create_subscription(
-            PointCloud2, "/terrain_map", on_terrain, qos
-        ),
-        "terrain_ext": node.create_subscription(
-            PointCloud2, "/terrain_map_ext", on_terrain_ext, qos
-        ),
-        "pose": node.create_subscription(Odometry, "/state_estimation", on_pose, qos),
-        "question": node.create_subscription(
-            String, "/challenge_question", on_question, qos
-        ),
+        "pose": sub(Odometry, "/state_estimation", on_pose, sensor_qos),
+        "question": sub(String, "/challenge_question", on_question, question_qos),
     }
