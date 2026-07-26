@@ -35,6 +35,8 @@ Every row below links to a distinct document.
 | 19 | [Remove the near-relation subsystem](TASK%2019%20-%20Remove%20the%20near-relation%20subsystem.md) | Done |
 | 20 | [Exploration benchmarking across Unity scenes](TASK%2020%20-%20Exploration%20benchmarking%20across%20Unity%20scenes.md) | Done |
 | 21 | [Offline perception replay harness & 3D lift repair](TASK%2021%20-%20Offline%20perception%20replay%20harness%20and%203D%20lift%20repair.md) | Done — dedup pending |
+| 22 | [Multi-scene perception benchmark & the median-box fix](TASK%2022%20-%20Multi-scene%20perception%20benchmark%20and%20the%20median-box%20fix.md) | Done |
+| 23 | [Where recall actually dies, measured stage by stage](TASK%2023%20-%20Where%20recall%20actually%20dies,%20measured%20stage%20by%20stage.md) | Done |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
