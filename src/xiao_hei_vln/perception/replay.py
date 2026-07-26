@@ -186,16 +186,24 @@ def run_detect(
     score_threshold: float = 0.25,
     iou_threshold: float = 0.5,
     limit: int | None = None,
+    min_move_m: float = 0.0,
+    min_rot_deg: float = 0.0,
 ) -> Path:
     """Stage A: POST every frame to the sidecar, cache detections to disk.
 
     Returns the path of the written ``detections.jsonl``. Each line is
     ``{"tick_id": int, "detections": [{"label", "score", "mask_rle"}, ...]}``.
+
+    ``min_move_m`` / ``min_rot_deg`` thin to viewpoint keyframes before paying
+    for detection. A tick where the robot has not moved yields the same masks
+    as the one before it at a second of GPU each, and stage B discards them
+    anyway — but a cache built this way is only valid for a stage B thinned at
+    least as aggressively, so the thresholds are recorded in the metadata.
     """
     from xiao_hei_vln.perception.client import HTTPPerceptionClient
 
     frames_dir = Path(frames_dir)
-    frames = load_frames(frames_dir)
+    frames = load_frames(frames_dir, min_move_m=min_move_m, min_rot_deg=min_rot_deg)
     if limit is not None:
         frames = frames[:limit]
 
@@ -230,6 +238,8 @@ def run_detect(
         "score_threshold": score_threshold,
         "iou_threshold": iou_threshold,
         "n_frames": len(frames),
+        "min_move_m": min_move_m,
+        "min_rot_deg": min_rot_deg,
     }, indent=2) + "\n")
     return out_path
 
@@ -283,12 +293,18 @@ def replay_lift(
     min_inliers: int = 10,
     max_depth_m: float | None = None,
     use_object_map: bool = True,
-    use_scan_accumulator: bool = True,
+    # Off, to match production: app/main.py defaults XIAO_HEI_SCAN_KEYFRAMES to
+    # 0, which leaves the responder without an accumulator. Replaying with one
+    # measures a configuration we do not ship — and flatters nothing: stacking
+    # keyframes stretches an object's cloud, inflates its box, and splits it
+    # into more nodes.
+    use_scan_accumulator: bool = False,
     use_image_pose: bool = True,
     min_move_m: float = 0.0,
     min_rot_deg: float = 0.0,
     max_speed: float | None = None,
     max_yaw_rate: float | None = None,
+    min_score: float = 0.0,
     frames: list[Frame] | None = None,
 ) -> tuple[dict, LiftStats]:
     """Stage B: cached masks + recorded scans/poses → fused scene graph.
@@ -300,6 +316,11 @@ def replay_lift(
     ``max_speed`` / ``max_yaw_rate`` drop frames captured while the robot was
     moving faster than the given gate — the motion-gating experiment, run
     offline instead of by re-driving the robot.
+
+    ``min_score`` discards weak detections from the cache. Raising the
+    detector's threshold is therefore a 40-second experiment rather than a
+    stage-A re-run — but only upwards: the cache cannot produce a detection
+    the sidecar already filtered out at capture time.
     """
     from xiao_hei_vln.perception.lifter import PointLifter
     from xiao_hei_vln.perception.object_map import ObjectMap
@@ -333,6 +354,8 @@ def replay_lift(
             if accum is not None else scan
         )
         for det in dets:
+            if float(det["score"]) < min_score:
+                continue
             stats.n_detections += 1
             result = lifter.lift(
                 mask=decode_mask(det["mask_rle"]),
