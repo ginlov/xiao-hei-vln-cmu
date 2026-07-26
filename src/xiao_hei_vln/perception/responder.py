@@ -48,7 +48,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-DEFAULT_SCORE_THRESHOLD = 0.25
+# 0.25 was set when the class prior held 28 labels. It now holds 110, so the
+# detector scores four times as many phrases against every region and the weak
+# tail is mostly labels that never fire confidently at all — `photo` lands
+# below 0.35 in 98% of its detections. Swept offline over 3 recorded scenes,
+# 0.35 cut the object count by a third and the counting error by 26% while
+# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325). Raising it further
+# trades recall for precision, which needs end-to-end scoring to judge.
+DEFAULT_SCORE_THRESHOLD = 0.35
 DEFAULT_IOU_THRESHOLD = 0.5
 
 
