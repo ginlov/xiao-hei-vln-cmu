@@ -210,7 +210,8 @@ def iou_3d(a_min, a_max, b_min, b_max) -> float:
 
 class _Node:
     __slots__ = ("node_id", "label", "score", "n_obs", "pts", "cmin", "cmax",
-                 "center", "color_rgb", "color_name", "is_structure")
+                 "center", "color_rgb", "color_name", "is_structure",
+                 "obs_centers", "obs_extents")
 
     def __init__(self, node_id, label, score, pts, color_rgb=None, color_name=None):
         self.node_id = node_id
@@ -221,23 +222,51 @@ class _Node:
         self.pts = pts
         self.color_rgb = color_rgb
         self.color_name = color_name
+        self.obs_centers = []
+        self.obs_extents = []
+        self._observe(pts)
         self._recompute()
+
+    def _observe(self, pts):
+        """Record one observation's own centre and extent.
+
+        A single observation is already close to the right size — measured
+        against ground truth its volume ratio is 0.95. What ruins the box is
+        pooling the observations' points: each is offset from the true centre
+        by ~0.25 m in a direction that depends on where the robot stood, so
+        the union spans the object *plus* that scatter, and the volume comes
+        out around 3.5x too big. Keeping the per-observation boxes lets the
+        node take a median instead of a union.
+
+        ``_core_points`` still runs, per observation: a mask that spans two
+        surfaces has to be cut apart here, because a median over observations
+        would faithfully return the bimodal box. The percentile trim does not
+        — it exists to stop one bad frame out of hundreds from setting a
+        corner of the pooled cloud, and taking the median across observations
+        already does that. Applying both shrank boxes to 0.66x of ground
+        truth, trading one direction of error for the other.
+        """
+        core = _core_points(pts)
+        lo, hi = _aabb(core)
+        c, _ = robust_center(core)
+        self.obs_centers.append(np.array(c) if c is not None else np.median(core, axis=0))
+        self.obs_extents.append(hi - lo)
 
     def _recompute(self):
         if len(self.pts) > PTS_CAP:                       # keep memory bounded
             self.pts = self.pts[np.random.choice(len(self.pts), PTS_CAP, False)]
-        # Box and centre come from the SAME gated cloud. Taking the raw
-        # min/max for the box while the centre used a median gate is what let
-        # a node report a centre 1.3 m outside its own box: one scan return
-        # that slipped through a doorway moved the corner but not the median.
-        core = _core_points(self.pts)
-        self.cmin, self.cmax = _percentile_box(core)
-        c, _ = robust_center(core)
-        self.center = np.array(c) if c is not None else np.median(core, axis=0)
+        # Median over observations, not over the pooled cloud: the estimator
+        # that does not accumulate each observation's centre error into the
+        # size. Both terms come from the same set of observations, so the
+        # centre still cannot fall outside the box.
+        self.center = np.median(np.array(self.obs_centers), axis=0)
+        half = np.median(np.array(self.obs_extents), axis=0) / 2.0
+        self.cmin, self.cmax = self.center - half, self.center + half
 
     def merge(self, label, score, pts, color_rgb=None, color_name=None):
         self.pts = np.vstack([self.pts, pts])
         self.n_obs += 1
+        self._observe(pts)
         if score >= self.score:                           # new best observation
             self.label = label                            # follow the stronger label
             self.is_structure = _is_structure(label)
@@ -312,13 +341,13 @@ class ObjectMap:
                       and not (drop_wall_sheets and _is_wall_sheet(nd.pts, nd.label))]
         return self
 
-    def export(self, min_pts: int = 15):
+    def export(self, min_pts: int = 15, min_obs: int = 1):
         """Non-destructive snapshot: NMS + prune on a copy of the node LIST so a
         live map can be summarized each tick without losing accumulating nodes.
         Returns a list of dicts (see :meth:`to_list`)."""
         view = ObjectMap(self.merge_iou, self.merge_dist, self.nms_iou)
         view.nodes = list(self.nodes)              # shared node objs, separate list
-        view.finalize().prune(min_pts=min_pts)
+        view.finalize().prune(min_obs=min_obs, min_pts=min_pts)
         return view.to_list()
 
     def to_list(self):

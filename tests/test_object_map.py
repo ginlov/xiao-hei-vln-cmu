@@ -17,18 +17,30 @@ def _cube(center, half=0.25, n=30, seed=0):
 
 # ── fusion behaviour ──────────────────────────────────────────────────────────
 
-def test_same_label_union_grows_the_box():
+def test_second_view_of_one_object_does_not_grow_the_box():
+    """Two views of one chair must describe a chair, not a chair-and-a-half.
+
+    Each observation lands its own centre a little off, in whatever direction
+    the robot happened to be standing. Pooling the point clouds adds that
+    scatter to the object — measured against ground truth it made boxes ~3.5x
+    too big by volume — so the node takes the median of the per-observation
+    boxes instead of their union.
+    """
     om = ObjectMap()
     om.add("chair", 0.8, _cube([0.0, 0.0, 0.0], half=0.25, seed=1))
-    # second view, center 0.25 away (< MERGE_DIST) → merges, box unions.
+    # second view, center 0.25 away (< MERGE_DIST) → merges.
     om.add("chair", 0.9, _cube([0.25, 0.0, 0.0], half=0.25, seed=2))
     nodes = om.to_list()
     assert len(nodes) == 1                       # fused, not duplicated
     node = nodes[0]
     assert node["n_obs"] == 2
     assert node["score"] == 0.9                  # follows the stronger observation
-    # union spans roughly [-0.25, 0.5] in x → clearly wider than one cube (0.5).
-    assert node["bbox_aabb"]["size"][0] > 0.6
+    # Each view is a 0.5 m cube, so the fused box stays about one cube wide —
+    # the union would have spanned [-0.25, 0.5], i.e. 0.75 m.
+    assert node["bbox_aabb"]["size"][0] < 0.6
+    # ...and the box sits between the two views rather than spanning both.
+    mid_x = (node["bbox_aabb"]["min"][0] + node["bbox_aabb"]["max"][0]) / 2
+    assert 0.0 < mid_x < 0.25
 
 
 def test_different_labels_do_not_merge():
