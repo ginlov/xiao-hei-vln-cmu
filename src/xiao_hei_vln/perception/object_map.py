@@ -211,7 +211,7 @@ def iou_3d(a_min, a_max, b_min, b_max) -> float:
 class _Node:
     __slots__ = ("node_id", "label", "score", "n_obs", "pts", "cmin", "cmax",
                  "center", "color_rgb", "color_name", "is_structure",
-                 "obs_centers", "obs_extents")
+                 "obs_centers", "obs_extents", "obs_weights")
 
     def __init__(self, node_id, label, score, pts, color_rgb=None, color_name=None):
         self.node_id = node_id
@@ -224,43 +224,64 @@ class _Node:
         self.color_name = color_name
         self.obs_centers = []
         self.obs_extents = []
+        self.obs_weights = []
         self._observe(pts)
         self._recompute()
 
     def _observe(self, pts):
-        """Record one observation's own centre and extent.
+        """Record one observation's own centre, extent, and point count.
 
         A single observation is already close to the right size — measured
         against ground truth its volume ratio is 0.95. What ruins the box is
         pooling the observations' points: each is offset from the true centre
-        by ~0.25 m in a direction that depends on where the robot stood, so
+        by ~0.23 m in a direction that depends on where the robot stood, so
         the union spans the object *plus* that scatter, and the volume comes
-        out around 3.5x too big. Keeping the per-observation boxes lets the
-        node take a median instead of a union.
+        out around 6x too big. Keeping the per-observation boxes lets the node
+        average them instead of taking their union.
+
+        The point count is kept per observation, not just summed, because it
+        is the weight ``_recompute`` averages with: how much of the object a
+        view saw is the natural measure of how much that view's box is worth.
 
         ``_core_points`` still runs, per observation: a mask that spans two
-        surfaces has to be cut apart here, because a median over observations
-        would faithfully return the bimodal box. The percentile trim does not
-        — it exists to stop one bad frame out of hundreds from setting a
-        corner of the pooled cloud, and taking the median across observations
-        already does that. Applying both shrank boxes to 0.66x of ground
-        truth, trading one direction of error for the other.
+        surfaces has to be cut apart here, because an average over
+        observations would faithfully return the bimodal box. The percentile
+        trim does not — it exists to stop one bad frame out of hundreds from
+        setting a corner of the pooled cloud, and averaging across
+        observations already does that. Applying both shrank boxes to 0.66x of
+        ground truth, trading one direction of error for the other.
         """
         core = _core_points(pts)
         lo, hi = _aabb(core)
         c, _ = robust_center(core)
         self.obs_centers.append(np.array(c) if c is not None else np.median(core, axis=0))
         self.obs_extents.append(hi - lo)
+        self.obs_weights.append(max(len(core), 1))
 
     def _recompute(self):
         if len(self.pts) > PTS_CAP:                       # keep memory bounded
             self.pts = self.pts[np.random.choice(len(self.pts), PTS_CAP, False)]
-        # Median over observations, not over the pooled cloud: the estimator
-        # that does not accumulate each observation's centre error into the
-        # size. Both terms come from the same set of observations, so the
-        # centre still cannot fall outside the box.
-        self.center = np.median(np.array(self.obs_centers), axis=0)
-        half = np.median(np.array(self.obs_extents), axis=0) / 2.0
+        # Over the observations, not over the pooled cloud: the estimator that
+        # does not accumulate each observation's centre error into the size.
+        # Pooling was measured against this and is far worse — even when every
+        # observation is filed under the right object by an oracle, one AABB
+        # over the pooled points scores 0.138 of 2 against this estimator's
+        # 0.443, because the extremes are set by the scatter rather than the
+        # object.
+        #
+        # Weighted by how many points each observation contributed, rather
+        # than a plain median: a view that saw 900 returns of the object knows
+        # more about where it is than one that scraped 12 off its edge, and
+        # unweighted the two count the same. Worth mIoU 0.203 -> 0.217 and
+        # 37.9% -> 44.2% at IoU >= 0.25 over seven scenes, with recall and
+        # precision unchanged — it is purely a better box. The gain is all in
+        # near misses promoted to 1-pointers; the >= 0.5 rate does not move,
+        # which is consistent with 2 points needing better point *selection*
+        # rather than a better estimator over the same points.
+        w = np.asarray(self.obs_weights, dtype=np.float64)
+        w = w / w.sum()
+        self.center = (np.array(self.obs_centers) * w[:, None]).sum(axis=0)
+        half = (np.array(self.obs_extents) * w[:, None]).sum(axis=0) / 2.0
         self.cmin, self.cmax = self.center - half, self.center + half
 
     def merge(self, label, score, pts, color_rgb=None, color_name=None):
