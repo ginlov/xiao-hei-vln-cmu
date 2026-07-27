@@ -47,6 +47,7 @@ class SceneResult:
     recall: float = 0.0
     mAP: float = 0.0
     mean_iou: float = 0.0
+    obj_ref: float = 0.0
     median_center_err: float = 0.0
     counting_mae: float = 0.0
     error: str = ""
@@ -109,6 +110,7 @@ def run_scene(
     res.recall = op["recall"]
     res.mAP = report["mAP"][f"dist@{DIST_THR}m"] or 0.0
     res.mean_iou = op.get("mean_3d_iou", 0.0)
+    res.obj_ref = op.get("obj_ref_points", 0.0)
     res.median_center_err = op.get("median_center_err_m", 0.0)
     res.counting_mae = report.get("counting_MAE", 0.0)
     res.report = report
@@ -119,7 +121,8 @@ def format_table(results: list[SceneResult]) -> str:
     cols = (
         ("scene", 18, "s"), ("kfrm", 5, "d"), ("GT", 5, "d"), ("inVoc", 6, ".0%"),
         ("pred", 5, "d"), ("P", 6, ".3f"), ("R", 6, ".3f"), ("mAP", 6, ".3f"),
-        ("mIoU", 6, ".3f"), ("cErr", 6, ".2f"), ("cMAE", 6, ".2f"),
+        ("mIoU", 6, ".3f"), ("pts/2", 6, ".3f"), ("cErr", 6, ".2f"),
+        ("cMAE", 6, ".2f"),
     )
     head = " ".join(f"{n:>{w}s}" if i else f"{n:<{w}s}" for i, (n, w, _) in enumerate(cols))
     lines = [head, "-" * len(head)]
@@ -129,7 +132,8 @@ def format_table(results: list[SceneResult]) -> str:
             lines.append(f"{r.scene:<18s} {r.error}")
             continue
         vals = (r.scene, r.keyframes, r.n_gt, r.in_vocab, r.n_pred, r.precision,
-                r.recall, r.mAP, r.mean_iou, r.median_center_err, r.counting_mae)
+                r.recall, r.mAP, r.mean_iou, r.obj_ref, r.median_center_err,
+                r.counting_mae)
         lines.append(" ".join(
             f"{v:<{w}{f}}" if i == 0 else f"{v:>{w}{f}}"
             for i, (v, (_, w, f)) in enumerate(zip(vals, cols))))
@@ -142,8 +146,8 @@ def format_table(results: list[SceneResult]) -> str:
                 int(np.mean([r.n_gt for r in ok])), float(np.mean([r.in_vocab for r in ok])),
                 int(np.mean([r.n_pred for r in ok])),
                 *(float(np.mean([getattr(r, a) for r in ok])) for a in
-                  ("precision", "recall", "mAP", "mean_iou", "median_center_err",
-                   "counting_mae")))
+                  ("precision", "recall", "mAP", "mean_iou", "obj_ref",
+                   "median_center_err", "counting_mae")))
         lines.append(" ".join(
             f"{v:<{w}{f}}" if i == 0 else f"{v:>{w}{f}}"
             for i, (v, (_, w, f)) in enumerate(zip(mean, cols))))
