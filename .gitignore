@@ -15,6 +15,11 @@ exploration_logs/
 # Perception debug step images (generated when PERCEPTION_DEBUG is on)
 perception/debug/
 
+# Perception viewer: exported scene geometry (~130 MB, rebuild with
+# scripts/export_viz.py) and the three.js copy serve_viz.py fetches on demand.
+viz/data/
+viz/vendor/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
