@@ -259,7 +259,11 @@ class TestZBuffer:
         return np.concatenate([near, far], axis=0)
 
     def test_disabled_keeps_both_surfaces(self) -> None:
-        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=False)
+        # Clustering off too: this exercises the RAW projection, and the
+        # default voxel clustering would otherwise split the two surfaces
+        # (they are 4 m apart) and keep only the near one.
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, enable_zbuffer=False,
+                             cluster_voxel_m=0.0)
         pose_p, pose_q = _identity_pose()
         result = lifter.lift(_full_mask(), self._two_depth_scan(), pose_p, pose_q)
         assert result.position is not None
@@ -294,3 +298,55 @@ class TestValidation:
         pose_p, pose_q = _identity_pose()
         with pytest.raises(ValueError, match="scan_points_map must be"):
             lifter.lift(_full_mask(), np.zeros((5, 2)), pose_p, pose_q)
+
+
+# ---------------------------------------------------------------------------
+# 7. voxel connected-component clustering (mask spill rejection)
+# ---------------------------------------------------------------------------
+
+
+class TestVoxelClustering:
+    def _spill_scan(self):
+        """A small object plus a co-visible neighbouring surface OFF its
+        bearing, so the z-buffer cannot reject it — the mask-spill case."""
+        obj = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=30, spread=0.03)
+        spill = _scatter_around(Vector3(x=2.2, y=1.5, z=0.0), n=60, spread=0.05)
+        return np.concatenate([obj, spill], axis=0)
+
+    def test_disabled_lets_the_spill_dominate(self) -> None:
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, cluster_voxel_m=0.0)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._spill_scan(), pose_p, pose_q)
+        assert result.n_inliers == 90
+        # the 60-point spill outvotes the 30-point object in the median
+        assert result.position.y > 0.5
+
+    def test_enabled_keeps_the_nearest_component(self) -> None:
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, cluster_voxel_m=0.10)
+        pose_p, pose_q = _identity_pose()
+        result = lifter.lift(_full_mask(), self._spill_scan(), pose_p, pose_q)
+        assert result.n_inliers == 30
+        assert result.position.y == pytest.approx(0.0, abs=0.1)
+        assert result.position.x == pytest.approx(2.0, abs=0.1)
+
+    def test_single_component_is_untouched(self) -> None:
+        scan = _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=40, spread=0.03)
+        pose_p, pose_q = _identity_pose()
+        plain = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, cluster_voxel_m=0.0)
+        clustered = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, cluster_voxel_m=0.10)
+        a = plain.lift(_full_mask(), scan, pose_p, pose_q)
+        b = clustered.lift(_full_mask(), scan, pose_p, pose_q)
+        assert a.n_inliers == b.n_inliers == 40
+        assert b.position.x == pytest.approx(a.position.x)
+
+    def test_falls_back_to_largest_when_none_reach_the_floor(self) -> None:
+        """Every component below min_inliers: keep the largest so n_inliers
+        stays informative, and let the existing floor reject the lift."""
+        scan = np.concatenate([
+            _scatter_around(Vector3(x=2.0, y=0.0, z=0.0), n=6, spread=0.02),
+            _scatter_around(Vector3(x=2.0, y=2.0, z=0.0), n=3, spread=0.02),
+        ], axis=0)
+        lifter = PointLifter(min_inliers=DEFAULT_MIN_INLIERS, cluster_voxel_m=0.10)
+        result = lifter.lift(_full_mask(), scan, *_identity_pose())
+        assert result.position is None
+        assert result.n_inliers == 6

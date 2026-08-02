@@ -14,8 +14,10 @@ median and no 3D box.
     recomputed from the union, so the box CONVERGES to the true extent as
     views accumulate (filling the ``bbox_min``/``bbox_max`` the scene graph
     otherwise leaves ``None``);
-  - a final cross-label NMS drops near-duplicate boxes with conflicting labels
-    (e.g. the same console detected as both "cabinet" and "shelf");
+  - a final suppression pass drops the weaker of two co-located nodes: by IoU
+    for any label pair, and — for identical labels only — when their box
+    surfaces nearly touch and their centres are close, which is what a
+    fragmented object looks like once boxes are tight enough that IoU is 0;
   - flat wall-decor labels whose mask grabbed the co-planar bare wall (a large,
     thin, vertical "sheet") are rejected as phantoms.
 
@@ -35,6 +37,27 @@ import numpy as np
 MERGE_IOU = 0.3        # same-label nodes merge if 3D IoU exceeds this ...
 MERGE_DIST = 0.4       # ... or centres are within this many metres
 NMS_IOU = 0.5          # cross-label: suppress the weaker of two boxes above this
+# IoU alone cannot catch cross-label duplicates once boxes are tight. Measured
+# over 14 scenes, node pairs whose centres are within 0.5 m have median IoU
+# 0.055 and NONE reach NMS_IOU — the rule never fires. Those pairs are not far
+# apart, though: their box surfaces sit a median 3 cm apart, because a LiDAR
+# sweep sees one face of an object and two viewpoints yield adjacent, disjoint
+# slabs. So suppression also accepts "surfaces nearly touching AND centres
+# close", which is what a fragmented object actually looks like.
+# Restricted to IDENTICAL labels for now — across labels it would also
+# collapse genuinely touching distinct objects and hide detector label
+# instability. 0.0 on either disables the path. See docs/tasks/backlog.md B3.
+# 0.4 m matches MERGE_DIST deliberately: `add` already merges same-label nodes
+# within that radius, but a node's centre MOVES as it accumulates points, so
+# two nodes created further apart can drift inside the radius with nothing
+# re-checking. This is that check, deferred until the centres have settled.
+# Measured over 14 scenes: 216 -> 204 redundant nodes, counting MAE
+# 2.836 -> 2.813 (6 scenes better, 1 worse). Dropping to 0.3 m removes the
+# effect entirely. The gap is not binding at this radius (0.05 and 0.15 give
+# identical results) and is kept only as a guard against a large box whose
+# centre happens to coincide with a small one.
+NMS_DIST = 0.4         # centres within this (m) ...
+NMS_GAP = 0.05         # ... and box surfaces no further apart than this (m)
 PTS_CAP = 4000         # cap accumulated points per node (subsample beyond this)
 
 MIN_LIDAR_3D = 5       # need >= this many inlier lidar pts for a 3D centre
@@ -86,6 +109,14 @@ def _is_wall_sheet(pts: np.ndarray, label: str) -> bool:
             and abs(normal[2]) < WALL_NORMAL_MAX_Z)
 
 
+def box_gap(a_min, a_max, b_min, b_max) -> float:
+    """Shortest distance between two AABB surfaces; 0.0 when they touch or
+    overlap. Unlike IoU this stays informative for small boxes, where any
+    non-overlap collapses IoU to exactly 0 with no gradient."""
+    gap = np.maximum(np.maximum(b_min - a_max, a_min - b_max), 0.0)
+    return float(np.linalg.norm(gap))
+
+
 def iou_3d(a_min, a_max, b_min, b_max) -> float:
     lo = np.maximum(a_min, b_min)
     hi = np.minimum(a_max, b_max)
@@ -131,9 +162,15 @@ class _Node:
 
 
 class ObjectMap:
-    def __init__(self, merge_iou=MERGE_IOU, merge_dist=MERGE_DIST, nms_iou=NMS_IOU):
+    def __init__(self, merge_iou=MERGE_IOU, merge_dist=MERGE_DIST, nms_iou=NMS_IOU,
+                 nms_dist=NMS_DIST, nms_gap=NMS_GAP):
         self.nodes: list[_Node] = []
         self.merge_iou, self.merge_dist, self.nms_iou = merge_iou, merge_dist, nms_iou
+        self.nms_dist, self.nms_gap = nms_dist, nms_gap
+        # node_id -> labels suppressed onto it, filled by finalize(). Kept off
+        # the nodes themselves so export()'s throwaway view cannot leak into
+        # the live map, which shares the same _Node objects.
+        self._absorbed: dict[int, set[str]] = {}
         self._next_id = 0
 
     def add(self, label, score, pts, color_rgb=None, color_name=None):
@@ -166,12 +203,37 @@ class ObjectMap:
                 self.add(o["label"], o["score"], np.asarray(o["pts"]),
                          o.get("color_rgb"), o.get("color_name"))
 
+    def _suppresses(self, a: _Node, b: _Node) -> bool:
+        """True when b is the same physical object as a and should be dropped.
+
+        The gap/distance path is deliberately restricted to **identical
+        labels**: it collapses fragments of one object that ``add`` could not
+        merge because their tight boxes miss both ``merge_iou`` and
+        ``merge_dist``. Applying it across labels would also collapse genuinely
+        distinct touching objects (a pillow on a sofa) and would paper over
+        detector label instability — that case is deferred; see backlog B3.
+        """
+        if iou_3d(a.cmin, a.cmax, b.cmin, b.cmax) >= self.nms_iou:
+            return True                                  # legacy, any label
+        if self.nms_dist <= 0.0 or self.nms_gap <= 0.0 or a.label != b.label:
+            return False
+        return (float(np.linalg.norm(a.center - b.center)) <= self.nms_dist
+                and box_gap(a.cmin, a.cmax, b.cmin, b.cmax) <= self.nms_gap)
+
     def finalize(self):
-        """Cross-label NMS: drop the weaker of two heavily-overlapping nodes."""
+        """Suppress the weaker of two co-located nodes.
+
+        Two paths, see :meth:`_suppresses`: the legacy IoU rule (any label) and
+        a gap/distance rule restricted to identical labels. Best-supported node
+        wins — most observations, then score. When a cross-label suppression
+        does fire, the loser's label is recorded on the winner rather than
+        discarded, so detector label instability stays visible.
+        """
         order = sorted(range(len(self.nodes)),
                        key=lambda i: (self.nodes[i].n_obs, self.nodes[i].score),
                        reverse=True)
         keep, dead = [], set()
+        self._absorbed = {}
         for i in order:
             if i in dead:
                 continue
@@ -180,8 +242,10 @@ class ObjectMap:
                 if j == i or j in dead:
                     continue
                 a, b = self.nodes[i], self.nodes[j]
-                if iou_3d(a.cmin, a.cmax, b.cmin, b.cmax) >= self.nms_iou:
+                if self._suppresses(a, b):
                     dead.add(j)
+                    if b.label != a.label:
+                        self._absorbed.setdefault(a.node_id, set()).add(b.label)
         self.nodes = keep
         return self
 
@@ -198,7 +262,8 @@ class ObjectMap:
         """Non-destructive snapshot: NMS + prune on a copy of the node LIST so a
         live map can be summarized each tick without losing accumulating nodes.
         Returns a list of dicts (see :meth:`to_list`)."""
-        view = ObjectMap(self.merge_iou, self.merge_dist, self.nms_iou)
+        view = ObjectMap(self.merge_iou, self.merge_dist, self.nms_iou,
+                         self.nms_dist, self.nms_gap)
         view.nodes = list(self.nodes)              # shared node objs, separate list
         view.finalize().prune(min_pts=min_pts)
         return view.to_list()
@@ -216,5 +281,6 @@ class ObjectMap:
                               "size": [round(float(x), 4) for x in (nd.cmax - nd.cmin)]},
                 "color_rgb": list(nd.color_rgb) if nd.color_rgb is not None else None,
                 "color_name": nd.color_name,
+                "absorbed_labels": sorted(self._absorbed.get(nd.node_id, ())),
             })
         return sorted(out, key=lambda o: o["node_id"])

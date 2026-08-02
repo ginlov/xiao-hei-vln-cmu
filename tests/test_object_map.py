@@ -105,3 +105,60 @@ def test_sync_keeps_object_id_stable_across_ticks():
     scene.sync_from_object_map(om.export(min_pts=15))
     assert len(scene.objects) == 1
     assert scene.objects[0].object_id == oid          # identity preserved
+
+
+# ---------------------------------------------------------------------------
+# Same-label gap/distance suppression (NMS_DIST / NMS_GAP)
+# ---------------------------------------------------------------------------
+#
+# These pass `merge_dist` small to isolate the finalize-time rule. With the
+# production MERGE_DIST (0.4, equal to NMS_DIST) `add` would already have
+# merged these pairs on the way in — the rule only earns its keep on nodes
+# whose centres DRIFT inside the radius after creation, which cannot be
+# constructed in a couple of calls.
+
+
+def _pair(label_a, label_b, sep, **kw):
+    om = ObjectMap(merge_dist=0.05, **kw)          # no merging at add() time
+    om.add(label_a, 0.9, _cube([0.0, 0.0, 0.0], half=0.08, n=60))
+    om.add(label_b, 0.7, _cube([sep, 0.0, 0.0], half=0.08, n=40, seed=1))
+    return om
+
+
+def test_same_label_fragments_collapse_when_iou_is_zero():
+    """Two tight boxes of one object, adjacent but not overlapping — IoU is
+    exactly 0, so only the gap/distance path can catch them. Cubes are 0.16 m
+    wide and 0.20 m apart, leaving a 0.04 m surface gap (under NMS_GAP)."""
+    om = _pair("sofa", "sofa", 0.20)
+    assert len(om.nodes) == 2                      # add() left them separate
+    out = om.export(min_pts=5)
+    assert len(out) == 1 and out[0]["label"] == "sofa"
+
+
+def test_cross_label_pair_is_left_alone():
+    """Same geometry, different labels: deferred to B3, must NOT be suppressed
+    (a pillow genuinely touching a sofa is two objects, not one)."""
+    out = _pair("sofa", "pillow", 0.20).export(min_pts=5)
+    assert sorted(o["label"] for o in out) == ["pillow", "sofa"]
+
+
+def test_distant_same_label_nodes_are_kept():
+    """Beyond NMS_DIST the two really are different objects."""
+    assert len(_pair("chair", "chair", 2.0).export(min_pts=5)) == 2
+
+
+def test_gap_guard_blocks_centres_that_are_close_but_surfaces_that_are_not():
+    """Centres 0.30 m apart is inside NMS_DIST, but the 0.16 m cubes leave a
+    0.14 m surface gap — beyond NMS_GAP, so these stay two objects. This is
+    the guard that stops the distance term collapsing genuine neighbours."""
+    om = _pair("chair", "chair", 0.30)
+    assert len(om.export(min_pts=5)) == 2
+
+
+def test_export_does_not_mutate_the_live_map():
+    """export() runs suppression on a throwaway view sharing the same _Node
+    objects; the live map must keep both, and repeat calls must agree."""
+    om = _pair("lamp", "lamp", 0.20)
+    first = om.export(min_pts=5)
+    assert len(om.nodes) == 2                      # live map untouched
+    assert om.export(min_pts=5) == first           # idempotent
