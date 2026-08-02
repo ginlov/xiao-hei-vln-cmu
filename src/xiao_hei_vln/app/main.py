@@ -77,8 +77,6 @@ class _PerceptionSettings:
     score_threshold: float
     min_inliers: int
     scan_keyframes: int
-    scan_min_move_m: float
-    scan_min_rot_deg: float
     scan_voxel_m: float
 
     @classmethod
@@ -98,8 +96,6 @@ class _PerceptionSettings:
                 "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
             )),
             scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
-            scan_min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
-            scan_min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
             scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
         )
 
@@ -143,27 +139,11 @@ def _build_perception_responder(
     # rejected (default in PointLifter). Independent of ObjectMap fusion.
     lifter = PointLifter(min_inliers=settings.min_inliers)
 
-    # Multi-sweep accumulation, ON by default (XIAO_HEI_SCAN_KEYFRAMES=10),
-    # which is main's value and the one this branch merged to.
-    #
-    # UNRESOLVED, and the merge could not decide it. This branch measured the
-    # opposite and defaulted it to 0: accumulation merges returns taken from
-    # viewpoints metres apart, and that inflated every fused box — box size
-    # error 2.28x -> 1.28x (livingroom_3) and 1.52x -> 0.87x (chinese_room)
-    # on disabling it, with precision and recall improving too. main's
-    # rationale is that the density is what lets small objects clear the
-    # lifter's `min_inliers` gate at all. Both were measured; neither
-    # measurement covers the other's scenes. Set the env var to 0 to get this
-    # branch's behaviour back while that is settled.
-    scan_accum = (
-        ScanAccumulator(
-            max_keyframes=settings.scan_keyframes,
-            min_move_m=settings.scan_min_move_m,
-            min_rot_deg=settings.scan_min_rot_deg,
-            voxel_m=settings.scan_voxel_m,
-        )
-        if settings.scan_keyframes > 0
-        else None
+    # Densify the sparse single sweep before lifting so small objects clear
+    # min_inliers with genuine on-surface returns (env-tunable).
+    scan_accum = ScanAccumulator(
+        max_keyframes=settings.scan_keyframes,
+        voxel_m=settings.scan_voxel_m,
     )
 
     return PerceptionResponder(
@@ -456,22 +436,6 @@ def main() -> None:
 
         node.create_timer(2.0, _dump_scene)
 
-    # Raw-frame capture for the offline perception replay. Opt in with
-    # XIAO_HEI_FRAME_RECORD_DIR; records every tick of the run (exploration
-    # included), which the per-question VLM logger cannot do.
-    from xiao_hei_vln.perception import recorder as _frame_recorder
-
-    _recorder = _frame_recorder.from_env(meta={
-        "responder": RESPONDER_NAME,
-        "tick_hz": TICK_HZ,
-        "scene": _EXPLORATION_SCENE,
-        "exploration_strategy": _EXPLORATION_STRATEGY,
-        "score_threshold": os.environ.get("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", ""),
-        "min_inliers": os.environ.get("XIAO_HEI_PERCEPTION_MIN_INLIERS", ""),
-    })
-    if _recorder is not None:
-        node.get_logger().info(f"Frame recording enabled → {_recorder.out_dir}")
-
     explorer = _build_explorer(node)
 
     # Structured exploration log — survives the container via the mounted volume.
@@ -522,12 +486,6 @@ def main() -> None:
         now = node.get_clock().now().to_msg()
         snapshot = cache.snapshot(state["tick_id"], Stamp(sec=now.sec, nanosec=now.nanosec))
         state["tick_id"] += 1
-
-        # Capture the raw sensor input before anything consumes it, so the
-        # recorded frame is exactly what the online pipeline saw this tick and
-        # the offline replay can reproduce it bit for bit.
-        if _recorder is not None:
-            _recorder.record(snapshot)
 
         # Exploration phase: runs until the strategy completes. A question
         # arriving mid-exploration does NOT interrupt it — exploration keeps
@@ -693,31 +651,19 @@ def main() -> None:
             responder.reset()
 
     period_s = 1.0 / TICK_HZ
-    # The tick blocks for ~1 s inside the perception sidecar's /detect. Under
-    # a single-threaded executor that stalls every sensor callback for the
-    # same second, so the frame the next tick picks up is already stale before
-    # it is used. Sensor subscriptions live in a reentrant callback group
-    # (see bind_subscribers), which only buys us anything with an executor
-    # that can run them concurrently with the timer.
-    from rclpy.executors import MultiThreadedExecutor
-
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
     node.create_timer(period_s, tick)
     node.get_logger().info(
         f"{node_name} ready (responder={RESPONDER_NAME}, "
-        f"tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers, "
-        f"executor=MultiThreaded(4))",
+        f"tick = {TICK_HZ:.2f} Hz, {len(subs)} subscribers)",
     )
 
     try:
-        executor.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         responder.close()
         _exp_log_file.close()
-        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

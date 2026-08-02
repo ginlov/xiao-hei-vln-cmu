@@ -22,7 +22,7 @@ measurement worth taking there.
 
 | # | layer | trigger | value | source |
 |---|---|---|---|---|
-| 3 | scan keyframe | motion since last keyframe | ≥0.25 m **or** ≥15°, window 10, voxel 0.05 | `perception/scan_accumulator.py:98-105` |
+| 3 | scan keyframe | ~~motion since last keyframe~~ → **every tick** | window 10 ticks, voxel 0.05 | `perception/scan_accumulator.py` |
 | 4 | viewpoint node | distance from *every* existing node | ≥2.0 m | `scene/representation.py:344` |
 | 5 | object merge (`add_object`) | same-label proximity | 1.5 m | `scene/representation.py:116` |
 | 6 | object merge (`ObjectMap`) | IoU **or** centre dist | IoU 0.3 / 0.4 m; NMS: IoU 0.5, dist 0.4 + gap 0.05 | `perception/object_map.py:37-59` |
@@ -34,6 +34,27 @@ measurement worth taking there.
 ---
 
 ## A — #3 vs #4: two motion gates that cannot be related to each other
+
+> **Superseded, not resolved.** #3's motion gate has since been deleted — the
+> accumulator now commits a keyframe on *every* tick, so its window is keyed on
+> ticks rather than travel. That removes the mismatch described below by
+> removing one of the two gates, but it does not unify the layers: #4 still
+> keys on distance. It also introduced two costs measured after the change:
+>
+> - **Coverage is evicted by time.** `max_keyframes=10` at 2 Hz means the
+>   buffer turns over after 5 s. Simulated over 5 distinct regions: driving
+>   past all five leaves 5 regions in the merged cloud; 10 stationary ticks
+>   leave **1**. On the TASK 23 captures — 66% of `arabic_room` frames below
+>   0.05 m/s, `chinese_room` never moving — densification now switches itself
+>   off exactly when the robot is stalled.
+> - **Every tick pays the merge.** `update()` used to return the cache
+>   untouched off-keyframe. It now vstacks and voxel-downsamples on every call:
+>   **218 ms** per tick on a 20k-point sweep, against a 500 ms budget, on top
+>   of detect + lift + the sidecar round-trip.
+>
+> Keying eviction on travel rather than ticks would keep the simplification
+> and recover both properties. The measurements below predate the change and
+> describe the gate as it was.
 
 `ScanAccumulator._should_keyframe` stores a sweep when the robot has moved
 ≥0.25 m **or** turned ≥15° *since the last stored keyframe* — a chained delta.

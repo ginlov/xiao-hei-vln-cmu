@@ -22,8 +22,6 @@ _ALL_VARS = (
     "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
     "XIAO_HEI_PERCEPTION_MIN_INLIERS",
     "XIAO_HEI_SCAN_KEYFRAMES",
-    "XIAO_HEI_SCAN_MIN_MOVE_M",
-    "XIAO_HEI_SCAN_MIN_ROT_DEG",
     "XIAO_HEI_SCAN_VOXEL_M",
 )
 
@@ -58,8 +56,6 @@ def test_scan_accumulator_defaults(clean_env: None) -> None:
     # better on the two scenes it has corpora for; see the note in
     # `app/main.py`, where that disagreement is recorded rather than settled.
     assert s.scan_keyframes == 10
-    assert s.scan_min_move_m == pytest.approx(0.25)
-    assert s.scan_min_rot_deg == pytest.approx(15.0)
     assert s.scan_voxel_m == pytest.approx(0.05)
 
 
@@ -73,8 +69,6 @@ def test_every_knob_is_overridable_and_typed(
     monkeypatch.setenv("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", "0.4")
     monkeypatch.setenv("XIAO_HEI_PERCEPTION_MIN_INLIERS", "25")
     monkeypatch.setenv("XIAO_HEI_SCAN_KEYFRAMES", "4")
-    monkeypatch.setenv("XIAO_HEI_SCAN_MIN_MOVE_M", "1.5")
-    monkeypatch.setenv("XIAO_HEI_SCAN_MIN_ROT_DEG", "30")
     monkeypatch.setenv("XIAO_HEI_SCAN_VOXEL_M", "0.1")
 
     s = _PerceptionSettings.from_env()
@@ -85,8 +79,6 @@ def test_every_knob_is_overridable_and_typed(
     assert isinstance(s.score_threshold, float) and s.score_threshold == pytest.approx(0.4)
     assert isinstance(s.min_inliers, int) and s.min_inliers == 25
     assert isinstance(s.scan_keyframes, int) and s.scan_keyframes == 4
-    assert s.scan_min_move_m == pytest.approx(1.5)
-    assert s.scan_min_rot_deg == pytest.approx(30.0)
     assert s.scan_voxel_m == pytest.approx(0.1)
 
 
