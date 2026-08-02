@@ -10,7 +10,7 @@ answers the second question.
 It reproduces the live ingest cadence exactly. In ``app/main.py`` the node ticks
 at ``XIAO_HEI_VLM_TICK_HZ`` (default **2 Hz**, i.e. every 0.5 s) and every
 exploration tick calls ``responder.ingest()`` → ``_inject_visible()``, which runs
-detect → lift → add_object *unconditionally*. There is no distance, rotation or
+detect → lift → fuse *unconditionally*. There is no distance, rotation or
 motion-blur gate anywhere on that path: a tick is skipped only when the snapshot
 is missing an image / pose / scan, and a blurred frame simply yields no
 detections and leaves the scene unchanged. So this recorder samples at a fixed

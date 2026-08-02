@@ -3,9 +3,9 @@
 The lifter turns one frame's detection into a 3D point + its inlier LiDAR
 cloud, but the same physical object is seen many times: once per overlapping
 detection within a frame, and again every time the robot re-observes it from a
-new viewpoint. ``SceneRepresentation.add_object`` merges these only by
-"same label + close center → higher confidence wins", keeping a single frame's
-median and no 3D box.
+new viewpoint. Picking one observation and discarding the rest — "same
+label + close center → higher confidence wins" — keeps a single frame's median
+and yields no 3D box at all.
 
 ``ObjectMap`` fuses instead of replaces:
   - a new observation merges into an existing same-label node whose 3D box

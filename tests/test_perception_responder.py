@@ -28,9 +28,11 @@ from xiao_hei_vln.messages.outputs import (
 from xiao_hei_vln.messages.question import QuestionType
 from xiao_hei_vln.messages.sensors import LidarScan
 from xiao_hei_vln.perception.client import Detection
+from xiao_hei_vln.perception.object_map import ObjectMap
 from xiao_hei_vln.perception.responder import PerceptionResponder
+from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
 from xiao_hei_vln.perception.vocab import Vocabulary
-from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
+from xiao_hei_vln.scene import SceneRepresentation
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -141,7 +143,18 @@ class _FakeLifter:
             else None
         )
         self.calls += 1
-        return LiftResult(position=pos, n_inliers=42 if pos is not None else 0)
+        if pos is None:
+            return LiftResult(position=None, n_inliers=0)
+        # A committed lift must carry its inlier cloud: the responder fuses
+        # that into ObjectMap, and a bare position would be silently dropped.
+        # 27 points clears export()'s min_pts=15 on a single observation.
+        step = (-0.05, 0.0, 0.05)
+        pts = np.array(
+            [[pos.x + dx, pos.y + dy, pos.z + dz]
+             for dx in step for dy in step for dz in step],
+            dtype=np.float64,
+        )
+        return LiftResult(position=pos, n_inliers=len(pts), inlier_points=pts)
 
 
 def _detection(label: str, score: float = 0.9) -> Detection:
@@ -150,6 +163,24 @@ def _detection(label: str, score: float = 0.9) -> Detection:
         bbox_xyxy=(100.0, 100.0, 200.0, 200.0),
         mask=np.zeros((640, 1920), dtype=bool),
     )
+
+
+def _seed(scene: SceneRepresentation, *labelled_xs: tuple[str, float]) -> None:
+    """Put objects in the graph the way the live stack does — via the fused
+    ObjectMap snapshot, since that is now the only way in."""
+    scene.sync_from_object_map([
+        {
+            "node_id": i,
+            "label": label,
+            "score": 1.0,
+            "center_3d": [x, 0.0, 0.0],
+            "bbox_aabb": {"min": [x - 0.25, -0.25, -0.25],
+                          "max": [x + 0.25, 0.25, 0.25]},
+            "color_rgb": None,
+            "color_name": None,
+        }
+        for i, (label, x) in enumerate(labelled_xs)
+    ])
 
 
 def _responder(
@@ -173,6 +204,8 @@ def _responder(
         trajectory_path=trajectory_path,
         score_threshold=score_threshold,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
+        object_map=ObjectMap(),
+        scan_accumulator=ScanAccumulator(),
     )
     return r, client, lifter, scene
 
@@ -255,9 +288,7 @@ class TestPhaseAWalk:
     def test_no_trajectory_skips_phase_a(self, tmp_path: Path) -> None:
         r, _, _, scene = _responder()
         # Add a chair so an answer is possible.
-        scene.add_object(ObjectObservation(
-            label="chair", position=Vector3(x=1.0, y=0.0, z=0.0),
-        ))
+        _seed(scene, ("chair", 1.0))
         out = r.respond(_snapshot(
             pose=_pose(0, 0),
             question_text="How many chairs are there",
@@ -354,10 +385,8 @@ class TestPhaseAWalk:
 class TestPhaseBAnswers:
     def test_numerical_counts_scene_objects(self) -> None:
         r, _, _, scene = _responder()
-        for x in (1.0, 5.0, 10.0):     # outside merge_radius, so 3 distinct
-            scene.add_object(ObjectObservation(
-                label="chair", position=Vector3(x=x, y=0.0, z=0.0),
-            ))
+        # Three separately-fused nodes → three distinct objects.
+        _seed(scene, ("chair", 1.0), ("chair", 5.0), ("chair", 10.0))
         out = r.respond(_snapshot(
             pose=_pose(0, 0),
             question_text="How many chairs are in the room",
@@ -377,12 +406,7 @@ class TestPhaseBAnswers:
 
     def test_object_reference_picks_closest(self) -> None:
         r, _, _, scene = _responder()
-        scene.add_object(ObjectObservation(
-            label="chair", position=Vector3(x=5.0, y=0.0, z=0.0),
-        ))
-        scene.add_object(ObjectObservation(
-            label="chair", position=Vector3(x=1.0, y=0.0, z=0.0),
-        ))
+        _seed(scene, ("chair", 5.0), ("chair", 1.0))
         out = r.respond(_snapshot(
             pose=_pose(0, 0),
             question_text="Find the chair",
@@ -406,9 +430,7 @@ class TestLifecycle:
 
     def test_reset_clears_state(self) -> None:
         r, _, _, scene = _responder()
-        scene.add_object(ObjectObservation(
-            label="chair", position=Vector3(x=1, y=0, z=0),
-        ))
+        _seed(scene, ("chair", 1.0))
         r.respond(_snapshot(
             pose=_pose(0, 0),
             question_text="How many chairs are there",

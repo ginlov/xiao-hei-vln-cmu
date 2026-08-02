@@ -193,8 +193,8 @@ def render_graph_png(scene_dict: dict[str, Any]) -> str:
     for i, o in enumerate(objs):
         g.add_node(f"obj:{i}", kind="obj", label=o["label"])
         # observing_viewpoint_ids stores viewpoint tick_ids only (set by
-        # SceneRepresentation.add_object via _current_viewpoint_id), so
-        # every entry should match a vp:* node. The membership guard
+        # SceneRepresentation.sync_from_object_map via _current_viewpoint_id),
+        # so every entry should match a vp:* node. The membership guard
         # below is defensive — catches malformed external JSON without
         # crashing the renderer.
         for vp_tick in o.get("observing_viewpoint_ids", []):
@@ -294,8 +294,8 @@ def _resolve_anchor(
     """Pick the viewpoint column an object should hang under.
 
     ``first_obs`` is the first entry in ``observing_viewpoint_ids`` —
-    a real viewpoint tick_id (set by ``SceneRepresentation.add_object``
-    via ``_current_viewpoint_id``). The fast path is a direct dict
+    a real viewpoint tick_id (set by ``sync_from_object_map`` via
+    ``_current_viewpoint_id``). The fast path is a direct dict
     lookup. The "latest viewpoint at-or-before" fallback only triggers
     for malformed external JSON (e.g. an old log that pre-dates the
     rename and still carries raw tick_ids) — kept for resilience.

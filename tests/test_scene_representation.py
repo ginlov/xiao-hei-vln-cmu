@@ -17,7 +17,7 @@ from xiao_hei_vln.messages import (
     VLMInput,
 )
 from xiao_hei_vln.messages.sensors import LidarScan
-from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
+from xiao_hei_vln.scene import SceneRepresentation
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -73,10 +73,33 @@ def _snapshot(
     )
 
 
-def _obs(label: str, x: float, y: float, confidence: float = 1.0) -> ObjectObservation:
-    return ObjectObservation(
-        label=label, position=Vector3(x=x, y=y, z=0.0), confidence=confidence
-    )
+def _node(
+    node_id: int,
+    label: str,
+    x: float,
+    y: float,
+    score: float = 1.0,
+    half: float = 0.25,
+) -> dict:
+    """One entry in the shape `ObjectMap.export()` emits.
+
+    Objects only reach the graph through `sync_from_object_map`, whose
+    contract is this dict — so the scene-rep tests state it literally rather
+    than driving a real ObjectMap. The fusion itself is test_object_map.py's
+    subject; here we test what the scene does with the result.
+    """
+    return {
+        "node_id": node_id,
+        "label": label,
+        "score": score,
+        "center_3d": [x, y, 0.0],
+        "bbox_aabb": {
+            "min": [x - half, y - half, -half],
+            "max": [x + half, y + half, half],
+        },
+        "color_rgb": None,
+        "color_name": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -156,43 +179,46 @@ class TestRoomBestImage:
 
 
 # ---------------------------------------------------------------------------
-# 3. ObjectObservation merging
+# 3. Object layer replacement
+#
+# Same-label merging is no longer the scene rep's job — detections are fused
+# in ObjectMap (see test_object_map.py) and the whole layer is replaced from
+# its export. What is tested here is the replacement contract itself.
 # ---------------------------------------------------------------------------
 
 
-class TestObjectMerging:
-    def test_add_to_empty_creates_node(self) -> None:
+class TestObjectLayerSync:
+    def test_sync_into_empty_scene_creates_nodes(self) -> None:
         rep = SceneRepresentation()
-        rep.add_object(_obs("chair", 1.0, 0.0))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         assert len(rep.objects) == 1
+        assert rep.objects[0].label == "chair"
 
-    def test_same_label_within_radius_higher_confidence_updates(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.6))
-        rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.9))
+    def test_sync_replaces_rather_than_appends(self) -> None:
+        # The same node re-synced must not duplicate: the layer is rebuilt,
+        # not accumulated.
+        rep = SceneRepresentation()
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        rep.sync_from_object_map([_node(0, "chair", 1.2, 0.0)])
         assert len(rep.objects) == 1
-        assert rep.objects[0].confidence == pytest.approx(0.9)
         assert rep.objects[0].position.x == pytest.approx(1.2)
 
-    def test_same_label_within_radius_lower_confidence_no_update(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.9))
-        rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.5))
-        assert len(rep.objects) == 1
-        assert rep.objects[0].confidence == pytest.approx(0.9)
-        assert rep.objects[0].position.x == pytest.approx(1.0)
-
-    def test_same_label_outside_radius_creates_new_node(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("chair", 5.0, 0.0))
+    def test_node_dropped_by_fusion_leaves_the_scene(self) -> None:
+        # export() runs NMS/prune, so a node can vanish between ticks. The
+        # scene must follow it rather than keep a stale object alive.
+        rep = SceneRepresentation()
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0),
+                                  _node(1, "table", 5.0, 0.0)])
         assert len(rep.objects) == 2
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        assert [o.label for o in rep.objects] == ["chair"]
 
-    def test_different_label_within_radius_creates_new_node(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 1.0, 0.0))
-        rep.add_object(_obs("table", 1.0, 0.0))
-        assert len(rep.objects) == 2
+    def test_boxes_are_always_populated(self) -> None:
+        rep = SceneRepresentation()
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0, half=0.5)])
+        o = rep.objects[0]
+        assert o.bbox_min is not None and o.bbox_max is not None
+        assert o.bbox_max.x - o.bbox_min.x == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -203,37 +229,42 @@ class TestObjectMerging:
 class TestObjectIds:
     def test_new_objects_get_distinct_monotonic_ids(self) -> None:
         rep = SceneRepresentation()
-        rep.add_object(_obs("chair", 0.0, 0.0))
-        rep.add_object(_obs("table", 5.0, 0.0))
-        rep.add_object(_obs("lamp", 10.0, 0.0))
+        rep.sync_from_object_map([
+            _node(0, "chair", 0.0, 0.0),
+            _node(1, "table", 5.0, 0.0),
+            _node(2, "lamp", 10.0, 0.0),
+        ])
         ids = [o.object_id for o in rep.objects]
         assert ids == sorted(set(ids))  # strictly monotonic, no dupes
         assert all(i > 0 for i in ids)  # 0 reserved as "unassigned" sentinel
 
-    def test_merge_preserves_existing_id(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.6))
+    def test_node_id_keeps_its_object_id_across_ticks(self) -> None:
+        rep = SceneRepresentation()
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         first_id = rep.objects[0].object_id
-        rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.9))  # merge
+        # The node accumulated points and its centre moved; same node_id.
+        rep.sync_from_object_map([_node(0, "chair", 1.2, 0.0)])
         assert rep.objects[0].object_id == first_id
 
-    def test_id_counter_does_not_reuse_after_merge(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5)
-        rep.add_object(_obs("chair", 1.0, 0.0))  # id=1
-        rep.add_object(_obs("chair", 1.2, 0.0))  # merge — counter untouched
-        rep.add_object(_obs("table", 5.0, 0.0))  # id=2 (not 3 — counter wasn't advanced)
-        assert rep.objects[0].object_id == 1
-        assert rep.objects[1].object_id == 2
-
-    def test_caller_provided_object_id_is_overwritten(self) -> None:
-        # Defensive: external code cannot fake an id past the scene rep.
+    def test_id_counter_does_not_reuse_after_a_node_reappears(self) -> None:
         rep = SceneRepresentation()
-        obs = ObjectObservation(
-            label="chair", position=Vector3(x=0.0, y=0.0, z=0.0),
-            object_id=9999,
-        )
-        rep.add_object(obs)
-        assert rep.objects[0].object_id != 9999
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        rep.sync_from_object_map([])                       # suppressed this tick
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0),
+                                  _node(1, "table", 5.0, 0.0)])
+        chair = next(o for o in rep.objects if o.label == "chair")
+        table = next(o for o in rep.objects if o.label == "table")
+        assert chair.object_id == 1     # node_id 0 kept its original id
+        assert table.object_id == 2     # counter advanced exactly once
+
+    def test_first_tick_id_survives_a_resync(self) -> None:
+        rep = SceneRepresentation()
+        rep._tick_id = 4
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        rep._tick_id = 9
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        assert rep.objects[0].first_tick_id == 4
+        assert rep.objects[0].last_tick_id == 9
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +342,14 @@ class TestEdgeStorage:
         assert rep.room.viewpoint_tick_ids == [1]
 
     # Viewpoint → Object (observing_viewpoint_ids)
+    #
+    # These edges are stamped by sync_from_object_map, which is the only path
+    # objects take into the graph. Everything below drives that method.
     def test_observing_viewpoint_appended_on_creation(self) -> None:
         # Need a viewpoint to exist first; otherwise no edge is recorded.
         rep = SceneRepresentation()
         rep.update(_snapshot(tick_id=5, pose=_pose(0, 0)))
-        rep.add_object(_obs("chair", 1.0, 0.0))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         assert rep.objects[0].observing_viewpoint_ids == [5]
 
     def test_observing_viewpoint_empty_when_no_viewpoint_yet(self) -> None:
@@ -323,39 +357,42 @@ class TestEdgeStorage:
         # ``first_tick_id`` still tracks the raw observation tick.
         rep = SceneRepresentation()
         rep._tick_id = 5
-        rep.add_object(_obs("chair", 1.0, 0.0))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         assert rep.objects[0].observing_viewpoint_ids == []
         assert rep.objects[0].first_tick_id == 5
 
-    def test_observing_viewpoint_appended_on_higher_confidence_merge_at_new_vp(self) -> None:
-        # Two distinct viewpoints → merge crosses into the second one,
-        # so the object picks up the second viewpoint id.
-        rep = SceneRepresentation(merge_radius=1.5, viewpoint_radius=2.0)
+    def test_observing_viewpoint_accumulates_across_viewpoints(self) -> None:
+        # The same fused node re-synced from a second viewpoint picks up that
+        # viewpoint id without losing the first.
+        rep = SceneRepresentation(viewpoint_radius=2.0)
         rep.update(_snapshot(tick_id=3, pose=_pose(0, 0)))
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.6))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         rep.update(_snapshot(tick_id=7, pose=_pose(5, 0)))  # far → new vp
-        rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.9))
+        rep.sync_from_object_map([_node(0, "chair", 1.2, 0.0)])
         assert rep.objects[0].observing_viewpoint_ids == [3, 7]
 
     def test_observing_viewpoint_dedupes_within_same_viewpoint(self) -> None:
-        # Multiple higher-conf merges at the same viewpoint must not
-        # inflate the list — viewpoint ids dedupe against the last entry.
-        rep = SceneRepresentation(merge_radius=1.5, viewpoint_radius=2.0)
+        # Every tick re-syncs the whole layer, so without the dedupe guard a
+        # stationary robot would append the same viewpoint id forever.
+        rep = SceneRepresentation(viewpoint_radius=2.0)
         rep.update(_snapshot(tick_id=3, pose=_pose(0, 0)))
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.6))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
         rep.update(_snapshot(tick_id=4, pose=_pose(0.2, 0)))  # same vp
-        rep.add_object(_obs("chair", 1.05, 0.0, confidence=0.7))
+        rep.sync_from_object_map([_node(0, "chair", 1.05, 0.0)])
         rep.update(_snapshot(tick_id=5, pose=_pose(0.4, 0)))  # same vp
-        rep.add_object(_obs("chair", 1.1, 0.0, confidence=0.8))
+        rep.sync_from_object_map([_node(0, "chair", 1.1, 0.0)])
         assert rep.objects[0].observing_viewpoint_ids == [3]
 
-    def test_observing_viewpoint_not_appended_on_lower_confidence_rejection(self) -> None:
-        rep = SceneRepresentation(merge_radius=1.5, viewpoint_radius=2.0)
+    def test_observing_viewpoint_edges_are_dropped_with_the_node(self) -> None:
+        # A node suppressed by fusion takes its edges with it; a later node
+        # reusing that node_id starts from the ids it is seen from now.
+        rep = SceneRepresentation(viewpoint_radius=2.0)
         rep.update(_snapshot(tick_id=3, pose=_pose(0, 0)))
-        rep.add_object(_obs("chair", 1.0, 0.0, confidence=0.9))
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        rep.sync_from_object_map([])                        # suppressed
         rep.update(_snapshot(tick_id=7, pose=_pose(5, 0)))  # new vp
-        rep.add_object(_obs("chair", 1.2, 0.0, confidence=0.5))  # rejected
-        assert rep.objects[0].observing_viewpoint_ids == [3]
+        rep.sync_from_object_map([_node(0, "chair", 1.0, 0.0)])
+        assert rep.objects[0].observing_viewpoint_ids == [7]
 
 
 class TestToDict:
@@ -372,14 +409,16 @@ class TestToDict:
     def test_populated_scene_round_trips(self) -> None:
         import json
 
-        rep = SceneRepresentation(merge_radius=0.3)
+        rep = SceneRepresentation()
         rep.update(_snapshot(tick_id=3, pose=_pose(1.0, 2.0)))
         rep.update(_snapshot(
             tick_id=7, pose=_pose(5.0, 0.0),
             scan=_scan([(-1, -1, 0, 0), (5, 5, 0, 0)]),
         ))
-        rep.add_object(_obs("chair", 1.5, 2.0))
-        rep.add_object(_obs("table", 4.5, 0.0))
+        rep.sync_from_object_map([
+            _node(0, "chair", 1.5, 2.0),
+            _node(1, "table", 4.5, 0.0),
+        ])
 
         d = rep.to_dict()
         json.dumps(d)  # JSON-clean
