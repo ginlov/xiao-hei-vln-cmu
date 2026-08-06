@@ -174,9 +174,17 @@ class ObjectMap:
         self._next_id = 0
 
     def add(self, label, score, pts, color_rgb=None, color_name=None):
+        """Fuse one detection's cloud in; return the node id it landed in.
+
+        The id lets a caller tie a 2D detection to the 3D node it became part
+        of — the debug dumps use it to print the same number on the image
+        overlay and the 3D box. ``None`` when the cloud was empty and nothing
+        was recorded. Note a returned id can still be suppressed later by
+        :meth:`finalize`, so it is a link, not a guarantee of survival.
+        """
         pts = np.asarray(pts, dtype=np.float64)
         if pts.ndim != 2 or pts.shape[0] == 0:
-            return
+            return None
         pmin, pmax = _aabb(pts)
         pc, _ = robust_center(pts)
         pcenter = np.array(pc) if pc is not None else np.median(pts, axis=0)
@@ -192,10 +200,11 @@ class ObjectMap:
                     best, best_key = nd, key
         if best is not None:
             best.merge(label, score, pts, color_rgb, color_name)
-        else:
-            self.nodes.append(_Node(self._next_id, label, score, pts,
-                                    color_rgb, color_name))
-            self._next_id += 1
+            return best.node_id
+        node = _Node(self._next_id, label, score, pts, color_rgb, color_name)
+        self.nodes.append(node)
+        self._next_id += 1
+        return node.node_id
 
     def add_frame(self, objects: list[dict]):
         for o in objects:

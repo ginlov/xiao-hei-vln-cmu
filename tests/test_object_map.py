@@ -75,6 +75,27 @@ def test_node_ids_are_assigned_and_stable():
     assert chair["node_id"] == 0 and chair["n_obs"] == 2
 
 
+def test_add_returns_the_node_id_it_fused_into():
+    """The id is what ties a 2D detection to its 3D box in the debug dumps.
+
+    A merge must report the *existing* node, not a new one, or the overlay
+    would print a number that appears nowhere in the scene.
+    """
+    om = ObjectMap()
+    first = om.add("chair", 0.8, _cube([0.0, 0.0, 0.0]))
+    other = om.add("table", 0.9, _cube([5.0, 0.0, 0.0]))
+    merged = om.add("chair", 0.85, _cube([0.1, 0.0, 0.0]))
+
+    assert first is not None and other != first
+    assert merged == first                       # merged, so the id is reused
+    assert {n["node_id"] for n in om.to_list()} == {first, other}
+
+
+def test_add_returns_none_for_an_empty_cloud():
+    # Nothing was recorded, so there is no node to point at.
+    assert ObjectMap().add("chair", 0.8, np.empty((0, 3))) is None
+
+
 # ── scene sync ────────────────────────────────────────────────────────────────
 
 def test_sync_populates_boxes_and_colors():

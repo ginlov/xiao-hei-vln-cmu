@@ -24,17 +24,24 @@ import os
 from pathlib import Path
 
 import numpy as np
-
 from clustering import STRATEGIES
-from viewgen import load_objects, is_occluder
+from viewgen import is_occluder, load_objects
+
 from xiao_hei_vln.messages.common import Quaternion, Vector3
-from xiao_hei_vln.perception.client import HTTPPerceptionClient
+from xiao_hei_vln.perception.client import Detection, HTTPPerceptionClient
 from xiao_hei_vln.perception.eval import evaluate, object_entries_to_eval
-from xiao_hei_vln.perception.lifter import (DEFAULT_CLUSTER_VOXEL_M,
-                                            DEFAULT_MIN_INLIERS,
-                                            DEFAULT_RANGE_GAP_M, PointLifter)
+from xiao_hei_vln.perception.lifter import (
+    DEFAULT_CLUSTER_VOXEL_M,
+    DEFAULT_MIN_INLIERS,
+    DEFAULT_RANGE_GAP_M,
+    PointLifter,
+)
 from xiao_hei_vln.perception.object_map import NMS_DIST, NMS_GAP, ObjectMap
-from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+from xiao_hei_vln.perception.scan_accumulator import (
+    DEFAULT_MAX_KEYFRAMES,
+    DEFAULT_VOXEL_M,
+    ScanAccumulator,
+)
 
 CAP_DIR = Path(os.environ.get("PERCEPTION_CAP_DIR",
                               "perception_benchmark/captures"))
@@ -58,6 +65,29 @@ def load_capture(vp_dir: Path):
     return img, scan, Vector3(x=px, y=py, z=pz), Quaternion(x=qx, y=qy, z=qz, w=qw)
 
 
+def _frozen_detections(vp_dir: Path):
+    """Detections from ``detections.npz``, or None when it hasn't been dumped.
+
+    ``dump_detections.py`` freezes the one lifter input the captures don't
+    already hold — the masks — so the lift can be replayed offline. Detection
+    depends only on the image, the class list and the score threshold, none of
+    which a lift/fusion sweep changes, so re-running the sidecar for each
+    setting is wasted work.
+    """
+    f = vp_dir / "detections.npz"
+    if not f.is_file():
+        return None
+    # allow_pickle: dump_detections.py writes `labels` as an object array, and
+    # dump_lift_input / detect_2d_eval read it the same way. Our own file.
+    z = np.load(f, allow_pickle=True)
+    return [
+        Detection(label=str(lbl), score=float(sc), bbox_xyxy=tuple(map(float, bb)),
+                  mask=m)
+        for m, lbl, sc, bb in zip(z["masks"], z["labels"], z["scores"], z["bboxes"],
+                                  strict=True)
+    ]
+
+
 def build_and_score(scene: str, *, base_url: str, score_threshold: float,
                     min_inliers: int, keep_arch: bool, seed: int, out_dir: Path,
                     accumulate: bool = True, request_timeout_s: float = 60.0,
@@ -65,6 +95,9 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
                     cluster_voxel_m: float = DEFAULT_CLUSTER_VOXEL_M,
                     inlier_filter=None,
                     nms_dist: float = NMS_DIST, nms_gap: float = NMS_GAP,
+                    scan_keyframes: int = DEFAULT_MAX_KEYFRAMES,
+                    scan_voxel_m: float = DEFAULT_VOXEL_M,
+                    use_frozen: bool = True,
                     verbose: bool = True):
     np.random.seed(seed)                                # ObjectMap PTS_CAP subsample
     vp_dirs = sorted(glob.glob(str(CAP_DIR / scene / "vp_*")))
@@ -78,10 +111,18 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
 
     # Generous timeout: the sidecar's default 2s is too short for a cold
     # reload_classes (text-encoder warmup) and for SAM on a 1920x640 image.
-    client = HTTPPerceptionClient(base_url=base_url, request_timeout_s=request_timeout_s)
-    client.wait_until_ready()
-    if not client.set_classes(classes):
-        print(f"[{scene}] WARNING: set_classes did not confirm — detections may be empty")
+    # Skip the sidecar entirely when every frame already has frozen masks:
+    # wait_until_ready() would otherwise block on a service the run never uses.
+    all_frozen = use_frozen and all(
+        (Path(d) / "detections.npz").is_file() for d in vp_dirs)
+    client = None
+    if not all_frozen:
+        client = HTTPPerceptionClient(base_url=base_url,
+                                      request_timeout_s=request_timeout_s)
+        client.wait_until_ready()
+        if not client.set_classes(classes):
+            print(f"[{scene}] WARNING: set_classes did not confirm — "
+                  "detections may be empty")
     lifter = PointLifter(min_inliers=min_inliers,       # z-buffer on by default
                          range_gap_m=range_gap_m, cluster_voxel_m=cluster_voxel_m,
                          inlier_filter=inlier_filter)
@@ -89,13 +130,22 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
     # Production configuration: densify the scan across keyframes BEFORE lifting
     # (ScanAccumulator) AND fuse the lifted clouds across frames (ObjectMap).
     # Fed in capture order == the live tick order. Fresh accumulator per scene.
-    accum = ScanAccumulator() if accumulate else None
+    # scan_keyframes=0 means "no accumulation" — a 0-length window has no
+    # meaning to the deque, and lifting the raw sweep is what one would want.
+    if scan_keyframes <= 0:
+        accumulate = False
+    accum = (ScanAccumulator(max_keyframes=scan_keyframes, voxel_m=scan_voxel_m)
+             if accumulate else None)
 
-    n_det = n_lift = 0
+    n_det = n_lift = n_frozen = 0
     for vp_dir in vp_dirs:
         img, scan, pos, ori = load_capture(Path(vp_dir))
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
-        dets = client.detect(img, score_threshold=score_threshold)
+        dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
+        if dets is None:
+            dets = client.detect(img, score_threshold=score_threshold)
+        else:
+            n_frozen += 1
         n_det += len(dets)
         for det in dets:
             res = lifter.lift(det.mask, cloud, pos, ori)
@@ -115,8 +165,11 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
     json.dump(report, open(out_dir / f"{scene}_metrics.json", "w"), indent=2)
 
     if verbose:
+        cached = (f" | {n_frozen}/{len(vp_dirs)} frames from frozen masks"
+                  if n_frozen else "")
         print(f"\n[{scene}] viewpoints={len(vp_dirs)} detections={n_det} "
-              f"lifts={n_lift} | GT(scoreable)={report['n_gt']} pred={report['n_pred']}")
+              f"lifts={n_lift} | GT(scoreable)={report['n_gt']} "
+              f"pred={report['n_pred']}{cached}")
         m, op = report["mAP"], report["operating_point"].get(f"dist@{primary}m", {})
         print(f"  mAP  d0.5={m['dist@0.5m']}  d1.0={m['dist@1.0m']}  d2.0={m['dist@2.0m']}  "
               f"iou@0.25={m['iou@0.25']}")
@@ -209,6 +262,15 @@ def main() -> int:
                     help="cross-label suppression: max centre distance (m); 0 disables")
     ap.add_argument("--nms-gap", type=float, default=NMS_GAP,
                     help="cross-label suppression: max box-surface gap (m); 0 disables")
+    ap.add_argument("--scan-keyframes", type=int, default=DEFAULT_MAX_KEYFRAMES,
+                    help="ScanAccumulator window, in ticks (one sweep per tick); "
+                         "0 disables accumulation and lifts the raw sweep")
+    ap.add_argument("--scan-voxel", type=float, default=DEFAULT_VOXEL_M,
+                    help="ScanAccumulator downsample voxel (m)")
+    ap.add_argument("--no-frozen", dest="use_frozen", action="store_false",
+                    help="always call the sidecar, even where dump_detections.py "
+                         "has written detections.npz next to the captures")
+    ap.set_defaults(use_frozen=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--timeout", type=float, default=60.0, help="per-request HTTP timeout (s)")
     ap.add_argument("--out", type=Path, default=Path("perception_benchmark/scores"))
@@ -233,6 +295,8 @@ def main() -> int:
             s, base_url=args.base_url, score_threshold=args.score_threshold,
             min_inliers=args.min_inliers, keep_arch=args.keep_arch,
             seed=args.seed, out_dir=args.out, accumulate=args.accumulate,
+            scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
+            use_frozen=args.use_frozen,
             range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
             inlier_filter=ifilter, nms_dist=args.nms_dist, nms_gap=args.nms_gap,
             request_timeout_s=args.timeout)

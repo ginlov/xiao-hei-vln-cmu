@@ -42,9 +42,15 @@ CAP_DIR = Path(os.environ.get("PERCEPTION_CAP_DIR",
 DEBUG_DIR = Path("perception_benchmark/debug")
 
 
-def _overlay_masks(img_rgb, dets, lifted_flags):
+def _overlay_masks(img_rgb, dets, lifted_flags, node_ids=None):
     """Blend each detection's mask onto the RGB image; return annotated float img
-    + list of (u, v, text, color) label anchors."""
+    + list of (u, v, text, color) label anchors.
+
+    ``node_ids`` (optional) is the ObjectMap node each detection fused into.
+    When given, the label is prefixed with ``#<id>`` — the same number the
+    viewer prints on the 3D box, so a mask on the image can be matched to a
+    box in the scene by eye.
+    """
     out = img_rgb.astype(np.float32) / 255.0
     cmap = plt.cm.tab20
     anchors = []
@@ -56,7 +62,9 @@ def _overlay_masks(img_rgb, dets, lifted_flags):
         if len(xs):
             u, v = int(xs.mean()), int(ys.mean())
             mark = "OK" if ok else "x"
-            anchors.append((u, v, f"{d.label} {d.score:.2f} [{mark}]", color))
+            nid = node_ids[i] if node_ids is not None else None
+            tag = f"#{nid} " if nid is not None else ""
+            anchors.append((u, v, f"{tag}{d.label} {d.score:.2f} [{mark}]", color))
     return np.clip(out, 0, 1), anchors
 
 

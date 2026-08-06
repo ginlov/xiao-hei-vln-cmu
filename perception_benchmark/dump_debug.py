@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 from pathlib import Path
 
@@ -24,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from viewgen import load_objects
-from replay_score import load_capture, scoreable
+from replay_score import _frozen_detections, load_capture, scoreable
 from debug_viewpoint import _overlay_masks
 from xiao_hei_vln.perception.client import HTTPPerceptionClient
 from xiao_hei_vln.perception.geometry import (EQUIRECT_H, EQUIRECT_W,
@@ -33,7 +34,8 @@ from xiao_hei_vln.perception.lifter import (DEFAULT_CLUSTER_VOXEL_M,
     DEFAULT_MIN_INLIERS, DEFAULT_RANGE_GAP_M, PointLifter,
     _rotation_from_quaternion)
 from xiao_hei_vln.perception.object_map import NMS_DIST, NMS_GAP, ObjectMap
-from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+from xiao_hei_vln.perception.scan_accumulator import (
+    DEFAULT_MAX_KEYFRAMES, DEFAULT_VOXEL_M, ScanAccumulator)
 
 CAP_DIR = Path(os.environ.get("PERCEPTION_CAP_DIR",
                               "perception_benchmark/captures"))
@@ -53,6 +55,8 @@ def project_to_equirect(pts_map, pos, ori):
 
 
 def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
+               scan_keyframes=DEFAULT_MAX_KEYFRAMES, scan_voxel_m=DEFAULT_VOXEL_M,
+               use_frozen=True,
                range_gap_m=DEFAULT_RANGE_GAP_M,
                cluster_voxel_m=DEFAULT_CLUSTER_VOXEL_M, out_root=None,
                max_pts=4000, request_timeout_s=60.0):
@@ -68,12 +72,25 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
            "bmax": [e.center.x + e.size.x/2, e.center.y + e.size.y/2, e.center.z + e.size.z/2]}
           for i, e in keep.items()]
 
-    client = HTTPPerceptionClient(base_url=base_url, request_timeout_s=request_timeout_s)
-    client.wait_until_ready(); client.set_classes(classes)
+    # Skip the sidecar when every frame already has frozen masks — otherwise
+    # wait_until_ready() blocks on a service this run never calls.
+    all_frozen = use_frozen and all(
+        (Path(d) / "detections.npz").is_file() for d in vp_dirs)
+    client = None
+    if not all_frozen:
+        client = HTTPPerceptionClient(base_url=base_url,
+                                      request_timeout_s=request_timeout_s)
+        client.wait_until_ready()
+        client.set_classes(classes)
     lifter = PointLifter(min_inliers=min_inliers, range_gap_m=range_gap_m,
                          cluster_voxel_m=cluster_voxel_m)
     omap = ObjectMap()
-    accum = ScanAccumulator() if accumulate else None
+    # 0 keyframes means no accumulation: a zero-length window is meaningless to
+    # the deque, and lifting the raw sweep is the sensible reading.
+    if scan_keyframes <= 0:
+        accumulate = False
+    accum = (ScanAccumulator(max_keyframes=scan_keyframes, voxel_m=scan_voxel_m)
+             if accumulate else None)
 
     out = (out_root or DEBUG_DIR) / scene
     out.mkdir(parents=True, exist_ok=True)
@@ -82,8 +99,15 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         vid = os.path.basename(vp_dir)
         img, scan, pos, ori = load_capture(Path(vp_dir))
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
-        dets = client.detect(img, score_threshold=score_threshold)
-        recs, flags, pts = [], [], []
+        dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
+        if dets is None:
+            dets = client.detect(img, score_threshold=score_threshold)
+        recs, flags, pts, node_ids = [], [], [], []
+        # This-viewpoint node id -> the cumulative ids its detections fused
+        # into. The two maps number independently, so a per-viewpoint box can
+        # only be labelled with a number the rest of the viewer recognises by
+        # going through this.
+        vp_to_cum: dict[int, set[int]] = {}
         # Second map fed ONLY this viewpoint's lifts, so the viewer can separate
         # what this frame contributed from what it inherited. Its node_ids are
         # local to the viewpoint and do NOT match the cumulative map's ids.
@@ -91,18 +115,27 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         for d in dets:
             res = lifter.lift(d.mask, cloud, pos, ori)
             ok = res.position is not None
-            recs.append({"label": d.label, "score": round(float(d.score), 3),
-                         "n_inliers": int(res.n_inliers), "lifted": ok,
-                         "position": [round(float(v), 3) for v in
-                                      (res.position.x, res.position.y, res.position.z)] if ok else None})
+            rec = {"label": d.label, "score": round(float(d.score), 3),
+                   "n_inliers": int(res.n_inliers), "lifted": ok,
+                   "position": [round(float(v), 3) for v in
+                                (res.position.x, res.position.y, res.position.z)] if ok else None}
             flags.append(ok)
+            nid = None
             if ok:
-                pts.append(res.inlier_points); omap.add(d.label, d.score, res.inlier_points)
-                vpmap.add(d.label, d.score, res.inlier_points)
+                pts.append(res.inlier_points)
+                # The cumulative map's id — the number drawn on the overlay and
+                # on the 3D box, so the two can be matched by eye.
+                nid = omap.add(d.label, d.score, res.inlier_points)
+                vid_local = vpmap.add(d.label, d.score, res.inlier_points)
+                if vid_local is not None and nid is not None:
+                    vp_to_cum.setdefault(vid_local, set()).add(nid)
+            rec["node_id"] = nid
+            node_ids.append(nid)
+            recs.append(rec)
 
         # overlay image: MODEL detections (masks + white labels) + GROUND-TRUTH
         # objects projected into the same image (lime diamonds + labels).
-        overlay, anchors = _overlay_masks(img[:, :, ::-1], dets, flags)
+        overlay, anchors = _overlay_masks(img[:, :, ::-1], dets, flags, node_ids)
         fig, ax = plt.subplots(figsize=(19, 6.6)); ax.imshow(overlay)
         ax.set_xlim(0, EQUIRECT_W); ax.set_ylim(EQUIRECT_H, 0); ax.axis("off")
         for u, v, txt, color in anchors:
@@ -134,15 +167,31 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
             allpts = allpts[np.random.default_rng(0).choice(len(allpts), max_pts, False)]
         np.save(out / f"{vid}_pts.npy", allpts.astype(np.float32))
 
-        def _summarise(omap_):
-            return [{"node_id": n["node_id"], "label": n["label"], "score": n["score"],
-                     "n_obs": n["n_obs"], "center": n["center_3d"],
-                     "bmin": n["bbox_aabb"]["min"], "bmax": n["bbox_aabb"]["max"]}
-                    for n in omap_.export()]
+        def _summarise(omap_, cum_map=None):
+            out_ = []
+            for n in omap_.export():
+                item = {"node_id": n["node_id"], "label": n["label"],
+                        "score": n["score"], "n_obs": n["n_obs"],
+                        "center": n["center_3d"],
+                        "bmin": n["bbox_aabb"]["min"], "bmax": n["bbox_aabb"]["max"]}
+                if cum_map is not None:
+                    # Ids from the cumulative map, so this box can be matched to
+                    # the #N on the 2D overlay. Usually one; more than one means
+                    # this frame's blob spans several cumulative nodes, which is
+                    # itself worth seeing.
+                    item["cum_ids"] = sorted(cum_map.get(n["node_id"], ()))
+                out_.append(item)
+            return out_
 
-        nodes = _summarise(omap)                 # cumulative through this vp
-        nodes_vp = _summarise(vpmap)             # this viewpoint alone
-        vps.append({"id": vid, "pose": [pos.x, pos.y, pos.z],
+        nodes = _summarise(omap)                             # cumulative
+        nodes_vp = _summarise(vpmap, vp_to_cum)              # this viewpoint
+        # Heading is recorded alongside the position so the viewer can draw
+        # which way the robot faced. It cannot be derived from the path: the
+        # robot is stationary for most of a navigation capture, and a
+        # zero-length step has no direction.
+        yaw = math.atan2(2.0 * (ori.w * ori.z + ori.x * ori.y),
+                         1.0 - 2.0 * (ori.y * ori.y + ori.z * ori.z))
+        vps.append({"id": vid, "pose": [pos.x, pos.y, pos.z], "yaw": yaw,
                     "n_det": len(dets), "n_lift": int(sum(flags)),
                     "detections": recs, "nodes": nodes, "nodes_vp": nodes_vp})
         print(f"[{scene}] {vid}: {len(dets)} det, {int(sum(flags))} lift, "
@@ -150,6 +199,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
 
     json.dump({"scene": scene, "params": {"score_threshold": score_threshold,
                "min_inliers": min_inliers, "accumulate": accumulate,
+               "scan_keyframes": scan_keyframes, "scan_voxel_m": scan_voxel_m,
                "range_gap_m": range_gap_m,
                "cluster_voxel_m": cluster_voxel_m,
                "nms_dist": NMS_DIST, "nms_gap": NMS_GAP},
@@ -167,6 +217,14 @@ def main() -> int:
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     ap.add_argument("--no-accumulate", dest="accumulate", action="store_false")
     ap.set_defaults(accumulate=True)
+    ap.add_argument("--scan-keyframes", type=int, default=DEFAULT_MAX_KEYFRAMES,
+                    help="ScanAccumulator window in ticks; 0 disables accumulation")
+    ap.add_argument("--scan-voxel", type=float, default=DEFAULT_VOXEL_M,
+                    help="ScanAccumulator downsample voxel (m)")
+    ap.add_argument("--no-frozen", dest="use_frozen", action="store_false",
+                    help="always call the sidecar, even where dump_detections.py "
+                         "has written detections.npz next to the captures")
+    ap.set_defaults(use_frozen=True)
     ap.add_argument("--range-gap", type=float, default=DEFAULT_RANGE_GAP_M,
                     help="range-cluster gap (m) for mask-spill rejection; 0 disables")
     ap.add_argument("--cluster-voxel", type=float, default=DEFAULT_CLUSTER_VOXEL_M,
@@ -185,6 +243,8 @@ def main() -> int:
     for s in scenes:
         dump_scene(s, base_url=args.base_url, score_threshold=args.score_threshold,
                    min_inliers=args.min_inliers, accumulate=args.accumulate,
+                   scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
+                   use_frozen=args.use_frozen,
                    range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
                    out_root=args.out,
                    request_timeout_s=args.timeout)
