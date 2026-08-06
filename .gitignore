@@ -288,3 +288,8 @@ weights/
 dataset_generator/captures/
 dataset_generator/branchA_sample/
 dataset_generator/live_frames/
+
+# Session artefacts — captured frames, sweep outputs, cached VLM replies
+snaps/
+frames_first/
+artifacts/

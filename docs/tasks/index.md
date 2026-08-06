@@ -39,6 +39,10 @@ Every row below links to a distinct document.
 | 23 | [Where recall actually dies, measured stage by stage](TASK%2023%20-%20Where%20recall%20actually%20dies,%20measured%20stage%20by%20stage.md) | Done |
 | 24 | [What the boxes are actually missing](TASK%2024%20-%20What%20the%20boxes%20are%20actually%20missing.md) | Done |
 | 25 | [A viewer for the perception map, and what it found](TASK%2025%20-%20A%20viewer%20for%20the%20perception%20map,%20and%20what%20it%20found.md) | Done |
+| 26 | [Can a VLM ground a referring expression, measured](TASK%2026%20-%20Can%20a%20VLM%20ground%20a%20referring%20expression,%20measured.md) | Done |
+| 27 | [From a box to a waypoint, and two things measurement changed](TASK%2027%20-%20From%20a%20box%20to%20a%20waypoint,%20and%20two%20things%20measurement%20changed.md) | Done — superseded on blind lifts by 28 |
+| 28 | [The approach loop, driven](TASK%2028%20-%20The%20approach%20loop,%20driven.md) | Done — superseded on the platform clamp by 29 |
+| 29 | [The converter is not a clamp, and we can predict it](TASK%2029%20-%20The%20converter%20is%20not%20a%20clamp,%20and%20we%20can%20predict%20it.md) | Done |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
