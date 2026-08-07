@@ -43,6 +43,8 @@ Every row below links to a distinct document.
 | 27 | [From a box to a waypoint, and two things measurement changed](TASK%2027%20-%20From%20a%20box%20to%20a%20waypoint,%20and%20two%20things%20measurement%20changed.md) | Done — superseded on blind lifts by 28 |
 | 28 | [The approach loop, driven](TASK%2028%20-%20The%20approach%20loop,%20driven.md) | Done — superseded on the platform clamp by 29 |
 | 29 | [The converter is not a clamp, and we can predict it](TASK%2029%20-%20The%20converter%20is%20not%20a%20clamp,%20and%20we%20can%20predict%20it.md) | Done |
+| 30 | [Four scenes, and the bugs only driving finds](TASK%2030%20-%20Four%20scenes,%20and%20the%20bugs%20only%20driving%20finds.md) | Done — loft unsolved, `gate` not enforced |
+| 31 | [Ground truth for all fifteen scenes, and what it refuted](TASK%2031%20-%20Ground%20truth%20for%20all%20fifteen%20scenes,%20and%20what%20it%20refuted.md) | Done — `KEEPOUT_M` refuted, not yet redesigned |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.

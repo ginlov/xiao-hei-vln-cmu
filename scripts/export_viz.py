@@ -13,6 +13,13 @@ Output is a JSON manifest plus one ``float32`` blob of ``xyz`` triples; the
 manifest indexes into the blob by point offset so the page fetches geometry as
 an ``ArrayBuffer`` and never parses coordinates out of text.
 
+The two halves have very different costs. The perception half needs a recorded
+tour of the scene, which costs sim time; the ground-truth half is read straight
+out of the scene model and costs nothing. A scene with no recorded tour is
+therefore still exported, ground truth only -- that is what the offline scorer
+and ``anchor_size.py`` read, and holding it hostage to a tour left half the
+official question set unscoreable.
+
     uv run python scripts/export_viz.py --scene office_2
     uv run python scripts/export_viz.py --scene all --stride 3
 """
@@ -23,19 +30,37 @@ import argparse
 import json
 import sys
 import zipfile
+from collections.abc import Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 
+from xiao_hei_vln.eval_sampler.object_list import parse_object_list
 from xiao_hei_vln.perception import object_map as om_mod
 from xiao_hei_vln.perception import replay
 from xiao_hei_vln.perception.lifter import PointLifter
 from xiao_hei_vln.perception.object_map import ObjectMap
 from xiao_hei_vln.perception.vocab import is_structure
-from xiao_hei_vln.scene.io import read_objects_from_zip
 
-DEFAULT_SCENES = ("arabic_room", "chinese_room", "japanese_room",
-                  "livingroom_3", "loft", "office_1", "office_2")
+# The scenes the official question set asks about. Seven have a recorded tour;
+# the rest export ground truth only until one is recorded.
+OFFICIAL_SCENES = (
+    "arabic_room", "chinese_room", "home_building_1", "home_building_2",
+    "hotel_room_1", "hotel_room_2", "japanese_room", "livingroom_1",
+    "livingroom_2", "livingroom_3", "livingroom_4", "loft", "office_1",
+    "office_2", "studio",
+)
+# Where the scene models sit on the two machines this runs on: unpacked under
+# the sim host's dataset directory, and as the download batches they arrived in
+# on the laptop. A root that does not exist is skipped, so listing both layouts
+# costs nothing.
+DEFAULT_GT_ROOTS = (
+    Path.home() / "workspace/dataset/unity-scene",
+    Path.home() / "Workspace/vln-challenge/dataset-official/unity_env_models",
+    Path.home() / "Workspace/vln-challenge/dataset-official/unity_env_models 2",
+    Path.home() / "Workspace/vln-challenge/dataset-official/unity_env_models 3",
+)
 # The benchmark's gating, so what is drawn is what is measured.
 LIFT = dict(min_move_m=0.15, min_rot_deg=10.0, min_score=0.35, min_inliers=10)
 
@@ -96,6 +121,44 @@ class Provenance:
     def __exit__(self, *exc) -> bool:
         om_mod._Node.__init__, om_mod._Node.merge = self._init, self._merge
         return False
+
+
+class GtSource:
+    """One scene's ground truth, whether it is a zip or an unpacked directory.
+
+    The official models arrive as several download batches -- on the laptop
+    they sit in three sibling directories, two of them with a space in the name
+    -- while the sim host keeps them unpacked next to the simulator. Both forms
+    hold the same ``object_list.txt`` and ``map.ply``, so read either rather
+    than maintaining a fourth copy that has to stay in sync with both.
+    """
+
+    def __init__(self, path: Path, scene: str) -> None:
+        self.path, self.scene = path, scene
+
+    @classmethod
+    def find(cls, scene: str, roots: Sequence[Path]) -> "GtSource | None":
+        for r in roots:
+            if (r / f"{scene}.zip").is_file():
+                return cls(r / f"{scene}.zip", scene)
+            if (r / scene / "object_list.txt").is_file():
+                return cls(r / scene, scene)
+        return None
+
+    @contextmanager
+    def open(self, member: str):
+        """A binary handle on one member. Raises if it is not there."""
+        if self.path.suffix == ".zip":
+            with zipfile.ZipFile(self.path) as zf, \
+                    zf.open(f"{self.scene}/{member}") as fh:
+                yield fh
+        else:
+            with open(self.path / member, "rb") as fh:
+                yield fh
+
+    def objects(self) -> dict:
+        with self.open("object_list.txt") as fh:
+            return parse_object_list([raw.decode().strip() for raw in fh])
 
 
 _PLY_SIZES = {"char": 1, "uchar": 1, "int8": 1, "uint8": 1,
@@ -186,19 +249,39 @@ def voxel_thin(pts: np.ndarray, voxel: float, cap: int) -> np.ndarray:
     return out
 
 
-def export_scene(scene: str, frames_root: Path, gt_root: Path, out_dir: Path,
-                 *, stride: int, max_scan: int, max_det: int,
+def export_scene(scene: str, frames_root: Path, gt_roots: Sequence[Path],
+                 out_dir: Path, *, stride: int, max_scan: int, max_det: int,
                  world_voxel: float, max_world: int,
-                 gt_voxel: float, max_gt: int) -> bool:
+                 gt_voxel: float, max_gt: int, force: bool = False) -> bool:
     frames_dir = frames_root / f"{scene}_tour"
-    if not frames_dir.is_dir():
-        print(f"{scene}: no corpus at {frames_dir}", file=sys.stderr)
-        return False
+    gt_only = not frames_dir.is_dir()
+    if gt_only:
+        # The corpus lives on whichever machine recorded the tour, so running
+        # this on the laptop finds none of it. Downgrading an existing full
+        # export to ground truth only would silently destroy hours of sim time,
+        # and the export it replaced is not reproducible here.
+        prev = out_dir / f"{scene}.json"
+        if prev.is_file() and not force:
+            try:
+                if json.loads(prev.read_text()).get("frames"):
+                    print(f"{scene}: keeping the existing full export "
+                          f"(no corpus here; --force to overwrite)",
+                          file=sys.stderr)
+                    return True
+            except (OSError, ValueError):
+                pass
+        # Otherwise this is not an error: eight of the fifteen official scenes
+        # have never been driven. The loop below runs zero times and the
+        # ground-truth half carries the export on its own.
+        print(f"{scene}: no corpus at {frames_dir} — ground truth only",
+              file=sys.stderr)
 
-    frames = replay.load_frames(frames_dir, use_image_pose=True,
-                                min_move_m=LIFT["min_move_m"],
-                                min_rot_deg=LIFT["min_rot_deg"])
-    detections = replay.load_detections(frames_dir)
+    frames, detections = [], {}
+    if not gt_only:
+        frames = replay.load_frames(frames_dir, use_image_pose=True,
+                                    min_move_m=LIFT["min_move_m"],
+                                    min_rot_deg=LIFT["min_rot_deg"])
+        detections = replay.load_detections(frames_dir)
     lifter = PointLifter(min_inliers=LIFT["min_inliers"])
     omap = ObjectMap()
     rng = np.random.default_rng(0)
@@ -270,16 +353,16 @@ def export_scene(scene: str, frames_root: Path, gt_root: Path, out_dir: Path,
                         "struct": bool(nd["is_structure"]),
                         "f0": fs[0] if fs else 0, "fs": fs})
 
-    gt, gt_cloud = [], [0, 0]
-    zip_path = gt_root / f"{scene}.zip"
-    if zip_path.is_file():
+    gt, gt_cloud, gt_pts = [], [0, 0], None
+    src = GtSource.find(scene, gt_roots)
+    if src is not None:
         # `heading` is carried through so the viewer can draw the box the scene
         # actually annotates. perception/eval.py builds its AABB as
         # `center +- size/2` with the heading *ignored*, so for any rotated
         # object the box we score against is the object's local box dropped
         # into the world unrotated -- neither the true oriented box nor its
         # world-aligned bound. Worth being able to see.
-        for e in read_objects_from_zip(zip_path, scene_name=scene).values():
+        for e in src.objects().values():
             c = np.array([e.center.x, e.center.y, e.center.z], dtype=float)
             s = np.array([e.size.x, e.size.y, e.size.z], dtype=float)
             gt.append({"l": lid(e.label), "c": [round(float(x), 4) for x in c],
@@ -289,27 +372,33 @@ def export_scene(scene: str, frames_root: Path, gt_root: Path, out_dir: Path,
                        "h": round(float(e.heading), 5),
                        "struct": bool(is_structure(e.label))})
         try:
-            with zipfile.ZipFile(zip_path) as zf, \
-                    zf.open(f"{scene}/map.ply") as fh:
+            with src.open("map.ply") as fh:
                 pts = read_ply_xyz(fh)
-            gt_cloud = blob.add(voxel_thin(pts, gt_voxel, max_gt))
+            gt_pts = voxel_thin(pts, gt_voxel, max_gt)
+            gt_cloud = blob.add(gt_pts)
             print(f"  {scene}: gt cloud {len(pts)} -> {gt_cloud[1]} points",
                   flush=True)
-        except (KeyError, ValueError) as exc:
+        except (KeyError, FileNotFoundError, ValueError) as exc:
             print(f"{scene}: no usable map.ply ({exc})", file=sys.stderr)
     else:
-        print(f"{scene}: no ground truth at {zip_path}", file=sys.stderr)
+        roots = ", ".join(str(r) for r in gt_roots)
+        print(f"{scene}: no ground truth under {roots}", file=sys.stderr)
+        if gt_only:
+            return False  # nothing to export at all
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{scene}.bin").write_bytes(blob.tobytes())
     names = [None] * len(label_ids)
     for k, v in label_ids.items():
         names[v] = k
-    lo = acc.min(axis=0) if len(acc) else np.zeros(3)
-    hi = acc.max(axis=0) if len(acc) else np.ones(3)
+    # A ground-truth-only export has no lidar cloud, so the scene's own map.ply
+    # is the only geometry there is to frame a camera on.
+    box = acc if len(acc) else gt_pts
+    lo = box.min(axis=0) if box is not None and len(box) else np.zeros(3)
+    hi = box.max(axis=0) if box is not None and len(box) else np.ones(3)
     manifest = {
         "scene": scene, "bin": f"{scene}.bin", "stride": stride,
-        "n_points": blob.n, "labels": names,
+        "gt_only": gt_only, "n_points": blob.n, "labels": names,
         # One structure verdict for every label, so the viewer's hide toggle
         # treats a per-frame detection and its fused object identically. Judging
         # them by different rules is exactly the asymmetry that inflated our
@@ -321,16 +410,19 @@ def export_scene(scene: str, frames_root: Path, gt_root: Path, out_dir: Path,
     }
     (out_dir / f"{scene}.json").write_text(json.dumps(manifest))
     mb = (blob.n * 12) / 1e6
-    print(f"{scene:14s} {len(out_frames):4d} frames  {len(objects):4d} objects  "
-          f"{len(gt):4d} gt  {blob.n:8d} pts ({mb:.1f} MB)", flush=True)
+    tag = "  gt only" if gt_only else ""
+    print(f"{scene:16s} {len(out_frames):4d} frames  {len(objects):4d} objects  "
+          f"{len(gt):4d} gt  {blob.n:8d} pts ({mb:.1f} MB){tag}", flush=True)
     return True
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scene", default="all")
+    ap.add_argument("--scene", default="all",
+                    help="one scene, or `all` for the official fifteen")
     ap.add_argument("--frames-root", default="frames")
-    ap.add_argument("--gt-root", default=str(Path.home() / "workspace/dataset/unity-scene"))
+    ap.add_argument("--gt-root", nargs="+", default=[str(p) for p in DEFAULT_GT_ROOTS],
+                    help="directories holding <scene>.zip or an unpacked <scene>/")
     ap.add_argument("--out", default="viz/data")
     ap.add_argument("--stride", type=int, default=2,
                     help="keep every Nth frame; fusion still sees all of them")
@@ -343,26 +435,43 @@ def main() -> int:
     ap.add_argument("--gt-voxel", type=float, default=0.05,
                     help="voxel size for the ground-truth scene cloud")
     ap.add_argument("--max-gt", type=int, default=500_000)
+    ap.add_argument("--force", action="store_true",
+                    help="let a ground-truth-only export replace a full one")
     args = ap.parse_args()
 
-    scenes = DEFAULT_SCENES if args.scene == "all" else (args.scene,)
+    scenes = OFFICIAL_SCENES if args.scene == "all" else (args.scene,)
+    gt_roots = [Path(p) for p in args.gt_root]
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     ok = []
     for s in scenes:
-        if not export_scene(s, Path(args.frames_root), Path(args.gt_root), out_dir,
+        if not export_scene(s, Path(args.frames_root), gt_roots, out_dir,
                             stride=args.stride, max_scan=args.max_scan,
                             max_det=args.max_det, world_voxel=args.world_voxel,
                             max_world=args.max_world, gt_voxel=args.gt_voxel,
-                            max_gt=args.max_gt):
+                            max_gt=args.max_gt, force=args.force):
             continue
         ok.append(s)
-        # Rewritten per scene, not once at the end: a seven-scene export takes
+        # Rewritten per scene, not once at the end: a fifteen-scene export takes
         # minutes and there is no reason to keep the finished ones off the page
         # while the rest run.
-        (out_dir / "index.json").write_text(json.dumps({"scenes": ok}))
-    print(f"\nwrote {out_dir}/index.json with {len(ok)} scenes")
+        write_index(out_dir)
+    print(f"\n{len(ok)} scenes exported; "
+          f"{out_dir}/index.json lists everything on disk")
     return 0 if ok else 1
+
+
+def write_index(out_dir: Path) -> list[str]:
+    """List every scene present, not just the ones this run touched.
+
+    Exporting one scene used to rewrite the index to that scene alone, hiding
+    the rest of the page's data until someone ran `--scene all` again.
+    """
+    have = {p.stem for p in out_dir.glob("*.json")} - {"index"}
+    known = [s for s in OFFICIAL_SCENES if s in have]
+    scenes = known + sorted(have - set(known))
+    (out_dir / "index.json").write_text(json.dumps({"scenes": scenes}))
+    return scenes
 
 
 if __name__ == "__main__":

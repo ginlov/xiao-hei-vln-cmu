@@ -126,8 +126,13 @@ Reply with JSON only, no prose, no markdown fence:
 # returned true on all 52 claimed sightings including chairs behind glass.
 APPROACH_BLOCK = """
 
-Two more fields, appended to the JSON above.
+Three more fields, appended to the JSON above.
 
+  "here": "one short clause naming where the robot is standing and what it
+      could search from here — e.g. \\"the dining area left of the staircase;
+      table top hidden behind the chair backs\\". This is written into a log of
+      places already visited and given back to you on later calls, so write it
+      for a reader who cannot see this image."
   "target_state": "far" | "approaching" | "adjacent",
       how close the camera is to the target, judged only from how the target
       sits in the frame — how much of the view it fills, whether the frame cuts
@@ -281,13 +286,37 @@ DEFAULT_PROMPT_VER = "v5-constraints"
 PROMPT = PROMPT_V3
 
 
+VISITED_BLOCK = """
+
+PLACES ALREADY SEARCHED. The robot wrote these on earlier calls, oldest first.
+Do not send it back to one of them unless the request can only be satisfied
+there and you say why. Prefer somewhere it has not stood.
+
+{visited}
+"""
+
+
 def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
-                 version: str = DEFAULT_PROMPT_VER) -> str:
+                 version: str = DEFAULT_PROMPT_VER,
+                 visited: list[str] | None = None) -> str:
+    """The prompt, optionally with the approach fields and a visit log.
+
+    `visited` is the model's own `here` clauses from earlier calls. Feeding
+    back map coordinates would be useless — it reasons over images, not over a
+    frame it cannot see — but its own words about a place it has stood in are
+    something it can act on. On loft, without this, it proposed driving back to
+    the origin it had just left.
+    """
     if version not in PROMPTS:
         raise SystemExit(f"unknown prompt version {version!r}; "
                          f"have {sorted(PROMPTS)}")
     base = PROMPTS[version].format(phrase=phrase, size=size)
-    return base + APPROACH_BLOCK if approach else base
+    if approach:
+        base += APPROACH_BLOCK
+    if visited:
+        base += VISITED_BLOCK.format(visited="\n".join(
+            f"  {i}. {v}" for i, v in enumerate(visited, 1)))
+    return base
 
 
 def to_pixels(box: list[float], space: str | None, size: int) -> list[float]:

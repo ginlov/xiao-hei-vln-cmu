@@ -304,6 +304,27 @@ def _lift_xy(box_px, face_idx: int, scan_cam: np.ndarray,
     return res["patch_xy"] if res.get("n") else None
 
 
+_RELATIONAL = re.compile(
+    r"\b(?:closest|nearest|farthest|furthest|between|near|next\s+to|beside)\b",
+    re.I)
+
+
+def has_relation(phrase: str) -> bool:
+    """Does this phrase name the target by its relation to something else?
+
+    Asked of the phrase, not of the reply, because the model is not consistent
+    about reporting one. Given "the guitar near the couch" it returned no
+    relation on one call and `closest_to` on the very next; the call that
+    forgot was treated as needing no check, and bound the couch.
+
+    Deliberately narrow: only the relations `resolve_relation` can actually
+    settle by measuring. "the vases on the cabinet below the TV" describes a
+    position rather than a comparison, and demanding an anchor lift for it
+    would block a target that grounds perfectly well on its own.
+    """
+    return bool(_RELATIONAL.search(phrase or ""))
+
+
 def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
                      *, size: int = 640) -> tuple[list, int, str] | None:
     """Decide a comparative relation by measuring, not by asking.
@@ -317,13 +338,15 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
     be made and the caller should fall back to the model's own pick. Falling
     back is not a silent failure: with fewer than two liftable candidates there
     is nothing to compare, and the model's choice is the only answer available.
+
+    One nomination is a special case, not a failed comparison — see below.
     """
     rel = reply.get("relation")
     cands = reply.get("candidates") or []
     anchors = reply.get("anchors") or []
     if rel not in ("closest_to", "farthest_from", "between"):
         return None
-    if len(cands) < 2 or not anchors:
+    if not cands or not anchors:
         return None
 
     scan_cam = scan_to_camera(scan_map, pose)
@@ -342,7 +365,25 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
         return out
 
     cb, ab = boxes(cands), boxes(anchors)
-    if len(cb) < 2 or not ab:
+    if not ab:
+        # Nothing to measure against: the phrase is unchecked, and the caller
+        # must treat whatever the model nominated as a guess at the noun.
+        return None
+    if len(cands) == 1 and len(cb) == 1:
+        # The model saw exactly one thing matching the noun, and it lifted.
+        # There is no comparison to make, so refusing to resolve here does not
+        # protect anything — it discards a measured position. On `studio` it
+        # cost the second destination: the model had correctly boxed "guitar
+        # leaning against the wall/shelf beyond the sofa's right end", the loop
+        # called that unmeasurable, and kept an earlier binding that sat inside
+        # the couch. Note the condition is on what the model *reported*: one
+        # liftable candidate out of several is an undecided comparison, which
+        # is a different thing and still returns None below.
+        c = cb[0]
+        return c[0], c[1], (
+            f"{rel}: one nomination ({(c[3].get('note') or '?')[:52]}), "
+            f"{len(ab)} anchor(s) lifted — nothing to compare it against")
+    if len(cb) < 2:
         return None
 
     def score(xy: np.ndarray) -> float:

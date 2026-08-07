@@ -1,0 +1,92 @@
+flowchart TD
+    START["START<br/>phrase, max_steps = 6"] --> PUSH["push robot_io.py into the container<br/>preflight: check the 5 allowed topics"]
+    PUSH --> STEP{"steps left?"}
+    STEP -- no --> ENDNO["END: did not arrive"]
+
+    STEP -- yes --> CAP["CAPTURE<br/>360 image, registered scan,<br/>terrain map, pose"]
+    CAP --> FACES["split into 4 face crops<br/>save faces + scan + terrain to run dir"]
+    FACES --> VLM["VLM CALL<br/>phrase + 4 faces + previous target crop<br/>+ visited notes"]
+    VLM --> PARSE{"reply parses?"}
+    PARSE -- no --> ENDPARSE["END: unparseable reply<br/>log raw text"]
+
+    PARSE -- yes --> HERE["append reply.here to visited<br/>model's own words for where it stands"]
+    HERE --> CONSTR["bind_constraints<br/>lift avoid anchors into keep-out discs"]
+    CONSTR --> GATE["gate clause: logged, NOT enforced"]
+    GATE --> VIS{"target visible?"}
+
+    VIS -- no --> MISS["misses += 1"]
+    MISS --> DROP{"bound AND misses >= 2?"}
+    DROP -- yes --> DROPB["drop the binding<br/>2 blind calls means it is not there"]
+    DROP -- no --> EXPL
+    DROPB --> EXPL["explore_direction<br/>score reach x cos delta over +/- 90 deg<br/>terrain says what is drivable"]
+    EXPL --> EXPLW["best_waypoint_toward<br/>min_move = 0.5 m"]
+    EXPLW --> EXPLD["DRIVE"]
+    EXPLD --> STUCK{"2 legs in a row moved < 0.25 m?"}
+    STUCK -- yes --> ENDSTUCK["END: heading not reachable"]
+    STUCK -- no --> STEP
+
+    VIS -- yes --> REL["resolve_relation<br/>lift every candidate and anchor,<br/>compare by measuring - never ask the model"]
+    REL --> RELQ{"how many nominated,<br/>how many lifted?"}
+    RELQ -- "no anchor lifted" --> RELNO["unmeasured<br/>this is a guess at the noun"]
+    RELQ -- "1 nominated, it lifted" --> RELYES["MEASURED<br/>nothing to compare, that is the answer"]
+    RELQ -- "2+ lifted" --> RELYES2["MEASURED<br/>closest_to / farthest_from / between"]
+    RELQ -- "2+ nominated, only 1 lifted" --> RELNO
+
+    RELNO --> VERIF
+    RELYES --> VERIF
+    RELYES2 --> VERIF
+    VERIF["verified = phrase has no relation OR relation was measured<br/>relation is read from the PHRASE, not from the reply"]
+    VERIF --> WP["next_waypoint<br/>bearing from box, range from lidar lift,<br/>size check, blind-cone check"]
+
+    WP --> BIND{"bind_target"}
+    BIND -- "not verified, nothing bound" --> BNONE["do not bind<br/>move to look, not to stop"]
+    BIND -- "not verified, already bound" --> BCARRY["carry the existing binding"]
+    BIND -- "lift refused, already bound" --> BCARRY
+    BIND -- "verified, nothing bound" --> BNEW["BIND at measured position"]
+    BIND -- "verified, jump <= 1.0 m" --> BREF["refine the binding"]
+    BIND -- "verified AND old binding was never measured" --> BOVER["RE-BIND at any distance<br/>measurement outranks a guess"]
+    BIND -- "jump > 1.0 m, model says same object" --> BKEEP["keep the old binding<br/>teleportation is not refinement"]
+
+    BNONE --> SOFF
+    BCARRY --> SOFF
+    BNEW --> SOFF
+    BREF --> SOFF
+    BOVER --> SOFF
+    BKEEP --> SOFF
+
+    SOFF{"committed AND<br/>distance to binding <= standoff?"}
+    SOFF -- yes --> ARR1["END: ARRIVED - already within standoff"]
+    SOFF -- no --> CONV["ConverterModel on this terrain frame<br/>predict the organisers' waypoint_converter"]
+
+    CONV --> BEST["best_waypoint_toward aim<br/>aim = binding if bound, else waypoint<br/>min_move = 0 if committed, else 0.5 m<br/>score where the vehicle SETTLES"]
+    BEST --> GAIN["gain = distance now - distance after the move"]
+    GAIN --> GQ{"gain < 0.25 m?"}
+
+    GQ -- no --> NOOP
+    GQ -- "yes, and further than 1.5 m<br/>or nothing bound" --> LOOK["not the platform floor -<br/>the local map has not seen<br/>the ground near the target yet"]
+    LOOK --> NOOP
+    GQ -- "yes, and within 1.5 m, committed" --> ARR2["END: ARRIVED<br/>no legal point closer"]
+    GQ -- "yes, and within 1.5 m, not committed" --> ENDSTK["END: stuck<br/>untrusted lift, no legal move"]
+
+    NOOP{"will the platform act on this goal?<br/>settle displacement >= 0.5 m"}
+    NOOP -- no --> REQ["re-query converter with min_move<br/>a goal inside waypointXYRadius = 0.3 m<br/>produces ZERO motion"]
+    REQ --> REQQ{"any legal goal that moves us?"}
+    REQQ -- no --> ENDBOX["END: boxed in"]
+    REQQ -- yes --> DRIVE
+    NOOP -- yes --> DRIVE["DRIVE to the goal<br/>we publish a POINT - the organisers'<br/>local_planner picks the arc"]
+
+    DRIVE --> TO{"timed out?"}
+    TO -- yes --> ENDTO["END: drive timed out"]
+    TO -- no --> MOVED{"moved >= 0.25 m?"}
+
+    MOVED -- yes --> REOBS["reaching a waypoint is a better vantage point,<br/>NOT an arrival - re-observe"]
+    REOBS --> STEP
+
+    MOVED -- "no, committed, within 1.5 m" --> ARR3["END: ARRIVED<br/>stack will not close the last gap"]
+    MOVED -- "no, committed, further than 1.5 m" --> ENDBOX2["END: boxed in, not arrived"]
+    MOVED -- "no, not committed" --> ENDNOPROG["END: step made no progress"]
+
+    ARR1 --> CONF["one CONFIRM call<br/>advisory only, gates nothing"]
+    ARR2 --> CONF
+    ARR3 --> CONF
+    CONF --> DONE["END: ARRIVED"]

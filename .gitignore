@@ -293,3 +293,6 @@ dataset_generator/live_frames/
 snaps/
 frames_first/
 artifacts/
+
+# RStudio leaves these next to any file it opens.
+.Rhistory

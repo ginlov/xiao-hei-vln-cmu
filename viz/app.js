@@ -174,7 +174,9 @@ function robustBounds(pos, lowPct = 0.015, highPct = 0.985) {
 
 function buildWorld() {
   const pos = gather([data.world]);
-  data.fit = robustBounds(pos);
+  // A ground-truth-only export has never been driven, so there is no lidar
+  // cloud and the scene's own map.ply is the only thing to frame on.
+  data.fit = robustBounds(pos.length ? pos : gather([data.gt_world || [0, 0]]));
   const lo = data.fit.min[2], hi = data.fit.max[2];
   const span = Math.max(hi - lo, 1e-3);
   setPoints(gWorld, pos, (c, i, p) => {
@@ -299,6 +301,19 @@ function rebuildBoxes() {
 function showFrame(i) {
   frameIdx = Math.max(0, Math.min(i, data.frames.length - 1));
   const f = data.frames[frameIdx];
+  // Ground truth only: no tour, so nothing was scanned, detected or driven.
+  // The boxes and the scene cloud are still the whole point of looking.
+  if (!f) {
+    $('frameLbl').textContent = 'no tour';
+    $('tickLbl').textContent = 'ground truth only';
+    setPoints(gScan, new Float32Array(0), () => {});
+    setPoints(gDet, new Float32Array(0), () => {});
+    setLines(gDetBox, [], []);
+    gRobot.visible = false;
+    updateHud();
+    return;
+  }
+  gRobot.visible = true;
   $('frame').value = frameIdx;
   $('frameLbl').textContent = `${frameIdx + 1} / ${data.frames.length}`;
   $('tickLbl').textContent = `tick ${f.t}`;

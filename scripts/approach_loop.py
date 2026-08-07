@@ -45,10 +45,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
 from vlm_approach import (STANDOFF_M, _lift_xy, box_angular_size,  # noqa: E402
-                          crop_face, in_blind_cone, next_waypoint,
-                          ray_from_box, resolve_relation)
+                          crop_face, has_relation, in_blind_cone,
+                          next_waypoint, ray_from_box, resolve_relation)
 from vlm_locate import rot_from_quat, scan_to_camera  # noqa: E402
-from waypoint_converter_model import ConverterModel  # noqa: E402
+from waypoint_converter_model import (WAYPOINT_XY_RADIUS,  # noqa: E402
+                                      ConverterModel)
 from vlm_probe import (DEFAULT_PROMPT_VER, NAMES, ask_claude,  # noqa: E402
                        ask_gemini, build_prompt, parse, to_pixels)
 from vlm_sweep import faces_of  # noqa: E402
@@ -97,6 +98,14 @@ RELATIONS = ("closest_to", "farthest_from", "between")
 # our own p90 centre error plus the vehicle, at most 1.98 m or the zone would
 # forbid the reference trajectory the organisers shipped as the answer.
 KEEPOUT_M = 1.2
+# The vehicle considers itself arrived once it is within `waypointXYRadius` of
+# its waypoint, so a commanded move shorter than that is not a small move — it
+# is no move at all. On `hotel_room_2` the blind-cone branch asked for 0.30 m,
+# the platform did not budge, and the loop read its own no-op as being stuck
+# and gave up with the target 2.8 m away. Any leg whose *purpose* is a new
+# viewpoint has to clear this; an approach does not, because settling close by
+# is the correct answer there.
+MIN_VIEW_MOVE_M = WAYPOINT_XY_RADIUS + 0.2
 
 
 class Robot:
@@ -230,7 +239,8 @@ def explore_direction(cm: ConverterModel, origin: np.ndarray,
 
 
 def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
-                rec: dict, *, verified: bool = True) -> tuple[bool, dict | None]:
+                rec: dict, *, verified: bool = True,
+                measured: bool = False) -> tuple[bool, dict | None]:
     """Keep one map position for the target, and defend it from later readings.
 
     A binding is not a detection. Re-grounding from a new pose is free to
@@ -252,6 +262,10 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
     does accept is a *grossly* wrong first sighting, measured at 4/54 = 7.4 %
     in TASK 26; a jump is then only allowed back if the model itself reports a
     different object with more confidence than the binding was made with.
+
+    `verified` says this reading may be bound at all; `measured` says the
+    phrase's relation was settled by lifting an anchor rather than assumed, and
+    is what lets a later reading overrule an earlier unchecked one.
 
     Returns `(committed, bound)`. A binding also rescues an untrusted lift: the
     blind cone costs us the range, not the position we already measured.
@@ -279,18 +293,29 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
         seen = origin + (d / n if n > 1e-6 else d) * wp.range_m
         if bound is None:
             print(f"      bound the target at ({seen[0]:+.2f}, {seen[1]:+.2f})")
-            bound = {"xy": seen, "conf": conf}
+            bound = {"xy": seen, "conf": conf, "verified": measured}
         else:
             jump = float(np.linalg.norm(seen - bound["xy"]))
             switched = reply.get("same_object_as_previous") is False
             if jump <= JUMP_M:
                 print(f"      binding refined {jump:.2f} m -> "
                       f"({seen[0]:+.2f}, {seen[1]:+.2f})")
-                bound = {"xy": seen, "conf": conf}
+                bound = {"xy": seen, "conf": conf,
+                         "verified": measured or bound.get("verified", True)}
+            elif measured and not bound.get("verified", True):
+                # The distance gate exists to stop an unverified reading from
+                # teleporting the binding. It is not meant to defend a binding
+                # that was itself never checked: on `studio` an early call that
+                # reported no relation bound the couch, and every later call
+                # that measured the phrase properly was then refused for
+                # jumping too far. Measurement outranks a guess at any distance.
+                print(f"      re-bound {jump:.2f} m away — this reading "
+                      f"measured the phrase, the binding it replaces did not")
+                bound = {"xy": seen, "conf": conf, "verified": True}
             elif switched and conf > bound["conf"]:
                 print(f"      re-bound {jump:.2f} m away — the model reports a "
                       f"different object at higher confidence")
-                bound = {"xy": seen, "conf": conf}
+                bound = {"xy": seen, "conf": conf, "verified": measured}
             else:
                 print(f"      this lift lands {jump:.2f} m from the binding "
                       f"while still calling it the same object — keeping the "
@@ -311,14 +336,16 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
 
 
 def ground(faces: list[bytes], phrase: str, backend: str, model: str,
-           prev: bytes | None, version: str) -> tuple[dict | None, str]:
+           prev: bytes | None, version: str,
+           visited: list[str] | None = None) -> tuple[dict | None, str]:
     """The parsed reply and the text it came from.
 
     The raw text is returned because three runs died on "unparseable reply"
     while discarding the only evidence of why. It was truncation.
     """
     fn = ask_claude if backend == "claude" else ask_gemini
-    text = fn(build_prompt(phrase, approach=True, version=version),
+    text = fn(build_prompt(phrase, approach=True, version=version,
+                           visited=visited),
               faces, model, previous=prev)
     return parse(text), text
 
@@ -358,6 +385,7 @@ def main() -> int:
     prev_crop, calls, arrived, bound = None, 0, False, None
     misses = stuck_explores = 0
     avoid: list[dict] = []
+    visited: list[str] = []
 
     for step in range(1, args.max_steps + 1):
         eq, scan, terrain, pose = robot.capture()
@@ -372,7 +400,7 @@ def main() -> int:
         keepout: list[tuple[np.ndarray, float]] = []
 
         reply, raw = ground(faces, args.phrase, args.backend, model, prev_crop,
-                            args.prompt_version)
+                            args.prompt_version, visited)
         calls += 1
         rec: dict = {"step": step, "pose": pose, "reply": reply}
         if reply is None:
@@ -391,6 +419,12 @@ def main() -> int:
         # Before the visibility branch: a keep-out anchor is most likely to be
         # reported on exactly the calls where the *target* is not visible,
         # because that is when the robot is looking around at the furniture.
+        here_txt = (reply.get("here") or "").strip()
+        if here_txt:
+            visited.append(here_txt)
+            rec["here"] = here_txt
+            print(f'      here: "{here_txt[:96]}"')
+
         avoid = bind_constraints(reply, scan, pose, avoid)
         keepout = [(a["xy"], KEEPOUT_M) for a in avoid]
         if reply.get("gate"):
@@ -428,7 +462,8 @@ def main() -> int:
                 u, reach, delta = explore_direction(cm, o[:2], want)
                 if reach >= MIN_EXPLORE_M:
                     goal = o[:2] + u * min(reach, MAX_EXPLORE_M)
-                    best = cm.best_waypoint_toward(goal, o[:2])
+                    best = cm.best_waypoint_toward(goal, o[:2],
+                                                   min_move=MIN_VIEW_MOVE_M)
                     if best is not None:
                         goal = best[0]
             except ValueError as e:
@@ -472,7 +507,12 @@ def main() -> int:
                   f"({len(reply.get('candidates') or [])} candidates, "
                   f"{len(reply.get('anchors') or [])} anchors) — using the "
                   f"model's own pick")
-        verified = (reply.get("relation") not in RELATIONS) or chosen is not None
+        # Whether the phrase needs checking is a property of the phrase. Asking
+        # the reply instead let `studio` through: the model reported no relation
+        # for "the guitar near the couch" on one call and `closest_to` on the
+        # next, and the call that forgot was treated as nothing to verify.
+        relational = has_relation(args.phrase) or reply.get("relation") in RELATIONS
+        verified = (not relational) or chosen is not None
         w, h_deg = box_angular_size(box, i)
         blind, az, el, floor = in_blind_cone(ray_from_box(box, i))
         print(f"      image {i} ({NAMES[i]}), box {w:.1f}x{h_deg:.1f}°, "
@@ -488,7 +528,8 @@ def main() -> int:
               f"[{'DESTINATION' if wp.committed else 'step'}]  {wp.reason}")
 
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
-                                       verified=verified)
+                                       verified=verified,
+                                       measured=chosen is not None)
 
         # Already inside the standoff: driving further would push into the
         # object, and the stack would only snap the waypoint back out again.
@@ -505,7 +546,7 @@ def main() -> int:
         # drive and another grounding call finding out. TASK 28 read a 1.08 m
         # displacement as the platform clamping an approach; it was the
         # converter discarding the waypoint and re-minimising elsewhere.
-        goal, will_move = wp.xy, None
+        goal, will_move, cm = wp.xy, None, None
         try:
             cm = ConverterModel(terrain, keepout=keepout)
             # Aim at the target itself, not at a standoff from it: the standoff
@@ -514,7 +555,10 @@ def main() -> int:
             # the target is bound, the binding is the better estimate of where
             # it is than any single reading.
             aim = bound["xy"] if bound is not None else wp.xy
-            best = cm.best_waypoint_toward(aim, o[:2])
+            # A step exists to buy a better view, so it has to actually move
+            # the vehicle; an approach may legitimately settle where it stands.
+            best = cm.best_waypoint_toward(
+                aim, o[:2], min_move=0.0 if committed else MIN_VIEW_MOVE_M)
             if best is not None:
                 goal, lands, reach = best
                 will_move = float(np.linalg.norm(lands - o[:2]))
@@ -578,6 +622,29 @@ def main() -> int:
             log.write(json.dumps(rec) + "\n")
             break
 
+        # Past the stop tests, so this step is going to drive — and a goal the
+        # vehicle settles less than `waypointXYRadius` from is one it considers
+        # already reached. Publishing it produces zero motion, which the
+        # post-drive test below would read as the stack clamping an approach.
+        # On `hotel_room_2` that turned "the map has not seen the floor near the
+        # lamp yet" into ARRIVED, 2.24 m short.
+        if cm is not None and will_move is not None and will_move < MIN_VIEW_MOVE_M:
+            alt = cm.best_waypoint_toward(aim, o[:2], min_move=MIN_VIEW_MOVE_M)
+            if alt is None:
+                print(f"      nowhere legal to move that the platform would act "
+                      f"on — boxed in {here:.2f} m from it")
+                rec["stopped"] = "boxed in (no legal move above waypointXYRadius)"
+                log.write(json.dumps(rec) + "\n")
+                break
+            goal, lands, reach = alt
+            will_move = float(np.linalg.norm(lands - o[:2]))
+            rec["converter"]["requeried_for_motion"] = {
+                "goal": goal.tolist(), "settles_at": lands.tolist(),
+                "settle_to_aim_m": reach, "will_move_m": will_move}
+            print(f"      that goal would not move the vehicle; going to "
+                  f"({goal[0]:+.2f}, {goal[1]:+.2f}) instead -> settles "
+                  f"{reach:.2f} m from it, {will_move:.2f} m from here")
+
         prev_crop = crop_face(faces[i], box)
         (out / f"step{step}_target.jpg").write_bytes(prev_crop)
 
@@ -601,6 +668,16 @@ def main() -> int:
         moved = res.get("moved_m") or 0.0
         if committed:
             if moved < PROGRESS_M:
+                # The stack declining to move is the platform's floor only when
+                # we are near the thing. Far away it means something else — a
+                # local map that has not seen the ground near the target — and
+                # calling that an arrival reports success 2 m short.
+                if here is not None and here > NEAR_M:
+                    print(f"      asked for {will_move:.2f} m and moved "
+                          f"{moved:.2f} m, still {here:.2f} m from it — boxed "
+                          f"in, not arrived")
+                    rec["stopped"] = "boxed in (stack would not move us)"
+                    break
                 print(f"      stack will not close the last {gap:.2f} m "
                       f"(moved {moved:.2f} m) — as near as it allows")
                 rec["arrived"] = "clamped by obstacle clearance"
@@ -627,7 +704,7 @@ def main() -> int:
         faces = faces_of(eq)
         try:
             confirm, _ = ground(faces, args.phrase, args.backend, model,
-                                prev_crop, args.prompt_version)
+                                prev_crop, args.prompt_version, visited)
             calls += 1
         except Exception as e:
             # Advisory only — it records whether the new fields agree with the

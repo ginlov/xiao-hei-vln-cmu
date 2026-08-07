@@ -168,11 +168,19 @@ class ConverterModel:
                 far = min(far, max(t - r, 0.0))
         return far
 
-    def best_waypoint_toward(self, target, vehicle, *, search: int = 400
+    def best_waypoint_toward(self, target, vehicle, *, search: int = 400,
+                             min_move: float = 0.0
                              ) -> tuple[np.ndarray, np.ndarray, float] | None:
         """The waypoint whose *resting place* lands nearest `target`.
 
         Returns `(goal, where_it_settles, distance_from_there_to_target)`.
+
+        `min_move` rejects goals the vehicle would settle less than that far
+        from where it stands. Pass it whenever the *point* of the move is to
+        change viewpoint rather than to close distance: the vehicle stops once
+        it is within `waypointXYRadius` of its waypoint, so anything nearer
+        than that is not a small move, it is no move at all. Leave it at zero
+        for an approach, where settling close by is the correct answer.
 
         Publishing a legal point instead of "target minus a fixed standoff" is
         the whole point of modelling the converter: a legal point is a local
@@ -212,6 +220,8 @@ class ConverterModel:
             # the way there counts too.
             if self.keepout and (self.forbidden(s)[0]
                                  or self._crosses_keepout(veh, s)):
+                continue
+            if min_move and float(np.linalg.norm(s - veh)) < min_move:
                 continue
             v = float(np.linalg.norm(s - tgt))
             if best is None or v < best[2]:

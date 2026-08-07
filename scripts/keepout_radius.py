@@ -31,14 +31,22 @@ import numpy as np
 CHALLENGE = Path.home() / "Workspace/vln-challenge/CMU-VLN-Challenge-2026"
 VIZ_DATA = Path("viz/data")
 TRAJ_FOR = {0: "trajectory_q4.ply", 1: "trajectory_q5.ply"}
+# TASK 26's p90 centre error, plus robot half-width and path-tracking slop: a
+# zone narrower than this can be correctly identified and still land in the
+# wrong place.
+FLOOR = 0.86
 
 # (scene, question index, anchors). A pair avoids the corridor *between* two
 # objects; a single name avoids the object itself.
 AVOID = [
     ("chinese_room", 1, ("chair", "folding screen")),
     ("loft", 0, ("cabinet",)),
-    # livingroom_2 ("avoiding the path between the TV and the tea table") has
-    # no exported corpus, so its ground truth is not reachable from viz/data.
+    # The question says "the path between the TV and the tea table"; this scene
+    # labels that piece of furniture `coffee table` and has no `tea table` at
+    # all, while chinese_room's question uses the same words against a real
+    # `tea table` label. The questions are not written against the scenes'
+    # vocabulary, so an anchor name cannot be looked up literally.
+    ("livingroom_2", 1, ("tv", "coffee table")),
 ]
 
 
@@ -71,7 +79,7 @@ def main() -> int:
     print("clearance the OFFICIAL reference trajectory keeps from each "
           "keep-out anchor\n(this is the ceiling: a larger radius would "
           "forbid the reference path itself)\n")
-    ceilings = []
+    ceilings, discs = [], []
 
     for scene_name, qi, anchors in AVOID:
         f = VIZ_DATA / f"{scene_name}.json"
@@ -115,6 +123,11 @@ def main() -> int:
                   f"reading\n      the reference path respects: clearance "
                   f"{d:.2f} m. Widest pairing: {max(rows, key=lambda r: r[2])[0]:.2f} m.\n")
             ceilings.append((f"{scene_name} q{qi + 4}", d))
+            for name in anchors:
+                for i, o in enumerate(instances(scene, name)):
+                    c = np.array(o["c"][:2])
+                    discs.append((f"{scene_name} {name}[{i}]",
+                                  float(np.linalg.norm(traj - c, axis=1).min())))
         else:
             objs = instances(scene, anchors[0])
             if not objs:
@@ -125,18 +138,41 @@ def main() -> int:
                 d = float(np.linalg.norm(traj - c, axis=1).min())
                 print(f"   {anchors[0]}[{i}] centre-clearance {d:5.2f} m")
                 ceilings.append((f"{scene_name} q{qi + 4}", d))
+                discs.append((f"{scene_name} {anchors[0]}[{i}]", d))
             print()
 
-    print("\n== the radius has to fit between these ==")
-    print("  lower bound  0.86 m   our centre error at p90 (TASK 26 distance bins)")
+    print("\n== as a corridor between the two anchors ==")
+    print(f"  lower bound  {FLOOR:.2f} m   our centre error at p90 "
+          f"(TASK 26 distance bins)")
     print("               + robot half-width + path-tracking slop")
     if ceilings:
-        lo = min(c for _, c in ceilings)
-        print(f"  upper bound  {lo:.2f} m   tightest reference clearance "
-              f"({min(ceilings, key=lambda t: t[1])[0]})")
-    print("\n  n = 3 keep-out questions in the whole 30-question set, of which")
-    print("  2 have exported ground truth. Any radius quoted from this is a")
-    print("  defensible starting value, not a fitted one.")
+        worst, lo = min(ceilings, key=lambda t: t[1])
+        print(f"  upper bound  {lo:.2f} m   tightest reference clearance ({worst})")
+        if lo < FLOOR:
+            print(f"\n  These no longer bracket. The tightest official path leaves "
+                  f"{lo:.2f} m,\n  less than the {FLOOR:.2f} m our own localisation "
+                  f"error needs, so there is no\n  single half-width that is both "
+                  f"safe for us and legal for the reference.")
+
+    # The loop implements this as a disc per anchor, which is a different
+    # constraint: it forbids being *near an object* rather than crossing the
+    # gap *between two*. The instructions say "avoid the path between A and B",
+    # and the reference paths brush right past A while respecting the corridor.
+    print("\n== as a disc on each anchor, which is what approach_loop builds ==")
+    if discs:
+        for name, d in sorted(discs, key=lambda t: t[1])[:6]:
+            bad = "  <- a 1.2 m disc forbids the official path" if d < 1.2 else ""
+            print(f"  {name:32s} {d:5.2f} m from the path{bad}")
+        n_bad = sum(1 for _, d in discs if d < 1.2)
+        print(f"\n  {n_bad} of {len(discs)} anchor instances sit closer to the "
+              f"official path than\n  the 1.2 m radius the loop would put around "
+              f"them. Whether that fires\n  depends on which instance the model "
+              f"binds -- except livingroom_2,\n  which has exactly one coffee "
+              f"table and would fail outright.")
+
+    print(f"\n  n = {len(AVOID)} keep-out questions in the whole 30-question set, "
+          f"all with\n  exported ground truth. Any radius quoted from this is a\n"
+          f"  defensible starting value, not a fitted one.")
     return 0
 
 
