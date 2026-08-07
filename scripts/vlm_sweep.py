@@ -36,8 +36,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
-from fusion_sweep import family_key  # noqa: E402
-from grab_faces import build_luts  # noqa: E402
+from faces import faces_of  # noqa: E402  re-exported; callers import it here
 from traj_tolerance import mentioned  # noqa: E402
 from vlm_locate import locate, scan_to_camera  # noqa: E402
 from vlm_probe import ask_claude, ask_gemini, build_prompt, parse, to_pixels  # noqa: E402
@@ -64,13 +63,35 @@ def scene_frame(scene: str) -> tuple[np.ndarray, np.ndarray, dict]:
     return eq, scan, pose
 
 
-def faces_of(eq: np.ndarray) -> list[bytes]:
-    out = []
-    for map_x, map_y in build_luts(G.FACE_SIZE):
-        f = cv2.remap(eq, map_x, map_y, interpolation=cv2.INTER_LINEAR,
-                      borderMode=cv2.BORDER_WRAP)
-        out.append(cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes())
-    return out
+# Synonym families, moved here from `fusion_sweep.py` when the fusion sweep was
+# removed with the object map it tuned. Each set is words the detector used for
+# one kind of thing, verified by where the nodes actually landed: `lantern` and
+# `wall lamp` nodes matched a ground-truth `focus light` 8 and 7 times and their
+# own spelling never or twice, which is why this has to be many-to-many rather
+# than a translation table.
+FAMILIES: tuple[frozenset[str], ...] = tuple(frozenset(f) for f in (
+    {"lamp", "lantern", "wall lamp", "ceiling lamp", "ceiling light",
+     "focus light", "bedroom light", "floor lamp", "table lamp"},
+    {"couch", "sofa", "loveseat"},
+    {"picture", "painting", "poster", "calligraphy painting", "photo",
+     "wall art", "framed picture"},
+    {"table", "dining table", "coffee table", "side table", "desk"},
+    {"chair", "bench", "stool", "armchair", "office chair"},
+    {"tv", "computer monitor", "monitor", "screen", "television"},
+    {"cup", "coffee cup", "mug", "paper cup"},
+    {"box", "paper box", "carton"},
+    {"cabinet", "cupboard", "sideboard", "dresser", "wardrobe"},
+    {"shelf", "bookcase", "bookshelf", "display ledge"},
+    {"potted plant", "plant", "potted cactus", "flowers", "flower"},
+    {"rug", "carpet", "mat"},
+))
+
+_FAMILY_OF = {w: f for f in FAMILIES for w in f}
+
+
+def family_key(label: str):
+    """A hashable identity that groups synonyms; the label itself otherwise."""
+    return _FAMILY_OF.get(label, label)
 
 
 def main() -> int:

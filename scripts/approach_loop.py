@@ -52,7 +52,7 @@ from waypoint_converter_model import (WAYPOINT_XY_RADIUS,  # noqa: E402
                                       ConverterModel)
 from vlm_probe import (DEFAULT_PROMPT_VER, NAMES, ask_claude,  # noqa: E402
                        ask_gemini, build_prompt, parse, to_pixels)
-from vlm_sweep import faces_of  # noqa: E402
+from faces import faces_of  # noqa: E402
 
 BRIDGE = Path(__file__).resolve().parent / "robot_io.py"
 CTR = "iros2026_system"

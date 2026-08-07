@@ -30,7 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
-from fusion_sweep import family_key  # noqa: E402
+from vlm_sweep import family_key  # noqa: E402
 from vlm_locate import locate, rot_from_quat, scan_to_camera  # noqa: E402
 from vlm_probe import to_pixels  # noqa: E402
 from vlm_sweep import CHALLENGE, PROMPT_VER, faces_of, scene_frame  # noqa: E402

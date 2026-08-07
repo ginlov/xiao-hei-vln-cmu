@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fusion_sweep import family_key                       # noqa: E402
+from vlm_sweep import family_key                       # noqa: E402
 from traj_tolerance import mentioned                      # noqa: E402
 
 CHALLENGE = Path.home() / "Workspace/vln-challenge/CMU-VLN-Challenge-2026"

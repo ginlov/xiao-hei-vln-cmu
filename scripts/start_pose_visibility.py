@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from fusion_sweep import family_key  # noqa: E402
+from vlm_sweep import family_key  # noqa: E402
 from traj_tolerance import STOPWORDS, mentioned  # noqa: E402  (same directory)
 
 CHALLENGE = Path.home() / "Workspace/vln-challenge/CMU-VLN-Challenge-2026"
