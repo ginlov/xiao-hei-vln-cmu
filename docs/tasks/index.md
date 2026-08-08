@@ -40,6 +40,7 @@ Every row below links to a distinct document.
 | 24 | [Audit of un-synchronised gating logic](TASK%2024%20-%20Audit%20of%20un-synchronised%20gating%20logic.md) | C resolved; A superseded (see note); B, E, F open |
 | 25 | [Merge detections split by the panorama face seams](TASK%2025%20-%20Merge%20detections%20split%20by%20the%20panorama%20face%20seams.md) | Done |
 | 26 | [Scan-accumulator keyframe sweep & side-by-side dump comparison](TASK%2026%20-%20Scan-accumulator%20keyframe%20sweep%20and%20side-by-side%20dump%20comparison.md) | Dumps, viewer & GIF tool done; scored sweep not run |
+| 27 | [Verifying the 2D-detection → 3D-lift angular convention](TASK%2027%20-%20Verifying%20the%202D-detection%20to%203D-lift%20angular%20convention.md) | Done — extrinsic bug fixed + image/pose timestamp-matched in LatestCache |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.

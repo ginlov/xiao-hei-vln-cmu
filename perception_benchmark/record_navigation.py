@@ -61,14 +61,14 @@ import os
 import signal
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
 import rclpy
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image, PointCloud2
 
 # Share the wire-format decoders with the viewpoint harness rather than
@@ -84,6 +84,33 @@ def yaw_of(q) -> float:
                       1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
+def _stamp_s(msg) -> float:
+    """Seconds from a message header's ROS Time stamp."""
+    s = msg.header.stamp
+    return s.sec + s.nanosec * 1e-9
+
+
+# Mirror of LatestCache (src/xiao_hei_vln/sync/latest_cache.py). The camera is
+# the slow stream, so at capture time the newest pose is fresher than the image
+# and pairing them lifts against a pose the robot already turned past (TASK 27).
+# Match pose + registered scan to the IMAGE stamp instead. These must stay in
+# step with the live cache: the recorder exists to reproduce the live ingest.
+_MATCH_KEYS = ("pose", "registered_scan")
+_HISTORY = 128
+_MATCH_WINDOW_S = 1.0
+
+
+def _nearest(history: deque, t: float):
+    """History entry (stamp, msg) whose stamp is closest to ``t``; newest when
+    the closest is still outside the window (a stream gap, not a skew)."""
+    if not history:
+        return None
+    best_ts, best = min(history, key=lambda e: abs(e[0] - t))
+    if abs(best_ts - t) > _MATCH_WINDOW_S:
+        return history[-1][1]
+    return best
+
+
 class NavRecorder(Node):
     """Subscribe-only fixed-rate recorder. Never publishes — the explorer drives."""
 
@@ -95,6 +122,9 @@ class NavRecorder(Node):
         sensor_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                                 history=HistoryPolicy.KEEP_LAST, depth=1)
         self.latest: dict = {}
+        # Stamped history for the two lift inputs, matched to the image stamp
+        # in record() — everything else is latest-value, exactly as LatestCache.
+        self.hist: dict[str, deque] = {k: deque(maxlen=_HISTORY) for k in _MATCH_KEYS}
         self.seq: dict[str, int] = {}
         self._sub(Odometry, "/state_estimation", "pose", 10)
         self._sub(Image, "/camera/image", "image", sensor_qos)
@@ -118,6 +148,8 @@ class NavRecorder(Node):
     def _on(self, key, msg):
         self.seq[key] += 1
         self.latest[key] = msg
+        if key in self.hist:
+            self.hist[key].append((_stamp_s(msg), msg))
 
     # -- state helpers -----------------------------------------------------------
     def _pose(self):
@@ -164,21 +196,35 @@ class NavRecorder(Node):
         vp_dir.mkdir(parents=True, exist_ok=True)
 
         img_msg = self.latest["image"]
+        t_img = _stamp_s(img_msg)
         img = image_to_array(img_msg)
         np.save(vp_dir / "image.npy", img)
+
+        # Pose and registered scan are matched to the image stamp (see the
+        # module note and TASK 27); the other clouds are latest-value, as they
+        # are not lift inputs.
+        pose_msg = _nearest(self.hist["pose"], t_img)
+        rscan_msg = _nearest(self.hist["registered_scan"], t_img)
         for key in CLOUD_TOPICS:
-            np.save(vp_dir / f"{key}.npy", cloud_to_array(self.latest[key]))
-        p = self._pose()
+            src = rscan_msg if key == "registered_scan" else self.latest[key]
+            np.save(vp_dir / f"{key}.npy", cloud_to_array(src))
+        p = pose_msg.pose.pose
         json.dump({"position": [p.position.x, p.position.y, p.position.z],
                    "orientation_xyzw": [p.orientation.x, p.orientation.y,
                                         p.orientation.z, p.orientation.w]},
                   open(vp_dir / "pose.json", "w"), indent=2)
 
-        spd = self._speed()
+        tw = pose_msg.twist.twist.linear
+        spd = math.sqrt(tw.x * tw.x + tw.y * tw.y + tw.z * tw.z)
         yaw = yaw_of(p.orientation)
         meta = {
             "id": idx,
             "t": self.get_clock().now().nanoseconds / 1e9,
+            # Stamps of the matched inputs, so the alignment is auditable in the
+            # capture. pose_dt_ms ~ 0 while stationary, growing with turn rate.
+            "image_t": round(t_img, 4),
+            "pose_t": round(_stamp_s(pose_msg), 4),
+            "pose_dt_ms": round((_stamp_s(pose_msg) - t_img) * 1e3, 1),
             "achieved": [round(p.position.x, 3), round(p.position.y, 3),
                          round(p.position.z, 3)],
             "yaw": round(yaw, 4),

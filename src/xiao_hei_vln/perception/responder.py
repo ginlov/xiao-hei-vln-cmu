@@ -295,6 +295,9 @@ class PerceptionResponder:
             snapshot.pose.position,
             snapshot.pose.orientation,
         )
+        # The pose here is already matched to the image's stamp by LatestCache
+        # (TASK 27), so it is the pose the camera had when the frame was taken —
+        # no per-lift time-skew correction is needed.
         for det in detections:
             result = self._lifter.lift(
                 mask=det.mask,
@@ -434,7 +437,7 @@ def _size_from_obs(obs: ObjectObservation) -> Vector3:
     )
 
 
-def _image_frame_to_bgr(image_frame) -> "np.ndarray":  # type: ignore[name-defined]
+def _image_frame_to_bgr(image_frame) -> np.ndarray:  # type: ignore[name-defined]
     """Convert an :class:`ImageFrame` into a ``(H, W, 3)`` BGR ndarray.
 
     The image arrives as raw bytes in ``bgr8`` encoding (per the
@@ -473,8 +476,8 @@ _COLOR_ANCHORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
 
 
 def _mask_color(
-    bgr: "np.ndarray",  # type: ignore[name-defined]
-    mask: "np.ndarray",  # type: ignore[name-defined]
+    bgr: np.ndarray,  # type: ignore[name-defined]
+    mask: np.ndarray,  # type: ignore[name-defined]
 ) -> tuple[tuple[int, int, int] | None, str | None]:
     """Return ``((r, g, b), name)`` for the pixels under ``mask``.
 

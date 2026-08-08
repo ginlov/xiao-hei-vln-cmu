@@ -25,9 +25,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from viewgen import load_objects
-from replay_score import _frozen_detections, load_capture, scoreable
+from replay_score import (
+    _frozen_detections,
+    capture_time,
+    load_capture,
+    scoreable,
+)
 from debug_viewpoint import _overlay_masks
 from xiao_hei_vln.perception.client import HTTPPerceptionClient
+from xiao_hei_vln.perception.deskew import PoseDeskew
 from xiao_hei_vln.perception.geometry import (EQUIRECT_H, EQUIRECT_W,
     project_camera_points_to_equirect, sensor_to_camera_transform)
 from xiao_hei_vln.perception.lifter import (DEFAULT_CLUSTER_VOXEL_M,
@@ -56,7 +62,7 @@ def project_to_equirect(pts_map, pos, ori):
 
 def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
                scan_keyframes=DEFAULT_MAX_KEYFRAMES, scan_voxel_m=DEFAULT_VOXEL_M,
-               use_frozen=True,
+               use_frozen=True, image_lag_s=0.0,
                range_gap_m=DEFAULT_RANGE_GAP_M,
                cluster_voxel_m=DEFAULT_CLUSTER_VOXEL_M, out_root=None,
                max_pts=4000, request_timeout_s=60.0):
@@ -92,6 +98,10 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
     accum = (ScanAccumulator(max_keyframes=scan_keyframes, voxel_m=scan_voxel_m)
              if accumulate else None)
 
+    # See TASK 27: the image trails the pose, so the lift (not the scan
+    # accumulator) needs the pose de-rotated by lag x yaw_rate.
+    deskew = PoseDeskew(image_lag_s)
+
     out = (out_root or DEBUG_DIR) / scene
     out.mkdir(parents=True, exist_ok=True)
     vps = []
@@ -99,6 +109,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         vid = os.path.basename(vp_dir)
         img, scan, pos, ori = load_capture(Path(vp_dir))
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
+        ori_lift = deskew.update(ori, capture_time(Path(vp_dir)))
         dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
         if dets is None:
             dets = client.detect(img, score_threshold=score_threshold)
@@ -113,7 +124,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         # local to the viewpoint and do NOT match the cumulative map's ids.
         vpmap = ObjectMap()
         for d in dets:
-            res = lifter.lift(d.mask, cloud, pos, ori)
+            res = lifter.lift(d.mask, cloud, pos, ori_lift)
             ok = res.position is not None
             rec = {"label": d.label, "score": round(float(d.score), 3),
                    "n_inliers": int(res.n_inliers), "lifted": ok,
@@ -231,6 +242,10 @@ def main() -> int:
                     help="voxel size (m) for lift clustering; 0 disables")
     ap.add_argument("--out", type=Path, default=None,
                     help=f"dump root (default {DEBUG_DIR}); use a separate dir to A/B")
+    ap.add_argument("--image-lag", type=float,
+                    default=float(os.environ.get("XIAO_HEI_IMAGE_LAG_S", 0.0)),
+                    help="seconds the image trails the pose (TASK 27); the "
+                         "lift pose is de-rotated by lag x yaw_rate")
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
     if args.all:
@@ -244,7 +259,7 @@ def main() -> int:
         dump_scene(s, base_url=args.base_url, score_threshold=args.score_threshold,
                    min_inliers=args.min_inliers, accumulate=args.accumulate,
                    scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
-                   use_frozen=args.use_frozen,
+                   use_frozen=args.use_frozen, image_lag_s=args.image_lag,
                    range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
                    out_root=args.out,
                    request_timeout_s=args.timeout)

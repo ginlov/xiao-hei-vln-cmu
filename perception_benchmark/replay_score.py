@@ -29,6 +29,7 @@ from viewgen import is_occluder, load_objects
 
 from xiao_hei_vln.messages.common import Quaternion, Vector3
 from xiao_hei_vln.perception.client import Detection, HTTPPerceptionClient
+from xiao_hei_vln.perception.deskew import PoseDeskew
 from xiao_hei_vln.perception.eval import evaluate, object_entries_to_eval
 from xiao_hei_vln.perception.lifter import (
     DEFAULT_CLUSTER_VOXEL_M,
@@ -54,6 +55,14 @@ def scoreable(label: str) -> bool:
     lo = label.lower()
     return (lo != "unknown" and "floor" not in lo and "ceiling" not in lo
             and not is_occluder(label))
+
+
+def capture_time(vp_dir: Path) -> float:
+    """Capture timestamp, for the yaw-rate estimate the deskew needs."""
+    f = vp_dir / "meta.json"
+    if not f.is_file():
+        return 0.0
+    return float(json.loads(f.read_text()).get("t", 0.0))
 
 
 def load_capture(vp_dir: Path):
@@ -98,6 +107,7 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
                     scan_keyframes: int = DEFAULT_MAX_KEYFRAMES,
                     scan_voxel_m: float = DEFAULT_VOXEL_M,
                     use_frozen: bool = True,
+                    image_lag_s: float = 0.0,
                     verbose: bool = True):
     np.random.seed(seed)                                # ObjectMap PTS_CAP subsample
     vp_dirs = sorted(glob.glob(str(CAP_DIR / scene / "vp_*")))
@@ -137,10 +147,16 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
     accum = (ScanAccumulator(max_keyframes=scan_keyframes, voxel_m=scan_voxel_m)
              if accumulate else None)
 
+    # The image is older than the pose it is paired with (TASK 27). The
+    # accumulator still gets the *uncorrected* pose: it is registering LiDAR
+    # sweeps, which are not what lags.
+    deskew = PoseDeskew(image_lag_s)
+
     n_det = n_lift = n_frozen = 0
     for vp_dir in vp_dirs:
         img, scan, pos, ori = load_capture(Path(vp_dir))
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
+        ori_lift = deskew.update(ori, capture_time(Path(vp_dir)))
         dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
         if dets is None:
             dets = client.detect(img, score_threshold=score_threshold)
@@ -148,7 +164,7 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
             n_frozen += 1
         n_det += len(dets)
         for det in dets:
-            res = lifter.lift(det.mask, cloud, pos, ori)
+            res = lifter.lift(det.mask, cloud, pos, ori_lift)
             if res.position is not None:
                 omap.add(det.label, det.score, res.inlier_points)
                 n_lift += 1
@@ -271,6 +287,12 @@ def main() -> int:
                     help="always call the sidecar, even where dump_detections.py "
                          "has written detections.npz next to the captures")
     ap.set_defaults(use_frozen=True)
+    ap.add_argument("--image-lag", type=float,
+                    default=float(os.environ.get("XIAO_HEI_IMAGE_LAG_S", 0.0)),
+                    help="seconds the image trails the pose it was paired with; "
+                         "the lift pose is de-rotated by lag x yaw_rate. "
+                         "Measured at 0.368 on captures_nav/arabic_room "
+                         "(TASK 27). 0 disables.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--timeout", type=float, default=60.0, help="per-request HTTP timeout (s)")
     ap.add_argument("--out", type=Path, default=Path("perception_benchmark/scores"))
@@ -296,7 +318,7 @@ def main() -> int:
             min_inliers=args.min_inliers, keep_arch=args.keep_arch,
             seed=args.seed, out_dir=args.out, accumulate=args.accumulate,
             scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
-            use_frozen=args.use_frozen,
+            use_frozen=args.use_frozen, image_lag_s=args.image_lag,
             range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
             inlier_filter=ifilter, nms_dist=args.nms_dist, nms_gap=args.nms_gap,
             request_timeout_s=args.timeout)
