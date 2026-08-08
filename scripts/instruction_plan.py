@@ -173,6 +173,35 @@ def destinations(plan: list[Clause]) -> list[Clause]:
     return [c for c in plan if c.kind == GOTO]
 
 
+def steps(plan: list[Clause]) -> list[Clause]:
+    """The clauses the robot executes in order: destinations and passages.
+
+    A keep-out is not one of them -- see `keepouts`.
+    """
+    return [c for c in plan if c.kind != AVOID]
+
+
+def keepouts(plan: list[Clause]) -> list[Clause]:
+    """The keep-outs, as an unordered set of constraints on the whole run.
+
+    `parse_instruction` emits clauses in the order the words appear, and for
+    destinations and passages that is also the order to drive them. A keep-out
+    is different: "go to A, then stop at B, avoiding the path between X and Y"
+    writes the forbidden region last, but nothing in the sentence says it
+    switches on only after A. Nor is it first: "go to the cup and avoid the
+    path near the cabinet" has one destination, so there is no "before" to put
+    it in.
+
+    Trying to place it in the sequence at all is the mistake -- it was where a
+    regex fix and the model's own ordering disagreed, each right on one phrasing
+    and wrong on the other. README §175 penalises a trajectory that "passes
+    through areas it is forbidden to go through", with no mention of when, so
+    the executor holds these active for the entire run and the ordering
+    question does not arise.
+    """
+    return [c for c in plan if c.kind == AVOID]
+
+
 def _questions() -> list[tuple[str, str]]:
     p = CHALLENGE / "questions/questions.json"
     qs = json.loads(p.read_text())

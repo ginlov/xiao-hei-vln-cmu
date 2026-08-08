@@ -1,3 +1,6 @@
+%% SUPERSEDED as the whole picture by docs/execute_plan_flow.mmd,
+%% which adds the clause cursor, the PASS leg and the corroboration
+%% branch. Kept for the single-target loop's own detail.
 flowchart TD
     START["START<br/>phrase, max_steps = 6"] --> PUSH["push robot_io.py into the container<br/>preflight: check the 5 allowed topics"]
     PUSH --> STEP{"steps left?"}

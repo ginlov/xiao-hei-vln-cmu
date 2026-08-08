@@ -1,0 +1,115 @@
+%% The whole instruction, end to end. Two levels:
+%%   OUTER  execute_plan.execute  — the clause cursor. This is the state machine.
+%%   INNER  run_goto / run_pass   — one leg each, sharing Ctx.
+%% docs/approach_loop_flow.mmd is the earlier single-target picture; the GOTO
+%% subgraph below supersedes it.
+flowchart TD
+
+%% ============================ STEP 0 ============================
+    Q["QUESTION<br/>one ROS String on /challenge_question"] --> DEC
+    DEC["DECOMPOSE - one model call, cached<br/>whole sentence in, ordered clauses out"]
+    DEC --> DECOK{"reply usable?"}
+    DECOK -- no --> REGEX["fall back to parse_instruction<br/>regex, ten clause openers"]
+    DECOK -- yes --> SPLIT
+    REGEX --> SPLIT
+
+    SPLIT["SPLIT THE PLAN<br/>steps(plan)    ordered GOTO / PASS<br/>keepouts(plan) AVOID, unordered"]
+    SPLIT --> MISSION["build ctx.mission<br/>question + plan + keepouts<br/>attached to EVERY later call"]
+
+%% ======================= THE STATE MACHINE ======================
+    MISSION --> CUR
+    CUR{"CURSOR k = 1..n<br/>held by our code<br/>MONOTONIC - never rewinds"}
+
+    CUR --> SLICE["leg_deadline = now + whole_left / clauses_remaining<br/>last leg inherits everything unspent"]
+    SLICE --> TIME{"out of time?"}
+    TIME -- yes --> SKIP["record 'not attempted'<br/>do NOT stop the run"]
+    SKIP --> NEXT
+
+    TIME -- no --> KIND{"clause kind"}
+    KIND -- GOTO --> GOTO_LEG
+    KIND -- PASS --> PASS_LEG
+
+    GOTO_LEG["run_goto<br/>confirm only when k = n"] --> RESULT
+    PASS_LEG["run_pass"] --> RESULT
+
+    RESULT["record ok / why / xy"]
+    RESULT --> NEXT{"more clauses?"}
+    NEXT -- yes --> CUR
+    NEXT -- no --> DONE["REPORT<br/>satisfied / total, calls, cost, seconds used"]
+
+    RESULT -.->|"a FAILED leg never ends the run:<br/>scoring is per-constraint with partial credit,<br/>and the next destination is still reachable<br/>from where the robot now stands"| NEXT
+
+%% ===================== WHAT THE MODEL IS ASKED =================
+    ASK["EVERY grounding call carries:<br/>the whole question<br/>the full plan, current step marked<br/>the keepouts, active throughout<br/>places already stood in"]
+    ASK --> ASKQ["it answers ONLY about step k:<br/>is the target visible, where, what is around<br/><br/>it is NEVER asked which step is next -<br/>same_object_as_previous came back true at<br/>higher confidence both on a 0.52 m refinement<br/>and on a 4.37 m jump to another object"]
+    ASK -.- GOTO_LEG
+    ASK -.- PASS_LEG
+
+%% ========================= STATE SPLIT ==========================
+    CARRY["Ctx - CARRIES ACROSS LEGS<br/>visited - places stood in<br/>avoid - keep-outs, whole run<br/>calls, step, deadline, mission"]
+    PERLEG["PER LEG - reset each clause<br/>bound - the target binding<br/>pending - readings the binding refused<br/>prev_crop, misses, stood<br/>PASS: track, bound_gap, no_far"]
+    CARRY -.->|"carrying a binding into the next clause<br/>would aim the next leg at the last leg's object"| PERLEG
+
+%% ========================= GOTO LEG =============================
+    subgraph G["run_goto - drive to one named object"]
+    direction TB
+        G1["capture: 360 image, scan, terrain, pose"] --> G2{"revisited this pose?<br/>within 0.5 m of somewhere<br/>stood 2+ steps ago"}
+        G2 -- "yes, bound" --> GARR1["ARRIVED - the ring has been walked<br/>needs no distance constant, so it works<br/>for a skylight whose floor is 2.1 m"]
+        G2 -- "yes, nothing bound" --> GSTOP1["STOP - going in circles"]
+        G2 -- no --> G3["VLM call"]
+        G3 --> G4["harvest 'here' -> visited<br/>lift avoid anchors -> keep-out discs"]
+        G4 --> G5{"target visible?"}
+        G5 -- no --> GEXP["explore: model gives a heading,<br/>terrain says what is drivable,<br/>score reach x cos delta"]
+        GEXP --> G1
+        G5 -- yes --> G6["resolve_relation<br/>lift every candidate and anchor,<br/>MEASURE - never ask which wins"]
+        G6 --> G7["next_waypoint<br/>bearing from box, range from lidar"]
+        G7 --> BIND
+    end
+
+%% ==================== BINDING ARBITRATION =======================
+    BIND{"bind_target"}
+    BIND -- "nothing bound yet" --> B1["BIND here"]
+    BIND -- "jump <= 1.0 m" --> B2["refine - clears pending"]
+    BIND -- "measured, old binding never was" --> B3["RE-BIND at any distance"]
+    BIND -- "model says different object,<br/>conf >= bound conf" --> B4["RE-BIND<br/>'>' used to be the test, and 0.6 > 0.6<br/>kept a binding 3.2 m from the right window"]
+    BIND -- "two refused readings agree<br/>with each other, not with the binding" --> B5["RE-BIND - corroborated<br/>independent of anything the model<br/>says about identity"]
+    BIND -- "one lone reading disagrees" --> B6["KEEP - push it onto pending<br/>a single 4.18 m jump once drove<br/>to the wrong lantern"]
+
+    B1 --> CONV
+    B2 --> CONV
+    B3 --> CONV
+    B4 --> CONV
+    B5 --> CONV
+    B6 --> CONV
+
+    CONV["ConverterModel on this terrain frame<br/>predict where the organisers' node SETTLES<br/>choose the goal by settle point, not by proximity"]
+    CONV --> GDRIVE["DRIVE - publish Pose2D on /way_point_with_heading<br/>we send a POINT; local_planner picks the arc"]
+    GDRIVE --> GEND{"gain, motion, distance"}
+    GEND -- "no legal point closer, near" --> GARR2["ARRIVED"]
+    GEND -- "stack would not move us, far" --> GBOX["boxed in, NOT arrived"]
+    GEND -- "moved" --> G1
+
+%% ========================= PASS LEG =============================
+    subgraph P["run_pass - drive THROUGH a gap"]
+    direction TB
+        P1["capture + VLM call on the clause text"] --> P2["lift_anchors from 'gate' and 'avoid'"]
+        P2 --> P3{"gate_point - two distinct anchors,<br/>at least 0.5 m apart?"}
+        P3 -- "no" --> PEXP["explore and look again"]
+        PEXP --> P1
+        P3 -- "yes" --> P4["FREEZE the gap on first resolution<br/>re-deriving it every step made it wander:<br/>couch+table, then couch+coffee table,<br/>then couch + couch-left-view"]
+        P4 --> P5{"has the RECORDED TRACK<br/>crossed the anchor-anchor line?"}
+        P5 -- yes --> PPASS["PASSED<br/>proximity is not passage - the run that<br/>stopped 0.93 m away went round the outside"]
+        P5 -- no --> P6["through_point: aim 1.2 m BEYOND the gap<br/>a waypoint at the midpoint just parks<br/>the vehicle in front of it"]
+        P6 --> P7{"far_side_goal<br/>legal points RESTRICTED to the far half-plane"}
+        P7 -- "none, twice from two places" --> PGIVE["give up - spend the time<br/>on the destinations after it"]
+        P7 -- "found" --> P8["DRIVE to it<br/>there is never a legal point INSIDE the gap;<br/>obstacleDisThre governs where a waypoint may<br/>go, not where the vehicle may drive"]
+        P8 --> P9["extend track with /state_estimation,<br/>subsampled every 0.10 m"]
+        P9 --> P5
+    end
+
+    GARR1 --> RESULT
+    GARR2 --> RESULT
+    GBOX --> RESULT
+    GSTOP1 --> RESULT
+    PPASS --> RESULT
+    PGIVE --> RESULT

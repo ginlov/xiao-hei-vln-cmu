@@ -296,16 +296,58 @@ there and you say why. Prefer somewhere it has not stood.
 """
 
 
+MISSION_BLOCK = """
+
+THE WHOLE INSTRUCTION. The request above is one leg of it, and the rest is here
+because a leg often cannot be read alone: "the picture closest to the TV" needs
+the TV, which an earlier leg may have named.
+
+  {question}
+
+The plan, in the order the robot drives it:
+
+{plan}
+
+The robot is on step {k}. Steps before it are done and it has stood in those
+places; steps after it have not been attempted, so do not answer for them --
+you are being asked about step {k} only.
+{keepouts}"""
+
+# Keep-outs are named here rather than left to the request phrase because they
+# hold for the whole run, not for the step: the executor lifts their anchors
+# from whichever call happens to see them, so every call has to be willing to
+# report them. Without this the `avoid` field only ever gets filled on the leg
+# whose own phrase mentions the region, and by then the robot may have already
+# driven through it.
+KEEPOUT_BLOCK = """
+Throughout, the robot must NOT drive through:
+
+{keepouts}
+
+This holds on every step, including this one. Whenever you can see an object
+that one of these regions is anchored on, report it under "avoid" -- even if
+the request above never mentions it.
+"""
+
+
 def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
                  version: str = DEFAULT_PROMPT_VER,
-                 visited: list[str] | None = None) -> str:
-    """The prompt, optionally with the approach fields and a visit log.
+                 visited: list[str] | None = None,
+                 mission: dict | None = None) -> str:
+    """The prompt, optionally with the approach fields, a visit log and a plan.
 
     `visited` is the model's own `here` clauses from earlier calls. Feeding
     back map coordinates would be useless — it reasons over images, not over a
     frame it cannot see — but its own words about a place it has stood in are
     something it can act on. On loft, without this, it proposed driving back to
     the origin it had just left.
+
+    `mission` is `{question, plan, k}`: the sentence the leg was cut out of,
+    the whole ordered plan, and which step is being asked about. It is context,
+    not a decision — the model is never asked which step to do next, because
+    the progress cursor is the executor's and stays monotonic. Reporting on the
+    current step is a judgement the model can make from what it sees; deciding
+    that a step is finished is one that it demonstrably cannot (`bind_target`).
     """
     if version not in PROMPTS:
         raise SystemExit(f"unknown prompt version {version!r}; "
@@ -313,6 +355,15 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
     base = PROMPTS[version].format(phrase=phrase, size=size)
     if approach:
         base += APPROACH_BLOCK
+    if mission:
+        keep = mission.get("keepouts") or []
+        base += MISSION_BLOCK.format(
+            question=mission["question"], k=mission["k"],
+            plan="\n".join(
+                f"  {'->' if i == mission['k'] else '  '} {i}. {line}"
+                for i, line in enumerate(mission["plan"], 1)),
+            keepouts=("" if not keep else KEEPOUT_BLOCK.format(
+                keepouts="\n".join(f"  - {x}" for x in keep))))
     if visited:
         base += VISITED_BLOCK.format(visited="\n".join(
             f"  {i}. {v}" for i, v in enumerate(visited, 1)))
@@ -458,14 +509,39 @@ def ask_gemini(prompt: str, images: list[bytes], model: str,
 
 
 def parse(text: str) -> dict | None:
-    """Pull the JSON object out, fence or no fence."""
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
+    """Pull the answer out, fence or no fence, one object or several.
+
+    `re.search(r"\\{.*\\}")` used to do this, and it is greedy: it spans from
+    the first brace to the last, so a reply containing two JSON objects yields
+    one unparseable blob. That is not hypothetical. The approach block asks for
+    "three more fields, appended to the JSON above", and on `studio` the model
+    read "appended" as a second object — a complete answer with the passage's
+    `gate` anchors in one, `here` / `target_state` /
+    `same_object_as_previous` in the next. The leg died reporting an
+    unparseable reply while holding a perfectly good one.
+
+    So: decode every balanced object and merge them in order. A later object
+    only fills a key that is missing or null, so a trailing fragment can add to
+    the answer but never overwrite it.
+    """
+    dec = json.JSONDecoder()
+    out: dict = {}
+    i = 0
+    while i < len(text):
+        j = text.find("{", i)
+        if j < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(text, j)
+        except json.JSONDecodeError:
+            i = j + 1
+            continue
+        i = end
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if out.get(k) is None:
+                    out[k] = v
+    return out or None
 
 
 def report_relation(d: dict, geo_dir: Path) -> None:

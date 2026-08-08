@@ -36,6 +36,7 @@ import json
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -44,6 +45,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
+from instruction_plan import GOTO  # noqa: E402
 from vlm_approach import (STANDOFF_M, _lift_xy, box_angular_size,  # noqa: E402
                           crop_face, has_relation, in_blind_cone,
                           next_waypoint, ray_from_box, resolve_relation)
@@ -106,6 +108,10 @@ KEEPOUT_M = 1.2
 # viewpoint has to clear this; an approach does not, because settling close by
 # is the correct answer there.
 MIN_VIEW_MOVE_M = WAYPOINT_XY_RADIUS + 0.2
+# Two poses this close are the same place. Sized above `waypointXYRadius`, so
+# that landing on a waypoint already visited counts, and well under the 1.4 m
+# hops the ring around an object is walked in. See the circling test.
+REVISIT_M = 0.5
 
 
 class Robot:
@@ -238,9 +244,37 @@ def explore_direction(cm: ConverterModel, origin: np.ndarray,
     return best[1], best[2], best[3]
 
 
+def revisited(here: np.ndarray, stood: list[np.ndarray]) -> bool:
+    """Has the vehicle come back to a place it already stood in this leg?
+
+    The immediately previous pose is excluded: a leg that legitimately made a
+    short move would otherwise read as a cycle, and a move too short to count
+    is already caught by the progress tests. Anything before that is a return.
+    """
+    return any(float(np.linalg.norm(here - p)) < REVISIT_M for p in stood[:-1])
+
+
+def corroborated(seen: np.ndarray, pending: list | None) -> bool:
+    """Does this reading agree with the last one the binding also refused?
+
+    One reading that disagrees with the binding is what the distance gate
+    exists to reject — `japanese_room` produced a lift 4.18 m from a binding
+    0.19 m from the truth, and following it drove to the wrong lantern. Two in
+    a row that disagree with the binding *and agree with each other* are a
+    different thing: the disagreement is now reproducible from two poses, which
+    a one-off misread is not.
+
+    On `studio` the two refused readings sat 0.52 m apart and 3.2 m from the
+    binding, and both were within 0.82 m of the right window.
+    """
+    return (pending is not None and len(pending) >= 1
+            and float(np.linalg.norm(seen - pending[-1])) <= JUMP_M)
+
+
 def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 rec: dict, *, verified: bool = True,
-                measured: bool = False) -> tuple[bool, dict | None]:
+                measured: bool = False,
+                pending: list | None = None) -> tuple[bool, dict | None]:
     """Keep one map position for the target, and defend it from later readings.
 
     A binding is not a detection. Re-grounding from a new pose is free to
@@ -294,6 +328,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
         if bound is None:
             print(f"      bound the target at ({seen[0]:+.2f}, {seen[1]:+.2f})")
             bound = {"xy": seen, "conf": conf, "verified": measured}
+            if pending is not None:
+                pending.clear()
         else:
             jump = float(np.linalg.norm(seen - bound["xy"]))
             switched = reply.get("same_object_as_previous") is False
@@ -302,6 +338,10 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                       f"({seen[0]:+.2f}, {seen[1]:+.2f})")
                 bound = {"xy": seen, "conf": conf,
                          "verified": measured or bound.get("verified", True)}
+                # A reading the binding accepted ends any run of ones it did
+                # not, so two refusals separated by an agreement never add up.
+                if pending is not None:
+                    pending.clear()
             elif measured and not bound.get("verified", True):
                 # The distance gate exists to stop an unverified reading from
                 # teleporting the binding. It is not meant to defend a binding
@@ -312,15 +352,42 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 print(f"      re-bound {jump:.2f} m away — this reading "
                       f"measured the phrase, the binding it replaces did not")
                 bound = {"xy": seen, "conf": conf, "verified": True}
-            elif switched and conf > bound["conf"]:
+                if pending is not None:
+                    pending.clear()
+            elif switched and conf >= bound["conf"]:
+                # `>` used to be `>=`'s stricter sibling here, and on `studio`
+                # that cost the whole leg: the model said `same_object: false`
+                # twice, both times at 0.6 against a binding also made at 0.6,
+                # and `0.6 > 0.6` kept a binding 3.2 m from the right window
+                # against a reading 0.32 m from it. Confidence comes back
+                # quantised to a handful of values, so requiring a strict
+                # increase is a coin toss dressed as a threshold.
                 print(f"      re-bound {jump:.2f} m away — the model reports a "
-                      f"different object at higher confidence")
+                      f"different object at no less confidence")
                 bound = {"xy": seen, "conf": conf, "verified": measured}
+                if pending is not None:
+                    pending.clear()
+            elif corroborated(seen, pending):
+                # Two readings in a row that agree with each other and not with
+                # the binding are evidence about the binding, not about
+                # themselves. This is the same rule as everywhere else here —
+                # measure rather than ask — applied to the binding itself, and
+                # it is what makes the arbitration independent of the model's
+                # self-report, which `bind_target` already documents as
+                # uncalibrated in both directions.
+                print(f"      re-bound {jump:.2f} m away — two readings in a "
+                      f"row landed within {JUMP_M} m of each other and this far "
+                      f"from the binding")
+                bound = {"xy": seen, "conf": conf, "verified": measured}
+                rec["binding_corroborated"] = True
+                pending.clear()
             else:
                 print(f"      this lift lands {jump:.2f} m from the binding "
                       f"while still calling it the same object — keeping the "
                       f"binding at ({bound['xy'][0]:+.2f}, {bound['xy'][1]:+.2f})")
                 rec["binding_rejected"] = {"seen": seen.tolist(), "jump_m": jump}
+                if pending is not None:
+                    pending.append(seen)
         rec["binding"] = {"xy": bound["xy"].tolist(), "conf": bound["conf"]}
         return True, bound
     if bound is not None:
@@ -337,7 +404,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
 
 def ground(faces: list[bytes], phrase: str, backend: str, model: str,
            prev: bytes | None, version: str,
-           visited: list[str] | None = None) -> tuple[dict | None, str]:
+           visited: list[str] | None = None,
+           mission: dict | None = None) -> tuple[dict | None, str]:
     """The parsed reply and the text it came from.
 
     The raw text is returned because three runs died on "unparseable reply"
@@ -345,70 +413,116 @@ def ground(faces: list[bytes], phrase: str, backend: str, model: str,
     """
     fn = ask_claude if backend == "claude" else ask_gemini
     text = fn(build_prompt(phrase, approach=True, version=version,
-                           visited=visited),
+                           visited=visited, mission=mission),
               faces, model, previous=prev)
     return parse(text), text
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phrase")
-    ap.add_argument("--host", default=None,
-                    help="ssh target running the sim; omit if this IS the sim host")
-    ap.add_argument("--container", default=CTR)
-    ap.add_argument("--backend", choices=["claude", "gemini"], default="claude")
-    ap.add_argument("--model", default=None)
-    ap.add_argument("--max-steps", type=int, default=6)
-    ap.add_argument("--prompt-version", default=DEFAULT_PROMPT_VER,
-                    help="v3-occlusion-distance to reproduce TASK 26/28")
-    ap.add_argument("--standoff", type=float, default=STANDOFF_M)
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--dry-run", action="store_true",
-                    help="ground and compute waypoints, publish nothing")
-    args = ap.parse_args()
+@dataclass
+class Ctx:
+    """What outlives one clause of a plan.
 
-    model = args.model or ("claude-opus-5" if args.backend == "claude"
-                           else "gemini-2.5-flash")
-    out = Path(args.out or f"runs/{time.strftime('%m%d_%H%M%S')}")
-    out.mkdir(parents=True, exist_ok=True)
-    log = (out / "steps.jsonl").open("w")
+    A question is a sequence of legs driven without ever resetting the vehicle,
+    so some state belongs to the run and some to the leg, and putting a piece
+    on the wrong side is a real bug either way. `visited` and `avoid` are the
+    run's: the places the robot has stood, and the regions it must keep out of,
+    are facts about the whole trajectory. `bound` and `prev_crop` are the leg's
+    and stay local to `run_goto` — carrying a binding into the next clause
+    would aim the next leg at the previous leg's object.
+    """
 
-    robot = Robot(args.host, args.container)
-    robot.push()
-    pre = robot.preflight()
-    print(f"preflight: {json.dumps(pre)}")
-    if not pre.get("ok"):
-        print(f"  !! {pre.get('why')}", file=sys.stderr)
+    robot: Robot
+    out: Path
+    log: object
+    backend: str = "claude"
+    model: str = "claude-opus-5"
+    prompt_version: str = DEFAULT_PROMPT_VER
+    standoff: float = STANDOFF_M
+    dry_run: bool = False
+    visited: list[str] = field(default_factory=list)
+    avoid: list[dict] = field(default_factory=list)
+    calls: int = 0
+    step: int = 0
+    deadline: float | None = None
+    mission: dict | None = None
 
-    print(f"\ntarget: {args.phrase!r}   model={model}   out={out}\n")
-    prev_crop, calls, arrived, bound = None, 0, False, None
+    # A per-leg deadline, set by the executor from the time left divided among
+    # the clauses still to drive. `deadline` is the question's; this one stops
+    # an early leg from spending the budget the later ones need.
+    leg_deadline: float | None = None
+
+    def out_of_time(self) -> bool:
+        return (self.deadline is not None and time.time() >= self.deadline) or \
+               (self.leg_deadline is not None and time.time() >= self.leg_deadline)
+
+    def left(self) -> float:
+        ends = [d for d in (self.deadline, self.leg_deadline) if d is not None]
+        return float("inf") if not ends else min(ends) - time.time()
+
+    def whole_left(self) -> float:
+        """Time left for the question, ignoring this leg's share of it."""
+        return float("inf") if self.deadline is None else self.deadline - time.time()
+
+    def record(self, rec: dict) -> None:
+        self.log.write(json.dumps(rec, default=str) + "\n")
+        self.log.flush()
+
+    def mission_for(self, k: int) -> dict | None:
+        return None if not self.mission else {**self.mission, "k": k}
+
+
+@dataclass
+class Outcome:
+    """How one clause ended, and what it learned that the next leg can use."""
+
+    arrived: bool
+    why: str
+    xy: np.ndarray | None = None          # where the target was bound
+    prev_crop: bytes | None = None        # last view of it, for the confirm call
+
+
+def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
+             confirm: bool = False) -> Outcome:
+    """Drive to one named object, starting from wherever the vehicle stands.
+
+    Extracted from `main` so a plan can call it once per destination without
+    resetting the pose between them. `ctx.step` keeps counting across legs, so
+    the artefacts on disk stay in the order they were captured and a step
+    number is unique within a run.
+    """
+    prev_crop, bound, arrived = None, None, False
     misses = stuck_explores = 0
-    avoid: list[dict] = []
-    visited: list[str] = []
+    stood: list[np.ndarray] = []
+    # Readings the binding refused, so that two in a row agreeing with each
+    # other can overrule it. Per-leg: the next clause is a different object.
+    pending: list[np.ndarray] = []
 
-    for step in range(1, args.max_steps + 1):
-        eq, scan, terrain, pose = robot.capture()
+    for _ in range(max_steps):
+        if ctx.out_of_time():
+            return Outcome(False, "out of time", None, prev_crop)
+        ctx.step += 1
+        step = ctx.step
+        eq, scan, terrain, pose = ctx.robot.capture()
         faces = faces_of(eq)
         for i, f in enumerate(faces):
-            (out / f"step{step}_face{i}.jpg").write_bytes(f)
+            (ctx.out / f"step{step}_face{i}.jpg").write_bytes(f)
         # Keep the geometry too, not just the pictures. Without the terrain the
         # converter's choice cannot be re-derived after the fact, which is how a
         # bad waypoint on chinese_room went unexplained.
-        np.save(out / f"step{step}_terrain.npy", terrain)
-        np.save(out / f"step{step}_scan.npy", scan)
-        keepout: list[tuple[np.ndarray, float]] = []
+        np.save(ctx.out / f"step{step}_terrain.npy", terrain)
+        np.save(ctx.out / f"step{step}_scan.npy", scan)
 
-        reply, raw = ground(faces, args.phrase, args.backend, model, prev_crop,
-                            args.prompt_version, visited)
-        calls += 1
-        rec: dict = {"step": step, "pose": pose, "reply": reply}
+        reply, raw = ground(faces, phrase, ctx.backend, ctx.model, prev_crop,
+                            ctx.prompt_version, ctx.visited, ctx.mission_for(k))
+        ctx.calls += 1
+        rec: dict = {"step": step, "clause": k, "phrase": phrase,
+                     "kind": GOTO, "pose": pose, "reply": reply}
         if reply is None:
             print(f"[{step}] unparseable reply ({len(raw)} chars); stopping")
             print(f"      tail: ...{raw[-200:]!r}")
             rec["raw"] = raw
-            log.write(json.dumps(rec) + "\n")
-            break
+            ctx.record(rec)
+            return Outcome(False, "unparseable reply", None, prev_crop)
 
         o = np.asarray(pose["position"], float)
         print(f"[{step}] at ({o[0]:+.2f}, {o[1]:+.2f})  "
@@ -416,26 +530,79 @@ def main() -> int:
               f"state={reply.get('target_state')}  "
               f"same_as_prev={reply.get('same_object_as_previous')}")
 
+        # Circling. The legal points around an object form a ring at roughly
+        # equal distance from it, and `NEAR_M` was meant to stop the loop
+        # walking that ring forever — but it is a distance, calibrated on
+        # floor-standing furniture, and on `studio` the target was a skylight
+        # in a sloped attic roof with a bookshelf beneath it. The platform's
+        # floor there is 2.1 m, above `NEAR_M`, so every step read as "not close
+        # enough to be the floor" and the leg burned all five calls returning to
+        # within 0.06 m of where it had stood two steps earlier.
+        #
+        # Coming back to a place already stood in needs no constant to detect,
+        # and means the same thing at any distance: there is nothing further to
+        # be gained by moving. Whether that counts as arriving still depends on
+        # whether the target was ever bound.
+        if revisited(o[:2], stood):
+            if bound is not None:
+                d = float(np.linalg.norm(bound["xy"] - o[:2]))
+                print(f"      back where it already stood — the ring around the "
+                      f"target has been walked; {d:.2f} m is the floor here")
+                rec["arrived"] = f"circled back ({d:.2f} m)"
+                ctx.record(rec)
+                return Outcome(True, f"arrived, circled back ({d:.2f} m)",
+                               bound["xy"], prev_crop)
+            print(f"      back where it already stood and nothing is bound — "
+                  f"this leg is going in circles")
+            rec["stopped"] = "circling with nothing bound"
+            ctx.record(rec)
+            return Outcome(False, "circling with nothing bound", None, prev_crop)
+        stood.append(o[:2].copy())
+
         # Before the visibility branch: a keep-out anchor is most likely to be
         # reported on exactly the calls where the *target* is not visible,
         # because that is when the robot is looking around at the furniture.
         here_txt = (reply.get("here") or "").strip()
         if here_txt:
-            visited.append(here_txt)
+            ctx.visited.append(here_txt)
             rec["here"] = here_txt
             print(f'      here: "{here_txt[:96]}"')
 
-        avoid = bind_constraints(reply, scan, pose, avoid)
-        keepout = [(a["xy"], KEEPOUT_M) for a in avoid]
-        if reply.get("gate"):
-            # Parsed and logged; not enforced yet. Ten of the thirty
-            # instruction questions need it and it is a different mechanism —
-            # a point to pass through, not a region to stay out of.
-            rec["gate"] = reply["gate"]
-            print(f"      gate reported ({len(reply['gate'])} anchors) — "
-                  f"logged, not yet enforced")
+        ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
+        keepout = [(a["xy"], KEEPOUT_M) for a in ctx.avoid]
 
-        if not reply.get("visible"):
+        # Resolved before the visibility branch, because whether the phrase's
+        # relation could be *measured* now decides whether a sighting counts as
+        # having found anything. Whether the phrase needs checking is a property
+        # of the phrase: the model reported no relation for "the guitar near the
+        # couch" on one call and `closest_to` on the next, and the call that
+        # forgot was treated as nothing to verify.
+        relational = has_relation(phrase) or reply.get("relation") in RELATIONS
+        chosen = (resolve_relation(reply, scan, pose, size=G.FACE_SIZE)
+                  if reply.get("visible") and reply.get("image_index") is not None
+                  else None)
+        # A relational phrase whose anchor never lifted, with nothing bound: the
+        # model has found *a* thing of the right type, not the one the phrase
+        # names. On `home_building_1` it found a waste bin in the bathroom while
+        # the question asked for the one nearest a refrigerator 14.6 m away in
+        # another room — and treating that sighting as an arrival target sent
+        # the leg to circle the wrong bin until it ran out of calls.
+        #
+        # The model was not wrong; it was not being listened to. Its `explore`
+        # field said, at that exact step, "the kitchen (and therefore the
+        # refrigerator and any kitchen trash can) lies past the dining area
+        # behind the robot", and the loop discarded it because `visible` was
+        # true. So an unverified sighting keeps exploring, along the heading the
+        # model gives, instead of driving at the nomination.
+        adrift = (reply.get("visible") and relational and chosen is None
+                  and bound is None)
+        if adrift:
+            print(f"      seen, but the relation is unmeasurable and nothing is "
+                  f"bound — this is the right kind of object, not the one the "
+                  f"phrase names; still searching")
+            rec["adrift"] = True
+
+        if not reply.get("visible") or adrift:
             misses += 1
             # One frame of occlusion is ordinary; two calls in a row that cannot
             # find the target mean the position we measured is not where the
@@ -476,28 +643,27 @@ def main() -> int:
             rec["action"] = {"kind": "explore", "heading_deg": h,
                              "goal": goal.tolist(), "reach_m": reach,
                              "delta_deg": delta}
-            if not args.dry_run:
-                rec["drive"] = robot.drive_to(goal[0], goal[1], 20)
+            if not ctx.dry_run:
+                rec["drive"] = ctx.robot.drive_to(goal[0], goal[1],
+                                                  min(20.0, ctx.left()))
                 if (rec["drive"].get("moved_m") or 0.0) < PROGRESS_M:
                     stuck_explores += 1
                 else:
                     stuck_explores = 0
-            log.write(json.dumps(rec) + "\n")
-            log.flush()
+            ctx.record(rec)
             prev_crop = None
             if stuck_explores >= 2:
                 print(f"      two exploration legs in a row went nowhere — the "
                       f"heading is not reachable from here; stopping")
-                break
+                return Outcome(False, "heading not reachable", None, prev_crop)
             continue
         misses = 0
 
         i = int(reply["image_index"])
         box = to_pixels(reply.get("feature_box_2d") or reply["box_2d"],
                         reply.get("coord_space"), G.FACE_SIZE)
-        # A comparative relation is decided here, by measuring the candidates,
-        # not by whichever one the model nominated.
-        chosen = resolve_relation(reply, scan, pose, size=G.FACE_SIZE)
+        # A comparative relation is decided by measuring the candidates, not by
+        # whichever one the model nominated; `chosen` was resolved above.
         if chosen is not None:
             box, i, rel_why = chosen
             rec["relation"] = rel_why
@@ -507,11 +673,6 @@ def main() -> int:
                   f"({len(reply.get('candidates') or [])} candidates, "
                   f"{len(reply.get('anchors') or [])} anchors) — using the "
                   f"model's own pick")
-        # Whether the phrase needs checking is a property of the phrase. Asking
-        # the reply instead let `studio` through: the model reported no relation
-        # for "the guitar near the couch" on one call and `closest_to` on the
-        # next, and the call that forgot was treated as nothing to verify.
-        relational = has_relation(args.phrase) or reply.get("relation") in RELATIONS
         verified = (not relational) or chosen is not None
         w, h_deg = box_angular_size(box, i)
         blind, az, el, floor = in_blind_cone(ray_from_box(box, i))
@@ -519,8 +680,8 @@ def main() -> int:
               f"bearing {az:+.0f}°/{el:+.0f}° "
               f"({'BLIND' if blind else 'covered'}, floor {floor:+.0f}°)")
 
-        wp = next_waypoint(box, i, scan, pose, phrase=args.phrase,
-                           standoff=args.standoff)
+        wp = next_waypoint(box, i, scan, pose, phrase=phrase,
+                           standoff=ctx.standoff)
         rec["waypoint"] = {"xy": wp.xy.tolist(), "committed": wp.committed,
                            "range_m": wp.range_m, "reason": wp.reason,
                            "blind": blind, "az": az, "el": el}
@@ -529,17 +690,18 @@ def main() -> int:
 
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
                                        verified=verified,
-                                       measured=chosen is not None)
+                                       measured=chosen is not None,
+                                       pending=pending)
 
         # Already inside the standoff: driving further would push into the
         # object, and the stack would only snap the waypoint back out again.
         if committed and bound is not None:
             here = float(np.linalg.norm(bound["xy"] - o[:2]))
-            if here <= args.standoff:
-                print(f"      already within {args.standoff} m — arrived")
+            if here <= ctx.standoff:
+                print(f"      already within {ctx.standoff} m — arrived")
                 rec["arrived"] = "within standoff"
-                log.write(json.dumps(rec) + "\n")
-                arrived = True
+                ctx.record(rec)
+                arrived, bound_xy = True, bound["xy"]
                 break
 
         # What the converter will do with this waypoint, before we spend a
@@ -547,6 +709,7 @@ def main() -> int:
         # displacement as the platform clamping an approach; it was the
         # converter discarding the waypoint and re-minimising elsewhere.
         goal, will_move, cm = wp.xy, None, None
+        aim = bound["xy"] if bound is not None else wp.xy
         try:
             cm = ConverterModel(terrain, keepout=keepout)
             # Aim at the target itself, not at a standoff from it: the standoff
@@ -554,7 +717,6 @@ def main() -> int:
             # inside it gets the waypoint discarded rather than clamped. Once
             # the target is bound, the binding is the better estimate of where
             # it is than any single reading.
-            aim = bound["xy"] if bound is not None else wp.xy
             # A step exists to buy a better view, so it has to actually move
             # the vehicle; an approach may legitimately settle where it stands.
             best = cm.best_waypoint_toward(
@@ -610,17 +772,18 @@ def main() -> int:
                   f"({here:.2f} m{'' if may_stop else ', nothing bound yet'}) "
                   f"— driving to look")
         elif gain is not None and gain < PROGRESS_M:
+            ctx.record(rec)
             if committed:
                 print(f"      no legal point closer than where we stand — this "
                       f"is as near as the platform allows")
                 rec["arrived"] = "no legal point closer (predicted)"
-                arrived = True
-            else:
-                print(f"      stuck: the lift is untrustworthy here and the "
-                      f"converter has nowhere legal to move us")
-                rec["stopped"] = "stuck (untrusted lift, no legal move)"
-            log.write(json.dumps(rec) + "\n")
-            break
+                arrived, bound_xy = True, aim
+                break
+            print(f"      stuck: the lift is untrustworthy here and the "
+                  f"converter has nowhere legal to move us")
+            rec["stopped"] = "stuck (untrusted lift, no legal move)"
+            return Outcome(False, "stuck (untrusted lift, no legal move)",
+                           None, prev_crop)
 
         # Past the stop tests, so this step is going to drive — and a goal the
         # vehicle settles less than `waypointXYRadius` from is one it considers
@@ -634,8 +797,8 @@ def main() -> int:
                 print(f"      nowhere legal to move that the platform would act "
                       f"on — boxed in {here:.2f} m from it")
                 rec["stopped"] = "boxed in (no legal move above waypointXYRadius)"
-                log.write(json.dumps(rec) + "\n")
-                break
+                ctx.record(rec)
+                return Outcome(False, "boxed in (no legal move)", None, prev_crop)
             goal, lands, reach = alt
             will_move = float(np.linalg.norm(lands - o[:2]))
             rec["converter"]["requeried_for_motion"] = {
@@ -646,24 +809,23 @@ def main() -> int:
                   f"{reach:.2f} m from it, {will_move:.2f} m from here")
 
         prev_crop = crop_face(faces[i], box)
-        (out / f"step{step}_target.jpg").write_bytes(prev_crop)
+        (ctx.out / f"step{step}_target.jpg").write_bytes(prev_crop)
 
-        if args.dry_run:
-            log.write(json.dumps(rec) + "\n")
-            log.flush()
-            break
+        if ctx.dry_run:
+            ctx.record(rec)
+            return Outcome(False, "dry run", aim, prev_crop)
 
         dist = float(np.linalg.norm(goal - o[:2]))
-        res = robot.drive_to(goal[0], goal[1], max(12.0, dist / 0.4 + 8.0))
+        res = ctx.robot.drive_to(goal[0], goal[1],
+                                 min(max(12.0, dist / 0.4 + 8.0), ctx.left()))
         rec["drive"] = res
         print(f"      drive: {res.get('why')}  moved {res.get('moved_m')}  "
               f"final gap to requested point {res.get('dist_to_requested_m')}")
-        log.write(json.dumps(rec) + "\n")
-        log.flush()
+        ctx.record(rec)
 
         if res.get("why") == "timeout":
             print("      drive timed out; stopping")
-            break
+            return Outcome(False, "drive timed out", None, prev_crop)
         gap = res.get("dist_to_requested_m")
         moved = res.get("moved_m") or 0.0
         if committed:
@@ -676,12 +838,11 @@ def main() -> int:
                     print(f"      asked for {will_move:.2f} m and moved "
                           f"{moved:.2f} m, still {here:.2f} m from it — boxed "
                           f"in, not arrived")
-                    rec["stopped"] = "boxed in (stack would not move us)"
-                    break
+                    return Outcome(False, "boxed in (stack would not move us)",
+                                   None, prev_crop)
                 print(f"      stack will not close the last {gap:.2f} m "
                       f"(moved {moved:.2f} m) — as near as it allows")
-                rec["arrived"] = "clamped by obstacle clearance"
-                arrived = True
+                arrived, bound_xy = True, aim
                 break
             # Reaching the waypoint is not arriving. Since the waypoint became
             # "the legal point that settles nearest the target" rather than the
@@ -695,35 +856,79 @@ def main() -> int:
             # A step that went nowhere. Re-grounding from an unchanged pose
             # would ask the same question and get the same answer.
             print(f"      step made no progress ({moved:.2f} m); stopping")
-            break
+            return Outcome(False, "step made no progress", None, prev_crop)
+    else:
+        return Outcome(False, f"gave up after {max_steps} steps", None, prev_crop)
+
+    if not arrived:
+        return Outcome(False, "did not arrive", None, prev_crop)
 
     # One last look, purely to record whether the two new fields agree with the
-    # geometry that actually decided this. They gate nothing yet.
-    if arrived and not args.dry_run:
-        eq, scan, terrain, pose = robot.capture()
-        faces = faces_of(eq)
+    # geometry that actually decided this. They gate nothing.
+    if confirm and not ctx.dry_run:
+        eq, scan, terrain, pose = ctx.robot.capture()
         try:
-            confirm, _ = ground(faces, args.phrase, args.backend, model,
-                                prev_crop, args.prompt_version, visited)
-            calls += 1
+            got, _ = ground(faces_of(eq), phrase, ctx.backend, ctx.model,
+                            prev_crop, ctx.prompt_version, ctx.visited,
+                            ctx.mission_for(k))
+            ctx.calls += 1
         except Exception as e:
-            # Advisory only — it records whether the new fields agree with the
-            # geometry that already decided this. Losing it must not turn a
-            # completed run into a failed one.
+            # Advisory only. Losing it must not turn a completed run into a
+            # failed one.
             print(f"\nconfirm call failed ({type(e).__name__}); arrival stands")
-            confirm = None
-        if confirm:
-            print(f"\nconfirm: visible={confirm.get('visible')} "
-                  f"state={confirm.get('target_state')} "
-                  f"same_object={confirm.get('same_object_as_previous')} "
-                  f"conf={confirm.get('confidence')}")
-        log.write(json.dumps({"step": "confirm", "pose": pose,
-                              "reply": confirm}) + "\n")
+            got = None
+        if got:
+            print(f"\nconfirm: visible={got.get('visible')} "
+                  f"state={got.get('target_state')} "
+                  f"same_object={got.get('same_object_as_previous')} "
+                  f"conf={got.get('confidence')}")
+        ctx.record({"step": "confirm", "clause": k, "pose": pose, "reply": got})
 
+    return Outcome(True, "arrived", bound_xy, prev_crop)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("phrase")
+    ap.add_argument("--host", default=None,
+                    help="ssh target running the sim; omit if this IS the sim host")
+    ap.add_argument("--container", default=CTR)
+    ap.add_argument("--backend", choices=["claude", "gemini"], default="claude")
+    ap.add_argument("--model", default=None)
+    ap.add_argument("--max-steps", type=int, default=6)
+    ap.add_argument("--prompt-version", default=DEFAULT_PROMPT_VER,
+                    help="v3-occlusion-distance to reproduce TASK 26/28")
+    ap.add_argument("--standoff", type=float, default=STANDOFF_M)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="ground and compute waypoints, publish nothing")
+    args = ap.parse_args()
+
+    model = args.model or ("claude-opus-5" if args.backend == "claude"
+                           else "gemini-2.5-flash")
+    out = Path(args.out or f"runs/{time.strftime('%m%d_%H%M%S')}")
+    out.mkdir(parents=True, exist_ok=True)
+    log = (out / "steps.jsonl").open("w")
+
+    robot = Robot(args.host, args.container)
+    robot.push()
+    pre = robot.preflight()
+    print(f"preflight: {json.dumps(pre)}")
+    if not pre.get("ok"):
+        print(f"  !! {pre.get('why')}", file=sys.stderr)
+
+    print(f"\ntarget: {args.phrase!r}   model={model}   out={out}\n")
+    ctx = Ctx(robot=robot, out=out, log=log, backend=args.backend, model=model,
+              prompt_version=args.prompt_version, standoff=args.standoff,
+              dry_run=args.dry_run)
+    res = run_goto(ctx, args.phrase, max_steps=args.max_steps, confirm=True)
     log.close()
-    print(f"\n{'ARRIVED' if arrived else 'did not arrive'} in {calls} calls "
-          f"(${calls * COST_PER_CALL:.2f})   log: {out}/steps.jsonl")
-    return 0 if arrived else 1
+    print(f"\n{'ARRIVED' if res.arrived else 'did not arrive'} ({res.why}) in "
+          f"{ctx.calls} calls (${ctx.calls * COST_PER_CALL:.2f})   "
+          f"log: {out}/steps.jsonl")
+    return 0 if res.arrived else 1
+
 
 
 if __name__ == "__main__":

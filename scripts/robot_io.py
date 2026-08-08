@@ -55,6 +55,8 @@ STALL_DEG = 3.0
 # `waypointXYRadius` is 0.3, so the stack stops that far from its own target;
 # anything at or under this counts as having got where we asked.
 ARRIVE_TOL_M = 0.35
+# How far the vehicle moves between recorded track points.
+TRACK_STEP_M = 0.10
 
 
 class Capture(Node):
@@ -144,6 +146,12 @@ class Driver(Node):
         self.reached: float | None = None
         self.pose: list[float] | None = None
         self.start: list[float] | None = None
+        # The path actually driven, not just its endpoints. `local_planner`
+        # chooses an arc from its own path library, so the straight line
+        # between two waypoints is not where the vehicle went — and README §175
+        # scores "the actual trajectory followed by the robot". A passage
+        # constraint can only be checked against this.
+        self.track: list[list[float]] = []
         self._last_move = time.time()
         self._last_xy: tuple[float, float] | None = None
         self._last_yaw: float | None = None
@@ -162,6 +170,12 @@ class Driver(Node):
         self.pose = [p.x, p.y, p.z]
         if self.start is None:
             self.start = list(self.pose)
+        # Subsampled by distance: /state_estimation runs at 100-200 Hz, and a
+        # crossing test needs shape, not sample rate. TRACK_STEP_M is well
+        # under the narrowest gap a passage question names.
+        if not self.track or np.hypot(p.x - self.track[-1][0],
+                                      p.y - self.track[-1][1]) > TRACK_STEP_M:
+            self.track.append([round(p.x, 3), round(p.y, 3)])
         yaw = np.arctan2(2 * (q.w * q.z + q.x * q.y),
                          1 - 2 * (q.y * q.y + q.z * q.z))
         moved = (self._last_xy is None
@@ -247,7 +261,7 @@ def cmd_drive(x: float, y: float, timeout: float) -> dict:
     moved = (float(np.linalg.norm(np.array(n.pose[:2]) - np.array(n.start[:2])))
              if n.pose and n.start else None)
     out = {"ok": why in ("arrived", "settled"), "why": why, "goal": list(n.goal),
-           "pose": n.pose, "moved_m": moved,
+           "pose": n.pose, "moved_m": moved, "track": n.track,
            "dist_to_requested_m": n.gap(),
            # dev-only cross-check; never branched on. See Driver.__doc__.
            "stack_said": n.reached}

@@ -45,6 +45,9 @@ Every row below links to a distinct document.
 | 29 | [The converter is not a clamp, and we can predict it](TASK%2029%20-%20The%20converter%20is%20not%20a%20clamp,%20and%20we%20can%20predict%20it.md) | Done |
 | 30 | [Four scenes, and the bugs only driving finds](TASK%2030%20-%20Four%20scenes,%20and%20the%20bugs%20only%20driving%20finds.md) | Done — loft unsolved, `gate` not enforced |
 | 31 | [Ground truth for all fifteen scenes, and what it refuted](TASK%2031%20-%20Ground%20truth%20for%20all%20fifteen%20scenes,%20and%20what%20it%20refuted.md) | Done — `KEEPOUT_M` refuted, not yet redesigned |
+| 32 | [Who splits the instruction, and where keep-outs live](TASK%2032%20-%20Who%20splits%20the%20instruction,%20and%20where%20keep-outs%20live.md) | Done — model parser primary, 30/30 drive order; executor next |
+| 33 | [The ordered plan executor](TASK%2033%20-%20The%20ordered%20plan%20executor.md) | Driven — `chinese_room` 2/2 against GT |
+| 34 | [Driving a passage, and four ways of faking it](TASK%2034%20-%20Driving%20a%20passage,%20and%20four%20ways%20of%20faking%20it.md) | Done — 4 passage bugs fixed; `studio` crosses the gap at x=+3.46 |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
