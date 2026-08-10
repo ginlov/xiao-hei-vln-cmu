@@ -208,6 +208,20 @@ def evaluate(gt_objs, pred_objs, dist_thr, iou_thr):
             entry["mean_center_err_m"] = round(float(np.mean(ce)), 3)
             entry["median_center_err_m"] = round(float(np.median(ce)), 3)
             entry["mean_3d_iou"] = round(float(np.mean(ious)), 3)
+            # What the challenge actually pays for object-reference questions:
+            # 2 points at IoU >= 0.5, 1 at >= 0.25, nothing below, and the
+            # label is never compared. Reported per ground-truth object, so an
+            # object we never found scores zero rather than being dropped from
+            # the average the way `mean_3d_iou` drops it. Mean IoU hides this:
+            # it is computed over matched pairs only and it moves smoothly,
+            # where the score steps at two thresholds — a change can lift mean
+            # IoU and pay nothing, or pay well and barely move it.
+            n = max(len(gt_objs), 1)
+            p25 = sum(1 for x in ious if x >= 0.25) / n
+            p50 = sum(1 for x in ious if x >= 0.5) / n
+            entry["frac_iou_ge_25"] = round(p25, 4)
+            entry["frac_iou_ge_50"] = round(p50, 4)
+            entry["obj_ref_points"] = round(p25 + p50, 4)     # out of 2
         report["operating_point"][f"dist@{d}m"] = entry
 
     # per-class counting (numerical-question proxy)

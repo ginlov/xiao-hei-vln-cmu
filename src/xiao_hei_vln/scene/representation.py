@@ -83,6 +83,13 @@ class ObjectObservation:
     color_name: str | None = None
     bbox_min: Vector3 | None = None
     bbox_max: Vector3 | None = None
+    # Architecture (wall / floor / ceiling / door / window) rather than a
+    # movable object. Still recorded — a counting question may ask about
+    # doors — but consumers that reason over *instances* (the LLM prompt, the
+    # detection dataset) exclude these: one such mask covers a whole surface,
+    # so they fuse into dozens of overlapping duplicates and never answer a
+    # reference question.
+    is_structure: bool = False
     object_id: int = 0
     first_tick_id: int = 0
     last_tick_id: int = 0
@@ -203,6 +210,7 @@ class SceneRepresentation:
                 label=nd["label"],
                 position=Vector3(x=center[0], y=center[1], z=center[2]),
                 confidence=float(nd["score"]),
+                is_structure=bool(nd.get("is_structure", False)),
                 color_rgb=tuple(color) if color is not None else None,
                 color_name=nd.get("color_name"),
                 bbox_min=Vector3(x=bmin[0], y=bmin[1], z=bmin[2]),
@@ -255,6 +263,7 @@ class SceneRepresentation:
                     "color_name": o.color_name,
                     "bbox_min": _v3(o.bbox_min),
                     "bbox_max": _v3(o.bbox_max),
+                    "is_structure": o.is_structure,
                     "first_tick_id": o.first_tick_id,
                     "last_tick_id": o.last_tick_id,
                     "observing_viewpoint_ids": list(o.observing_viewpoint_ids),

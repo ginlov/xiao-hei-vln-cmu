@@ -54,6 +54,9 @@ def test_defaults_track_the_source_constants(clean_env: None) -> None:
 def test_scan_accumulator_defaults(clean_env: None) -> None:
     s = _PerceptionSettings.from_env()
 
+    # Accumulation is on by default at main's value. This branch measured 0 as
+    # better on the two scenes it has corpora for; see the note in
+    # `app/main.py`, where that disagreement is recorded rather than settled.
     assert s.scan_keyframes == 10
     assert s.scan_min_move_m == pytest.approx(0.25)
     assert s.scan_min_rot_deg == pytest.approx(15.0)

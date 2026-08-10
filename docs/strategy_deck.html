@@ -1,0 +1,539 @@
+<title>Perception strategy — where the points actually are</title>
+
+<style>
+  :root {
+    --ground:#f6f7f9; --ground-2:#eceef2; --card:#ffffff;
+    --ink:#171c24; --ink-2:#4a5462; --ink-3:#79838f;
+    --rule:#d8dce3;
+    --measured:#0d7f8b; --truth:#a8641a; --retired:#9d4250;
+    --measured-bg:#e2f2f4; --truth-bg:#f7eddf; --retired-bg:#f7e6e8;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#0e131a; --ground-2:#151b24; --card:#131923;
+      --ink:#e8ecf2; --ink-2:#a7b1bf; --ink-3:#6f7a88;
+      --rule:#262e39;
+      --measured:#35d0d8; --truth:#ff9f43; --retired:#e2717f;
+      --measured-bg:#10262b; --truth-bg:#2a1f12; --retired-bg:#2a1519;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0e131a; --ground-2:#151b24; --card:#131923;
+    --ink:#e8ecf2; --ink-2:#a7b1bf; --ink-3:#6f7a88;
+    --rule:#262e39;
+    --measured:#35d0d8; --truth:#ff9f43; --retired:#e2717f;
+    --measured-bg:#10262b; --truth-bg:#2a1f12; --retired-bg:#2a1519;
+  }
+  :root[data-theme="light"] {
+    --ground:#f6f7f9; --ground-2:#eceef2; --card:#ffffff;
+    --ink:#171c24; --ink-2:#4a5462; --ink-3:#79838f;
+    --rule:#d8dce3;
+    --measured:#0d7f8b; --truth:#a8641a; --retired:#9d4250;
+    --measured-bg:#e2f2f4; --truth-bg:#f7eddf; --retired-bg:#f7e6e8;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--sans); }
+
+  #deck { height:100vh; overflow-y:scroll; scroll-snap-type:y mandatory; scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce) { #deck { scroll-behavior:auto; } }
+
+  section {
+    min-height:100vh; scroll-snap-align:start; scroll-snap-stop:always;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:clamp(28px,5vw,72px) clamp(20px,6vw,96px) clamp(64px,8vh,96px);
+    border-bottom:1px solid var(--rule);
+  }
+  .wrap { width:100%; max-width:1080px; margin:0 auto; }
+
+  .eyebrow {
+    font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--ink-3); margin:0 0 18px;
+  }
+  h1 { font-size:clamp(34px,6.4vw,68px); line-height:1.02; letter-spacing:-.03em;
+       font-weight:700; margin:0 0 22px; text-wrap:balance; }
+  h2 { font-size:clamp(26px,3.9vw,44px); line-height:1.08; letter-spacing:-.022em;
+       font-weight:680; margin:0 0 20px; text-wrap:balance; }
+  p  { font-size:clamp(15px,1.45vw,18px); line-height:1.6; color:var(--ink-2);
+       max-width:64ch; margin:0 0 14px; }
+  p strong { color:var(--ink); font-weight:640; }
+  .lede { font-size:clamp(17px,1.85vw,22px); color:var(--ink); max-width:56ch; }
+
+  .grid { display:grid; gap:clamp(12px,1.6vw,20px); }
+  .g3 { grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); }
+  .g2 { grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:10px;
+          padding:clamp(16px,2vw,24px); }
+  .card h3 { font-size:15px; margin:0 0 10px; letter-spacing:-.01em; }
+  .card p { font-size:14.5px; margin:0; }
+
+  .stat { font-family:var(--mono); font-variant-numeric:tabular-nums;
+          font-size:clamp(30px,4.6vw,52px); line-height:1; letter-spacing:-.03em;
+          font-weight:600; display:block; margin-bottom:8px; }
+  .stat.m { color:var(--measured); }
+  .stat.t { color:var(--truth); }
+  .stat.r { color:var(--retired); }
+  .stat-label { font-family:var(--mono); font-size:11.5px; letter-spacing:.06em;
+                color:var(--ink-3); text-transform:uppercase; }
+
+  .tablewrap { overflow-x:auto; margin:6px 0 4px; }
+  table { border-collapse:collapse; width:100%; font-size:clamp(13px,1.35vw,15.5px); }
+  th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--rule); }
+  th { font-family:var(--mono); font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+       color:var(--ink-3); font-weight:500; }
+  td.num, th.num { text-align:right; font-family:var(--mono);
+                   font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tr.hi td { background:var(--measured-bg); }
+  tr.hi td:first-child { font-weight:640; }
+  td .em { color:var(--measured); font-weight:640; }
+  td .tr { color:var(--truth); font-weight:640; }
+
+  .killed { display:flex; flex-direction:column; gap:11px; }
+  .kill { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);
+          gap:clamp(10px,1.6vw,22px); align-items:baseline;
+          padding:12px 14px; border-radius:8px; background:var(--retired-bg);
+          border:1px solid color-mix(in srgb, var(--retired) 22%, transparent); }
+  .kill .claim { color:var(--retired); text-decoration:line-through;
+                 text-decoration-thickness:1.5px; font-size:15px; }
+  .kill .evidence { font-family:var(--mono); font-size:13px; color:var(--ink-2);
+                    font-variant-numeric:tabular-nums; }
+  @media (max-width:640px) { .kill { grid-template-columns:1fr; gap:4px; } }
+
+  .flow { display:flex; flex-wrap:wrap; gap:10px; align-items:stretch; margin:4px 0 16px; }
+  .step { flex:1 1 180px; background:var(--card); border:1px solid var(--rule);
+          border-radius:9px; padding:14px 16px; }
+  .step .n { font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+             color:var(--ink-3); display:block; margin-bottom:7px; }
+  .step .t { font-size:15px; font-weight:620; display:block; margin-bottom:5px; }
+  .step .d { font-size:13.5px; color:var(--ink-2); line-height:1.5; }
+  .step.vlm { border-color:color-mix(in srgb, var(--measured) 45%, var(--rule)); }
+  .step.geo { border-color:color-mix(in srgb, var(--truth) 45%, var(--rule)); }
+
+  .tag { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em;
+         text-transform:uppercase; padding:3px 7px; border-radius:4px; }
+  .tag.vlm { background:var(--measured-bg); color:var(--measured); }
+  .tag.geo { background:var(--truth-bg); color:var(--truth); }
+
+  .rule-row { display:grid; grid-template-columns:auto 1fr; gap:14px;
+              padding:11px 0; border-bottom:1px solid var(--rule);
+              font-size:15px; align-items:baseline; }
+  .rule-row:last-child { border-bottom:0; }
+  .rule-row .cond { font-family:var(--mono); font-size:13.5px; font-weight:600;
+                    color:var(--measured); white-space:nowrap;
+                    font-variant-numeric:tabular-nums; }
+
+  ul.tight { margin:0 0 14px; padding-left:20px; }
+  ul.tight li { font-size:clamp(14.5px,1.4vw,17px); line-height:1.58;
+                color:var(--ink-2); margin-bottom:9px; max-width:62ch; }
+  ul.tight li strong { color:var(--ink); font-weight:640; }
+
+  .foot { margin-top:22px; font-family:var(--mono); font-size:12.5px;
+          color:var(--ink-3); line-height:1.55; max-width:70ch; }
+
+  #hud { position:fixed; right:16px; bottom:14px; z-index:9;
+         font-family:var(--mono); font-size:11.5px; letter-spacing:.08em;
+         color:var(--ink-3); background:color-mix(in srgb, var(--ground) 86%, transparent);
+         border:1px solid var(--rule); border-radius:20px; padding:6px 13px;
+         font-variant-numeric:tabular-nums; }
+  :focus-visible { outline:2px solid var(--measured); outline-offset:3px; }
+</style>
+
+<main id="deck" tabindex="-1">
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Team Xiao Hei · CMU VLN Challenge 2026 · perception</p>
+    <h1>We measured where the points are.<br>It changed the plan.</h1>
+    <p class="lede">Three weeks of perception work has been optimising roughly a
+      quarter of the available score. The two-thirds we were not working on is
+      answered with waypoints, not bounding boxes — and our geometry is already
+      accurate enough for it.</p>
+    <p class="foot">Every number in this deck comes from a measurement on our own
+      seven-scene corpus, not from a paper. Scripts are named on each slide.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The reframe</p>
+    <h2>Instruction following is 70% of the score</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Question type</th><th class="num">Points each</th>
+          <th class="num">Per scene</th><th class="num">Share</th><th>Answer format</th>
+        </tr></thead>
+        <tbody>
+          <tr><td>Numerical</td><td class="num">/1</td><td class="num">1</td>
+              <td class="num">5.9%</td><td>an integer</td></tr>
+          <tr><td>Object reference</td><td class="num">/2</td><td class="num">4</td>
+              <td class="num">23.5%</td><td>a 3D bounding box</td></tr>
+          <tr class="hi"><td>Instruction following</td><td class="num">/6</td>
+              <td class="num">12</td><td class="num"><span class="em">70.6%</span></td>
+              <td>a sequence of waypoints</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Five questions per scene, three held-out test scenes. Instruction following
+      awards <strong>partial credit</strong> — constraints satisfied in the right
+      order each earn something.</p>
+    <p class="foot">Source: challenge README § Question Types and Initial Scoring.
+      Our current implementation for it replays a hard-coded trajectory file. It
+      scores zero.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The good news</p>
+    <h2>Our geometry is already good enough for that 70%</h2>
+    <div class="grid g3">
+      <div class="card">
+        <span class="stat m">0.236 m</span>
+        <span class="stat-label">our lateral centre error</span>
+      </div>
+      <div class="card">
+        <span class="stat t">0.58 m</span>
+        <span class="stat-label">how close the reference path passes named objects</span>
+      </div>
+      <div class="card">
+        <span class="stat">0.177</span>
+        <span class="stat-label">our mean box IoU — matters only for the 23.5%</span>
+      </div>
+    </div>
+    <p style="margin-top:22px">Waypoints need a <strong>position</strong>, not a box.
+      We measured the reference trajectories the organisers ship with each scene:
+      they pass a median 0.58 m from the objects their instruction names. Our fused
+      object centres are twice that accurate.</p>
+    <p><strong>Box quality — the thing we have been grinding on — does not enter this
+      question type at all.</strong></p>
+    <p class="foot">scripts/traj_tolerance.py · 60 named-object distances over 7 scenes ·
+      control: objects the instructions do <em>not</em> name sit at median 1.38 m</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The real ceiling</p>
+    <h2>Retrieval finds the named object 67% of the time</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th class="num">start</th><th class="num">1.3 m</th>
+          <th class="num">4.8 m</th><th class="num">12.4 m</th><th class="num">full tour</th></tr></thead>
+        <tbody>
+          <tr><td>k = 1</td><td class="num">47%</td><td class="num">57%</td>
+              <td class="num">53%</td><td class="num">53%</td><td class="num">60%</td></tr>
+          <tr class="hi"><td>k = 3</td><td class="num">48%</td><td class="num">57%</td>
+              <td class="num">62%</td><td class="num">63%</td><td class="num"><span class="em">67%</span></td></tr>
+          <tr><td>k = 10</td><td class="num">50%</td><td class="num">58%</td>
+              <td class="num">62%</td><td class="num">63%</td><td class="num">67%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="tight" style="margin-top:18px">
+      <li><strong>k plateaus at 3.</strong> Returning ten candidates buys nothing over three.</li>
+      <li><strong>Distance plateaus at ~5 m</strong>, and the reference paths are only
+        ~10 m long — so executing the answer already reveals nearly everything the map
+        will ever hold. Extra exploration is not the fix.</li>
+      <li><strong>An LLM cannot pick an answer retrieval never returned.</strong>
+        67% is the hard ceiling on everything downstream.</li>
+    </ul>
+    <p class="foot">scripts/retrieval_probe.py · 60 (question, named object) pairs ·
+      hit = a ground-truth instance within 1.0 m of a top-k candidate</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Diagnosis</p>
+    <h2>Three quarters of the misses are vocabulary</h2>
+    <div class="grid g2">
+      <div class="card">
+        <span class="stat r">14 / 19</span>
+        <span class="stat-label">the word is absent from our 110-class list</span>
+        <p style="margin-top:12px;font-family:var(--mono);font-size:12.5px;line-height:1.7">
+          stairs · whiteboard · exit sign · water cooler · projector screen ·
+          folding screen · map wall decal · tea table · hookah · jar ·
+          fan decoration · wardrobe door · sphere decoration · elephant figurine</p>
+      </div>
+      <div class="card">
+        <span class="stat">5 / 19</span>
+        <span class="stat-label">in the vocabulary, still not found</span>
+        <p style="margin-top:12px;font-family:var(--mono);font-size:12.5px;line-height:1.7">
+          cabinet · tray · tv remote · fireplace · folder</p>
+        <p style="margin-top:14px">These are the genuine detection and association
+          failures — and they are the minority.</p>
+      </div>
+    </div>
+    <p style="margin-top:22px"><strong>These are not detection failures.</strong>
+      No amount of detector quality produces a class we never asked for.
+      <code style="font-family:var(--mono);font-size:.94em">stairs</code> and
+      <code style="font-family:var(--mono);font-size:.94em">whiteboard</code> are not
+      exotic — the list simply omits them.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Method note</p>
+    <h2>Six things we believed, that measurement killed</h2>
+    <div class="killed">
+      <div class="kill"><span class="claim">The segmenter is the bottleneck</span>
+        <span class="evidence">median selection precision 0.885; only 17.9% of observations are low/low</span></div>
+      <div class="kill"><span class="claim">Box centres are biased toward the camera</span>
+        <span class="evidence">+0.004 m radial, 0.236 m lateral — a coin flip</span></div>
+      <div class="kill"><span class="claim">Accumulating views fills the box</span>
+        <span class="evidence">volume inflates 6.0×, score 0.443 → 0.161</span></div>
+      <div class="kill"><span class="claim">CLIP embeddings can drive association</span>
+        <span class="evidence">AUC 0.587 vs geometry's 0.887 — it encodes category, not instance</span></div>
+      <div class="kill"><span class="claim">Deduplication bottoms out near cMAE 4.0</span>
+        <span class="evidence">the structural floor is 0.59</span></div>
+      <div class="kill"><span class="claim">We under-count: 441 nodes vs 542 objects</span>
+        <span class="evidence">441 was a per-scene mean — we over-count roughly 5×</span></div>
+    </div>
+    <p class="foot" style="margin-top:20px">Each was a prediction with a pre-declared
+      criterion, and each was retracted when the number came back. The proposal on the
+      next slides is held to the same standard.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The proposal</p>
+    <h2>Stop naming objects. Ask for the phrase.</h2>
+    <p class="lede">Instead of detecting 110 fixed classes and hoping the instruction's
+      word is among them, hand the VLM the referring expression verbatim and ask
+      where it is.</p>
+    <div class="grid g2" style="margin-top:20px">
+      <div class="card">
+        <h3 style="color:var(--ink-3)">Today</h3>
+        <p style="font-family:var(--mono);font-size:13px;line-height:1.75">
+          YOLO-World, 110 classes<br>→ label committed at detect time<br>
+          → fuse by exact label match<br>→ query by synonym family<br>
+          <span style="color:var(--retired)">→ ceiling 67%</span></p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb, var(--measured) 45%, var(--rule))">
+        <h3 style="color:var(--measured)">Proposed</h3>
+        <p style="font-family:var(--mono);font-size:13px;line-height:1.75">
+          “the tea table with the<br>elephant figurine on it”<br>
+          → VLM returns a box<br>→ lidar lifts it to 3D<br>
+          <span style="color:var(--measured)">→ no vocabulary at all</span></p>
+      </div>
+    </div>
+    <p style="margin-top:20px">One move removes three separate problems we have been
+      fighting: the vocabulary limit, synonym splitting
+      (<code style="font-family:var(--mono)">side table</code> /
+      <code style="font-family:var(--mono)">coffee table</code> /
+      <code style="font-family:var(--mono)">dining table</code>), and duplicate nodes.
+      The compound phrase is handled natively — no need to find tables first and
+      check each for an elephant.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Architecture</p>
+    <h2>The VLM proposes. Geometry validates and executes.</h2>
+    <div class="flow">
+      <div class="step vlm"><span class="n">01 · <span class="tag vlm">VLM</span></span>
+        <span class="t">Parse</span>
+        <span class="d">Instruction → ordered constraints with roles: goto, stop_at,
+          pass_by, between, avoid, landmark. One call per question.</span></div>
+      <div class="step vlm"><span class="n">02 · <span class="tag vlm">VLM</span></span>
+        <span class="t">Ground</span>
+        <span class="d">“Is this phrase visible? Which face, which box?” Also binds
+          any not-yet-located constraint it happens to see.</span></div>
+      <div class="step geo"><span class="n">03 · <span class="tag geo">Geometry</span></span>
+        <span class="t">Lift &amp; check</span>
+        <span class="d">Box → SAM → mask → lidar. Reject if no returns on that ray —
+          the only defence against a confident hallucination.</span></div>
+      <div class="step geo"><span class="n">04 · <span class="tag geo">Geometry</span></span>
+        <span class="t">Enforce</span>
+        <span class="d">Keep-out zones, “between A and B”, has-the-robot-arrived,
+          where-we-have-been. All deterministic.</span></div>
+    </div>
+    <p><strong>Memory is a table, not a model.</strong> Three to six bindings per
+      question — constraint, position, satisfied-or-not. Small enough to sit in every
+      prompt, exact because it never round-trips through language.</p>
+    <p><strong>Progress is judged geometrically</strong>, never by the VLM: did the
+      trajectory come within 1 m of the bound position? That is the same test the
+      grader applies.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The case that decides it</p>
+    <h2>chinese_room q5</h2>
+    <p class="lede" style="font-family:var(--mono);font-size:clamp(14px,1.6vw,18px);
+       line-height:1.65;color:var(--ink)">
+      “First, go near the <span style="color:var(--truth)">tea table with the elephant
+      figurine on it</span>, then stop at the <span style="color:var(--truth)">table with
+      the horse figurine on it</span>, avoiding the path between the
+      <span style="color:var(--truth)">chair</span> and the
+      <span style="color:var(--truth)">folding screen</span>.”</p>
+    <div class="tablewrap" style="margin-top:18px">
+      <table>
+        <thead><tr><th>Named object</th><th>What the map holds</th></tr></thead>
+        <tbody>
+          <tr><td>tea table</td><td>buried in a 50-node <code style="font-family:var(--mono)">table</code> family; correct cluster ranks <strong>3rd</strong></td></tr>
+          <tr><td>elephant figurine</td><td><span style="color:var(--retired)">absent</span> — too small to lift</td></tr>
+          <tr><td>table (horse)</td><td><span style="color:var(--retired)">absent</span> from the top six candidates</td></tr>
+          <tr><td>horse figurine</td><td>present, best node 0.14 m away</td></tr>
+          <tr><td>folding screen</td><td><span style="color:var(--retired)">absent</span> — and it anchors the keep-out zone</td></tr>
+          <tr><td>chair ×6</td><td>13 clusters — duplicated 2×</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">Retrieval localises <strong>1 of 5</strong> here, and stays
+      at 1 of 5 after the full tour. But a person looking at the panorama can see which
+      table the elephant sits on. <strong>No geometric feature separates five tables —
+      this is where a VLM is not merely better but necessary.</strong></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Tomorrow · criteria fixed before we look</p>
+    <h2>What would make us adopt this</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Test</th><th>Criterion</th><th>Baseline it must beat</th></tr></thead>
+        <tbody>
+          <tr><td>Identification</td><td class="num"><span class="em">&gt; 67%</span> of named objects</td><td>retrieval at k=3</td></tr>
+          <tr><td>Localisation</td><td class="num">median <span class="em">&lt; 0.58 m</span></td><td>reference-trajectory tolerance</td></tr>
+          <tr><td>Combined usable rate</td><td class="num"><span class="em">&gt; 67%</span> within 1.0 m</td><td>the ceiling it replaces</td></tr>
+          <tr><td>False positives</td><td class="num"><span class="em">&lt; 10%</span></td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">The last row matters most. A miss costs one question;
+      a <em>confident wrong answer</em> sends the robot elsewhere and corrupts the
+      ordering of everything after it. <code style="font-family:var(--mono)">NOT_VISIBLE</code>
+      must be easy to say.</p>
+    <div style="margin-top:20px;background:var(--card);border:1px solid var(--rule);
+                border-radius:10px;padding:clamp(14px,2vw,22px)">
+      <p class="eyebrow" style="margin-bottom:12px">Decision rule</p>
+      <div class="rule-row"><span class="cond">≥ 67%</span>
+        <span>VLM grounding becomes the primary path; the detector demotes to fallback.</span></div>
+      <div class="rule-row"><span class="cond">50 – 67%</span>
+        <span>Keep YOLO, but push the question's own words through
+          <code style="font-family:var(--mono)">set_classes</code>; use the VLM only for
+          compositional disambiguation.</span></div>
+      <div class="rule-row"><span class="cond">&lt; 50%</span>
+        <span>Drop VLM grounding. Pursue narrow vocabulary alone.</span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Feasibility</p>
+    <h2>The numbers say this is buildable</h2>
+    <div class="grid g3">
+      <div class="card">
+        <h3>Gemini returns boxes natively</h3>
+        <p><code style="font-family:var(--mono);font-size:.92em">box_2d</code> as
+          <code style="font-family:var(--mono);font-size:.92em">[ymin,xmin,ymax,xmax]</code>
+          normalised to [0,1000], plus a segmentation mask. A trained capability, not
+          coaxed out of general multimodality.</p>
+      </div>
+      <div class="card">
+        <h3>Pixel precision is not the risk</h3>
+        <p>At 5.33 px/deg, staying under 0.58 m of lateral error allows
+          <strong>±86 px at 2 m</strong> and ±35 px at 5 m. Named objects sit mostly
+          2–6 m out.</p>
+      </div>
+      <div class="card">
+        <h3>Depth is the risk</h3>
+        <p>Twenty pixels past the silhouette and the ray hits the wall behind — error
+          along the ray is unbounded. Mitigated by feeding the box to SAM and reusing
+          <code style="font-family:var(--mono);font-size:.92em">_dominant_depth_cluster</code>.</p>
+      </div>
+    </div>
+    <p style="margin-top:22px"><strong>Latency is not a problem</strong> because we do
+      not need per-frame understanding: one call per decision point, 10–30 per question
+      against a 10-minute budget. Online APIs are explicitly allowed — but the token
+      ships with the submission, so it must be revocable and quota-capped.</p>
+    <p><strong>A fallback is mandatory, not optional.</strong> The API sits on the
+      critical path on someone else's machine; a timeout must degrade to geometry, because
+      instruction following is scored on the trajectory the robot actually drove and a
+      crash scores zero.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">What we need</p>
+    <h2>Next</h2>
+    <ul class="tight">
+      <li><strong>Run the cheap hypothesis first.</strong>
+        <code style="font-family:var(--mono)">scripts/narrow_vocab_probe.py</code> is
+        written and needs no API — it re-runs detection with the question's own words.
+        If it reaches 85%, the VLM's remaining value is compositional disambiguation only.</li>
+      <li><strong>Then the grounding test</strong>, per
+        <code style="font-family:var(--mono)">docs/vlm_grounding_test.md</code>.</li>
+      <li><strong>Needed to start:</strong> xiaohei1 up (its public IP changes on every
+        restart), and a revocable Gemini key in
+        <code style="font-family:var(--mono)">.env</code>.</li>
+      <li><strong>Open with the organisers:</strong> “no exploration in advance” — after
+        the question is published, may the robot move to observe before executing, and
+        does that motion count toward the scored trajectory? It decides whether
+        exploration must satisfy constraints as it goes.</li>
+    </ul>
+    <p class="foot">One caveat to carry: every benchmark number here was measured on
+      complete coverage tours. The challenge restarts the container for each question
+      and allows ten minutes from scratch, so absolute values will be lower in the real
+      setting. The comparisons between methods still hold; the absolute numbers do not
+      transfer.</p>
+  </div>
+</section>
+
+</main>
+
+<div id="hud" aria-live="polite">01 / 12</div>
+
+<script>
+  (function () {
+    var deck = document.getElementById('deck');
+    var hud = document.getElementById('hud');
+    var slides = Array.prototype.slice.call(deck.querySelectorAll('section'));
+
+    function current() {
+      var best = 0, bestD = Infinity;
+      for (var i = 0; i < slides.length; i++) {
+        var d = Math.abs(slides[i].getBoundingClientRect().top);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function sync() {
+      hud.textContent = pad(current() + 1) + ' / ' + pad(slides.length);
+    }
+    deck.addEventListener('scroll', function () {
+      window.requestAnimationFrame(sync);
+    }, { passive: true });
+    sync();
+
+    function go(delta) {
+      var i = Math.min(Math.max(current() + delta, 0), slides.length - 1);
+      slides[i].scrollIntoView({ block: 'start' });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+        go(1); e.preventDefault();
+      } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+        go(-1); e.preventDefault();
+      } else if (e.key === 'Home') {
+        slides[0].scrollIntoView({ block: 'start' }); e.preventDefault();
+      } else if (e.key === 'End') {
+        slides[slides.length - 1].scrollIntoView({ block: 'start' }); e.preventDefault();
+      }
+    });
+    deck.focus();
+  })();
+</script>

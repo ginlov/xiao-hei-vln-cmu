@@ -33,6 +33,7 @@ from xiao_hei_vln.messages.question import QuestionType
 from xiao_hei_vln.perception.client import HTTPPerceptionClient
 from xiao_hei_vln.perception.lifter import PointLifter
 from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
+from xiao_hei_vln.perception.size_prior import size_for
 from xiao_hei_vln.perception.vocab import Vocabulary
 from xiao_hei_vln.scene import ObjectObservation
 
@@ -47,7 +48,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-DEFAULT_SCORE_THRESHOLD = 0.25
+# 0.25 was set when the class prior held 28 labels. It now holds 110, so the
+# detector scores four times as many phrases against every region and the weak
+# tail is mostly labels that never fire confidently at all — `photo` lands
+# below 0.35 in 98% of its detections. Swept offline over 3 recorded scenes,
+# 0.35 cut the object count by a third and the counting error by 26% while
+# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325). Raising it further
+# trades recall for precision, which needs end-to-end scoring to judge.
+DEFAULT_SCORE_THRESHOLD = 0.35
 DEFAULT_IOU_THRESHOLD = 0.5
 
 
@@ -286,14 +294,28 @@ class PerceptionResponder:
         if not detections:
             return
 
-        # Densify the sparse single sweep with a rolling window of
-        # keyframes (map-frame, so directly concatenable) before lifting —
-        # a lone sweep leaves small objects below the lifter's min_inliers
-        # gate. Returns the same cloud on near-stationary ticks.
-        scan_points = self._scan_accum.update(
-            snapshot.registered_scan.points,
-            snapshot.pose.position,
-            snapshot.pose.orientation,
+        # Project with the pose as it was when this *image* was captured, not
+        # the newest one. The camera lags the 200 Hz odometry, so the two
+        # differ by however far the robot moved in between — and that offset
+        # lands directly on every lifted point. Falls back to the current pose
+        # when no interpolated one is available (no pose history yet, or a
+        # caller that builds VLMInput by hand).
+        lift_pose = snapshot.image_pose or snapshot.pose
+
+        # Optionally densify the sweep with a rolling window of keyframes.
+        # Off by default: measured on two scenes, accumulation costs more than
+        # it gives once the lifter clusters by depth — it mixes returns from
+        # viewpoints metres apart into one cloud, which inflates every box
+        # (livingroom_3 size error 2.28x accumulated vs 1.28x from the single
+        # sweep; chinese_room 1.52x vs 0.87x) and drops precision.
+        scan_points = (
+            self._scan_accum.update(
+                snapshot.registered_scan.points,
+                lift_pose.position,
+                lift_pose.orientation,
+            )
+            if self._scan_accum is not None
+            else snapshot.registered_scan.points
         )
         # The pose here is already matched to the image's stamp by LatestCache
         # (TASK 27), so it is the pose the camera had when the frame was taken —
@@ -302,8 +324,8 @@ class PerceptionResponder:
             result = self._lifter.lift(
                 mask=det.mask,
                 scan_points_map=scan_points,
-                pose_position=snapshot.pose.position,
-                pose_orientation=snapshot.pose.orientation,
+                pose_position=lift_pose.position,
+                pose_orientation=lift_pose.orientation,
             )
             if result.position is None:
                 continue
@@ -421,20 +443,31 @@ def _xy_dist(a: Vector3, b: Vector3) -> float:
 
 
 def _size_from_obs(obs: ObjectObservation) -> Vector3:
-    """Derive a (size_x, size_y, size_z) from the observation's 3D AABB.
+    """Best available (size_x, size_y, size_z) for a detected object.
 
-    Returns a zero-vector when no bbox is available — that's the
-    typical case for the perception path today (we'd need to also
-    project the mask through the LiDAR scan and fit a 3D extent,
-    which is a Phase 4 tuning item).
+    The measured box wins whenever we have one. That is not obvious — a
+    partial LiDAR view only covers the faces we saw — but it is what the
+    numbers say: once the box comes from gated percentiles rather than raw
+    min/max, its median error against ground truth is 1.27x, and per-instance
+    measurement beats a class median (mean IoU 0.150 measured vs 0.109 with
+    the prior, on the livingroom_3 corpus). The prior was a good idea when
+    boxes were 6.8x oversized; it is a regression now.
+
+    The class prior (:mod:`xiao_hei_vln.perception.size_prior`) stays as the
+    fallback for detections that never got a box at all — the alternative
+    there is a zero-volume box, which scores exactly nothing.
     """
-    if obs.bbox_min is None or obs.bbox_max is None:
-        return Vector3(x=0.0, y=0.0, z=0.0)
-    return Vector3(
-        x=abs(obs.bbox_max.x - obs.bbox_min.x),
-        y=abs(obs.bbox_max.y - obs.bbox_min.y),
-        z=abs(obs.bbox_max.z - obs.bbox_min.z),
-    )
+    if obs.bbox_min is not None and obs.bbox_max is not None:
+        return Vector3(
+            x=abs(obs.bbox_max.x - obs.bbox_min.x),
+            y=abs(obs.bbox_max.y - obs.bbox_min.y),
+            z=abs(obs.bbox_max.z - obs.bbox_min.z),
+        )
+
+    prior = size_for(obs.label)
+    if prior is not None:
+        return Vector3(x=prior[0], y=prior[1], z=prior[2])
+    return Vector3(x=0.0, y=0.0, z=0.0)
 
 
 def _image_frame_to_bgr(image_frame) -> np.ndarray:  # type: ignore[name-defined]

@@ -1,0 +1,718 @@
+<title>Drive strategy — the VLM proposes, geometry decides</title>
+
+<style>
+  :root {
+    --ground:#f6f7f9; --ground-2:#eceef2; --card:#ffffff;
+    --ink:#171c24; --ink-2:#4a5462; --ink-3:#79838f;
+    --rule:#d8dce3;
+    --measured:#0d7f8b; --truth:#a8641a; --retired:#9d4250;
+    --measured-bg:#e2f2f4; --truth-bg:#f7eddf; --retired-bg:#f7e6e8;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#0e131a; --ground-2:#151b24; --card:#131923;
+      --ink:#e8ecf2; --ink-2:#a7b1bf; --ink-3:#6f7a88;
+      --rule:#262e39;
+      --measured:#35d0d8; --truth:#ff9f43; --retired:#e2717f;
+      --measured-bg:#10262b; --truth-bg:#2a1f12; --retired-bg:#2a1519;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0e131a; --ground-2:#151b24; --card:#131923;
+    --ink:#e8ecf2; --ink-2:#a7b1bf; --ink-3:#6f7a88;
+    --rule:#262e39;
+    --measured:#35d0d8; --truth:#ff9f43; --retired:#e2717f;
+    --measured-bg:#10262b; --truth-bg:#2a1f12; --retired-bg:#2a1519;
+  }
+  :root[data-theme="light"] {
+    --ground:#f6f7f9; --ground-2:#eceef2; --card:#ffffff;
+    --ink:#171c24; --ink-2:#4a5462; --ink-3:#79838f;
+    --rule:#d8dce3;
+    --measured:#0d7f8b; --truth:#a8641a; --retired:#9d4250;
+    --measured-bg:#e2f2f4; --truth-bg:#f7eddf; --retired-bg:#f7e6e8;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--sans); }
+
+  #deck { height:100vh; overflow-y:scroll; scroll-snap-type:y mandatory; scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce) { #deck { scroll-behavior:auto; } }
+
+  section {
+    min-height:100vh; scroll-snap-align:start; scroll-snap-stop:always;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:clamp(28px,5vw,72px) clamp(20px,6vw,96px) clamp(64px,8vh,96px);
+    border-bottom:1px solid var(--rule);
+  }
+  .wrap { width:100%; max-width:1080px; margin:0 auto; }
+
+  .eyebrow {
+    font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--ink-3); margin:0 0 18px;
+  }
+  h1 { font-size:clamp(34px,6.4vw,68px); line-height:1.02; letter-spacing:-.03em;
+       font-weight:700; margin:0 0 22px; text-wrap:balance; }
+  h2 { font-size:clamp(26px,3.9vw,44px); line-height:1.08; letter-spacing:-.022em;
+       font-weight:680; margin:0 0 20px; text-wrap:balance; }
+  p  { font-size:clamp(15px,1.45vw,18px); line-height:1.6; color:var(--ink-2);
+       max-width:64ch; margin:0 0 14px; }
+  p strong { color:var(--ink); font-weight:640; }
+  .lede { font-size:clamp(17px,1.85vw,22px); color:var(--ink); max-width:56ch; }
+  code { font-family:var(--mono); font-size:.92em; }
+
+  .grid { display:grid; gap:clamp(12px,1.6vw,20px); }
+  .g3 { grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); }
+  .g2 { grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:10px;
+          padding:clamp(16px,2vw,24px); }
+  .card h3 { font-size:15px; margin:0 0 10px; letter-spacing:-.01em; }
+  .card p { font-size:14.5px; margin:0; }
+
+  .stat { font-family:var(--mono); font-variant-numeric:tabular-nums;
+          font-size:clamp(30px,4.6vw,52px); line-height:1; letter-spacing:-.03em;
+          font-weight:600; display:block; margin-bottom:8px; }
+  .stat.m { color:var(--measured); }
+  .stat.t { color:var(--truth); }
+  .stat.r { color:var(--retired); }
+  .stat-label { font-family:var(--mono); font-size:11.5px; letter-spacing:.06em;
+                color:var(--ink-3); text-transform:uppercase; }
+
+  .tablewrap { overflow-x:auto; margin:6px 0 4px; }
+  table { border-collapse:collapse; width:100%; font-size:clamp(13px,1.35vw,15.5px); }
+  th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--rule); }
+  th { font-family:var(--mono); font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+       color:var(--ink-3); font-weight:500; }
+  td.num, th.num { text-align:right; font-family:var(--mono);
+                   font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tr.hi td { background:var(--measured-bg); }
+  tr.hi td:first-child { font-weight:640; }
+  td .em { color:var(--measured); font-weight:640; }
+  td .tr { color:var(--truth); font-weight:640; }
+  td .no { color:var(--retired); font-weight:640; }
+
+  /* Pseudocode. The palette does the arguing: teal is what the model decides,
+     amber is what geometry decides, and the eye can see how little is teal. */
+  .code { font-family:var(--mono); font-size:clamp(11px,1.12vw,13.5px); line-height:1.72;
+          background:var(--card); border:1px solid var(--rule); border-radius:10px;
+          padding:clamp(13px,1.8vw,22px); overflow-x:auto; white-space:pre;
+          color:var(--ink-2); margin:2px 0 14px; }
+  .code b  { color:var(--ink); font-weight:660; }
+  .code .v { color:var(--measured); font-weight:620; }
+  .code .g { color:var(--truth); font-weight:620; }
+  .code .x { color:var(--retired); font-weight:620; }
+  .code .c { color:var(--ink-3); }
+
+  .legend { display:flex; flex-wrap:wrap; gap:14px; align-items:center;
+            font-family:var(--mono); font-size:11.5px; letter-spacing:.06em;
+            text-transform:uppercase; color:var(--ink-3); margin:0 0 14px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .legend i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+
+  .killed { display:flex; flex-direction:column; gap:11px; }
+  .kill { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);
+          gap:clamp(10px,1.6vw,22px); align-items:baseline;
+          padding:12px 14px; border-radius:8px; background:var(--retired-bg);
+          border:1px solid color-mix(in srgb, var(--retired) 22%, transparent); }
+  .kill .claim { color:var(--retired); text-decoration:line-through;
+                 text-decoration-thickness:1.5px; font-size:15px; }
+  .kill .evidence { font-family:var(--mono); font-size:13px; color:var(--ink-2);
+                    font-variant-numeric:tabular-nums; }
+  @media (max-width:640px) { .kill { grid-template-columns:1fr; gap:4px; } }
+
+  .flow { display:flex; flex-wrap:wrap; gap:10px; align-items:stretch; margin:4px 0 16px; }
+  .step { flex:1 1 180px; background:var(--card); border:1px solid var(--rule);
+          border-radius:9px; padding:14px 16px; }
+  .step .n { font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+             color:var(--ink-3); display:block; margin-bottom:7px; }
+  .step .t { font-size:15px; font-weight:620; display:block; margin-bottom:5px; }
+  .step .d { font-size:13.5px; color:var(--ink-2); line-height:1.5; }
+  .step.vlm { border-color:color-mix(in srgb, var(--measured) 45%, var(--rule)); }
+  .step.geo { border-color:color-mix(in srgb, var(--truth) 45%, var(--rule)); }
+
+  .tag { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em;
+         text-transform:uppercase; padding:3px 7px; border-radius:4px; }
+  .tag.vlm { background:var(--measured-bg); color:var(--measured); }
+  .tag.geo { background:var(--truth-bg); color:var(--truth); }
+
+  .rule-row { display:grid; grid-template-columns:auto 1fr; gap:14px;
+              padding:11px 0; border-bottom:1px solid var(--rule);
+              font-size:15px; align-items:baseline; }
+  .rule-row:last-child { border-bottom:0; }
+  .rule-row .cond { font-family:var(--mono); font-size:13.5px; font-weight:600;
+                    color:var(--measured); white-space:nowrap;
+                    font-variant-numeric:tabular-nums; }
+
+  ul.tight { margin:0 0 14px; padding-left:20px; }
+  ul.tight li { font-size:clamp(14.5px,1.4vw,17px); line-height:1.58;
+                color:var(--ink-2); margin-bottom:9px; max-width:62ch; }
+  ul.tight li strong { color:var(--ink); font-weight:640; }
+
+  .foot { margin-top:22px; font-family:var(--mono); font-size:12.5px;
+          color:var(--ink-3); line-height:1.55; max-width:70ch; }
+
+  #hud { position:fixed; right:16px; bottom:14px; z-index:9;
+         font-family:var(--mono); font-size:11.5px; letter-spacing:.08em;
+         color:var(--ink-3); background:color-mix(in srgb, var(--ground) 86%, transparent);
+         border:1px solid var(--rule); border-radius:20px; padding:6px 13px;
+         font-variant-numeric:tabular-nums; }
+  :focus-visible { outline:2px solid var(--measured); outline-offset:3px; }
+</style>
+
+<main id="deck" tabindex="-1">
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Team Xiao Hei · CMU VLN Challenge 2026 · drive loop</p>
+    <h1>The VLM proposes.<br>Geometry decides.</h1>
+    <p class="lede">The model is asked only what it is good at — which pixels are
+      the thing the sentence names. Every number that reaches the robot comes from
+      the lidar, the pose, or arithmetic on the two.</p>
+    <p class="foot">Sequel to the perception deck. That one proposed this
+      architecture and fixed the criteria in advance; this one reports what was
+      built, what it measures, and where it stops. Every number is from our own
+      seven-scene corpus or from a live drive.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The rule</p>
+    <h2>Both times we broke it, the data said so within one run</h2>
+    <div class="killed">
+      <div class="kill">
+        <span class="claim">Let the VLM judge whether the scanner can be trusted</span>
+        <span class="evidence">same_space: true for all 52 sightings — including
+          chairs on the far side of a glass door</span></div>
+      <div class="kill">
+        <span class="claim">Let the VLM estimate distance by perspective</span>
+        <span class="evidence">systematically 1.81× long; 21% within 1.5×</span></div>
+    </div>
+    <p style="margin-top:22px">Both failures are the same shape. Glass, open
+      structure and an occluder in front all surface as <em>one</em> contradiction —
+      between the measured range and the size the object would have to be at that
+      range. <strong>That contradiction is a multiplication we can do ourselves.</strong>
+      Asking a model to notice it introduces judgment where arithmetic suffices.</p>
+    <p class="foot">Both were pre-registered proposals in TASK 26, and one of them
+      was the option this project's own recommendation had ranked most feasible.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Does it find the thing</p>
+    <h2>One glance from the spawn point beats a full tour</h2>
+    <div class="grid g3">
+      <div class="card"><span class="stat m">72.2%</span>
+        <span class="stat-label">VLM · one frame · start pose</span></div>
+      <div class="card"><span class="stat">48.3%</span>
+        <span class="stat-label">our object map · same frame</span></div>
+      <div class="card"><span class="stat t">67%</span>
+        <span class="stat-label">our object map · complete tour</span></div>
+    </div>
+    <p style="margin-top:22px">A fair comparison: both are RGB-only recognition
+      feeding the <em>identical</em> lidar lift. The only difference is
+      <strong>when vocabulary is committed</strong> — YOLO-World needs a class list
+      before it sees the question; the VLM reads the phrase and the image together.</p>
+    <div class="grid g3" style="margin-top:6px">
+      <div class="card"><span class="stat m">0.11 m</span>
+        <span class="stat-label">median error of hits</span></div>
+      <div class="card"><span class="stat">0.52 m</span>
+        <span class="stat-label">p90 · inside the budget</span></div>
+      <div class="card"><span class="stat t">0.58 m</span>
+        <span class="stat-label">how close the reference path passes</span></div>
+    </div>
+    <p class="foot">54 unique (scene, phrase) pairs · hit = lifted position within
+      1.0 m of any ground-truth instance · claude-opus-5 · scripts/vlm_sweep.py</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Read the failures, not the error column</p>
+    <h2>Nine of the thirteen misses are ranging, not recognition</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Outcome</th><th class="num">n</th><th class="num">share</th>
+          <th>what it looks like</th></tr></thead>
+        <tbody>
+          <tr class="hi"><td>localised within 1.0 m</td><td class="num">39</td>
+            <td class="num"><span class="em">72.2%</span></td><td>—</td></tr>
+          <tr><td>declined outright</td><td class="num">2</td><td class="num">3.7%</td>
+            <td>target genuinely not visible from the spawn point</td></tr>
+          <tr><td>no lidar return</td><td class="num">4</td><td class="num">7.4%</td>
+            <td>ground truth <em>inside</em> the box; the cone is empty even at 14°</td></tr>
+          <tr><td>ray overshot</td><td class="num">3</td><td class="num">5.6%</td>
+            <td>open stair, pendant lamp — the beam finds the far wall</td></tr>
+          <tr><td>ray stopped short</td><td class="num">2</td><td class="num">3.7%</td>
+            <td>box correct, the beam measures an occluder in front</td></tr>
+          <tr><td>wrong instance</td><td class="num">2</td><td class="num">3.7%</td>
+            <td>balcony chairs through glass; a side table read as the tray's</td></tr>
+          <tr><td>truth not in this face</td><td class="num">2</td><td class="num">3.7%</td>
+            <td>the elephant figurine answered for the horse</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">Counting only genuine misidentification gives
+      <strong>4 / 54 = 7.4%</strong>. Recognition is not the weak part. The ranging
+      is — which is why most of the machinery below exists to decide
+      <strong>when not to believe a range</strong>.</p>
+    <p class="foot">Diagnosis is from reading annotated panels — the model's box in
+      yellow, ground truth projected into the same face in cyan —
+      not from the error column. scripts/vlm_fp_report.py</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Where it is weak</p>
+    <h2>The worst scene has no recognition failure in it</h2>
+    <div class="grid g2">
+      <div class="card">
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Scene</th><th class="num">hits</th><th class="num"></th></tr></thead>
+            <tbody>
+              <tr><td>office_2</td><td class="num">8 / 9</td><td class="num">88.9%</td></tr>
+              <tr><td>japanese_room</td><td class="num">7 / 8</td><td class="num">87.5%</td></tr>
+              <tr><td>office_1</td><td class="num">7 / 8</td><td class="num">87.5%</td></tr>
+              <tr><td>arabic_room</td><td class="num">5 / 7</td><td class="num">71.4%</td></tr>
+              <tr><td>chinese_room</td><td class="num">6 / 9</td><td class="num">66.7%</td></tr>
+              <tr><td>livingroom_3</td><td class="num">4 / 7</td><td class="num">57.1%</td></tr>
+              <tr><td>loft</td><td class="num"><span class="no">2 / 6</span></td>
+                  <td class="num"><span class="no">33.3%</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>loft, all four failures named</h3>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>phrase</th><th>what happened</th></tr></thead>
+            <tbody>
+              <tr><td><code>tv remote</code></td><td>declined, conf 0.03 — 6.4 m away, a few pixels wide</td></tr>
+              <tr><td><code>sphere decoration</code></td><td>declined, conf 0.20 — 7.1 m away</td></tr>
+              <tr><td><code>cabinet</code></td><td>found at 1.4 m, <span class="no">no lidar return</span></td></tr>
+              <tr><td><code>stairs</code></td><td>found, conf 0.94, lifted <span class="no">5.28 m</span> against a true 1.86 m</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:20px">Two declines on small distant targets and two ranging
+      failures on objects the model had correctly identified. <strong>Both kinds are
+      exactly what the loop's step-and-re-observe fallback exists for — and neither
+      is visible in a one-frame test.</strong></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Cadence</p>
+    <h2>Two loops, not one</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Loop</th><th>Rate</th><th>Job</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag geo">Geometry</span></td><td>control rate</td>
+            <td>lift, gate, choose a waypoint, watch for arrival</td></tr>
+          <tr><td><span class="tag vlm">VLM</span></td>
+            <td>on events — start, arrival, end of an exploration leg</td>
+            <td>which pixels are the target</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid g3" style="margin-top:22px">
+      <div class="card"><span class="stat">$0.0265</span>
+        <span class="stat-label">per grounding call · 2 990 in / 460 out</span></div>
+      <div class="card"><span class="stat">~$4</span>
+        <span class="stat-label">a full competition run · 15 questions</span></div>
+      <div class="card"><span class="stat t">1–3 s</span>
+        <span class="stat-label">the actual constraint</span></div>
+    </div>
+    <p style="margin-top:22px">A grounding call costs seconds; the reference paths
+      are ~10 m of driving. So the model cannot sit in the control loop.
+      <strong>Cost is not the constraint here — latency is.</strong></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The loop</p>
+    <h2>One model call per observation, and nothing else</h2>
+    <p class="legend">
+      <span><i style="background:var(--measured)"></i> VLM decides</span>
+      <span><i style="background:var(--truth)"></i> geometry decides</span>
+    </p>
+    <div class="code"><span class="c"># repeat up to 6 times</span>
+<b>equirect, scan, terrain, pose</b> ← <span class="g">capture</span>()          <span class="c">1920×640 · /registered_scan
+                                              /terrain_map · /state_estimation</span>
+<b>faces</b> ← <span class="g">unwrap</span>(equirect)                    <span class="c">4 × 640² gnomonic, FOV 100°</span>
+
+<b>reply</b> ← <span class="v">VLM</span>(prompt(phrase), faces, previous = last_crop)
+
+<b>if not</b> reply.visible:
+    θ ← <span class="g">yaw</span>(pose) − radians(<span class="v">reply.explore.heading_deg</span>)
+    <span class="g">drive</span>(pose.xy + 0.8 · [cos θ, sin θ]);  <b>continue</b>
+
+<b>box, face</b> ← <span class="v">reply.box_2d</span>, <span class="v">reply.image_index</span>
+<b>if</b> <span class="v">reply.relation</span> <b>in</b> {closest_to, farthest_from, between}:
+    box, face ← <span class="g">resolve_relation</span>(reply, scan, pose)   <span class="c">§ next slide</span>
+
+<b>wp</b>   ← <span class="g">next_waypoint</span>(box, face, scan, pose)
+<b>goal</b> ← <span class="g">nearest point the converter will accept</span>, toward the target
+<b>if</b> <span class="g">predicted_movement</span>(goal) &lt; 0.25 m:  <b>stop</b>  <span class="c">no drive, no call</span>
+
+<b>result</b> ← <span class="g">drive</span>(goal)
+<b>if</b> wp.committed <b>and</b> (result.gap ≤ 0.35 <b>or</b> result.moved &lt; 0.25): <b>arrived</b></div>
+    <p>The model is consulted once per observation and answers one question. Every
+      branch, threshold and metre below that line is geometry.</p>
+    <p class="foot">scripts/approach_loop.py · MAX_STEPS 6 · TURN_STEP 0.8 m ·
+      PROGRESS 0.25 m · ARRIVE_TOL 0.35 m, just over the stack's waypointXYRadius 0.3</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The dominant phrasing</p>
+    <h2>Asked which lantern was closest to the fan, it returned the fan</h2>
+    <p>Comparative phrases — <em>closest, nearest, farthest, between</em> — are
+      <strong>47–60%</strong> of the official question set. Asked for the winner
+      directly, the model answered the first live relational phrase with the anchor.
+      So the prompt asks it to enumerate instead, and geometry compares.</p>
+    <div class="code"><b>candidates</b> ← [<span class="g">lift</span>(b) <b>for</b> b <b>in</b> <span class="v">reply.candidates</span>]   <span class="c">≥ 2 needed</span>
+<b>anchors</b>    ← [<span class="g">lift</span>(b) <b>for</b> b <b>in</b> <span class="v">reply.anchors</span>]      <span class="c">≥ 1 needed</span>
+<b>if</b> too few of either: <b>fall back</b> to the model's own pick  <span class="c">the only answer available</span>
+
+<span class="g">score</span>(c) = Σ |c − a| over anchors   <b>if</b> relation is "between"
+         = |c − anchors[0]|         <b>otherwise</b>
+
+<b>return</b> <span class="g">argmin</span> score        <span class="c">argmax for "farthest_from"</span></div>
+    <div class="grid g3" style="margin-top:6px">
+      <div class="card"><span class="stat r">22.5°</span>
+        <span class="stat-label">bearing error · asking for the winner</span></div>
+      <div class="card"><span class="stat m">1.5°</span>
+        <span class="stat-label">bearing error · measuring it</span></div>
+      <div class="card"><span class="stat">0.61 m</span>
+        <span class="stat-label">measured lantern→fan · truth 0.63 m</span></div>
+    </div>
+    <p class="foot">The next-nearest candidate measured 3.97 m, so the comparison had
+      a wide margin — as it usually will, since these phrases exist to disambiguate
+      objects a person can tell apart.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Box → waypoint</p>
+    <h2>Never guess a range you do not have</h2>
+    <div class="code"><b>d_cam</b> ← <span class="g">direction of the box centre</span>              <span class="c">gnomonic LUT</span>
+<b>d_map</b> ← <span class="g">camera → map rotation</span> applied to d_cam
+<b>if</b> d_map is vertical: <b>return</b> "target is overhead"   <span class="c">a ceiling lamp</span>
+
+<b>(w°, h°)</b> ← <span class="g">true angular size of the box</span>          <span class="c">arccos between edge
+                                                directions — not px/size × FOV,
+                                                which the projection makes wrong</span>
+<b>cone</b>  ← clip(min(w°, h°) / 4, 1°, 5°)
+<b>lift</b>  ← <span class="g">median depth of scan returns in that cone</span>
+
+<b>az, el</b> ← <span class="g">bearing of d_cam in the sensor frame</span>
+<b>blind</b>  ← el &lt; <span class="g">elevation_floor</span>(az)
+
+<b>if</b> lift <b>and not</b> blind <b>and</b> <span class="g">size_gate</span>(lift, h°):
+    <b>return</b> <b>DESTINATION</b> at pose.xy + d_map · lift
+
+<span class="c"># Step into space the scan says is free and look again;
+# the lift gets easier as 1/r².</span>
+<b>free</b> ← <span class="g">distance to the first obstacle-band return within ±0.35 m</span>
+<b>return</b> <b>STEP</b> at pose.xy + d_map · min(2.0, free − standoff)</div>
+    <p class="foot">scripts/vlm_approach.py · the cone widens until it has enough
+      returns to take a median of, and reports which width it used</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">When not to believe a range · 1</p>
+    <h2>The lidar is tilted forward, so it is blind behind and below</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>azimuth from dead ahead</th><th class="num">7°</th><th class="num">52°</th>
+          <th class="num">82°</th><th class="num">112°</th><th class="num">142°</th><th class="num">172°</th></tr></thead>
+        <tbody>
+          <tr class="hi"><td>lowest elevation returned</td><td class="num">−32°</td><td class="num">−26°</td>
+            <td class="num">−16°</td><td class="num">−5°</td><td class="num">+4°</td>
+            <td class="num"><span class="em">+9°</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">Measured as the 0.5th percentile of return elevation
+      per 15° azimuth bin across seven scenes, repeating to within 1–3°. This is the
+      <strong>entire</strong> explanation for “no lidar return”: all four such cases
+      point below the floor at their bearing. <strong>Four for four.</strong></p>
+    <p><strong>A blind bearing does not merely lose the lift — it can return a
+      confident wrong one.</strong> The cone widens upward until it finds something,
+      and what it finds is the wall above the object. On the first live run a target
+      at −120° lifted to <span class="stat r" style="font-size:1em;display:inline">4.70 m</span>
+      against a true ~2.9 m, with an implied height of 0.62 m that the size gate
+      happily accepted. So a blind lift is never committed.</p>
+    <p>The cone is body-fixed, so driving one leg swings the bearing toward 0° where
+      the floor is −32°. Observed live twice: <strong>−120° → +23°</strong> and
+      <strong>−146° → +50°</strong>. The step is not a concession; it is what makes
+      the next lift sound.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">When not to believe a range · 2</p>
+    <h2>One multiplication removes half the false positives</h2>
+    <div class="code"><span class="g">size_gate</span>(range, h°):   0.15 m  ≤  2 · range · tan(h° / 2)  ≤  4.0 m</div>
+    <div class="tablewrap" style="margin-top:16px">
+      <table>
+        <thead><tr><th>Gate</th><th class="num">hits</th><th class="num">false positives</th><th class="num">cost</th></tr></thead>
+        <tbody>
+          <tr><td>none</td><td class="num">72.2%</td><td class="num">24.1%</td><td class="num">—</td></tr>
+          <tr><td><strong>A</strong> — decline when the cone is empty</td>
+            <td class="num">72.2%</td><td class="num">16.7%</td><td class="num">zero</td></tr>
+          <tr class="hi"><td><strong>A + B</strong> — plus the size band</td>
+            <td class="num"><span class="em">70.4%</span></td>
+            <td class="num"><span class="em">11.1%</span></td><td class="num">1 hit</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px"><strong>Gate A is free</strong> — no threshold, no
+      model. Refusing to answer without depth data is strictly better than answering
+      from none.</p>
+    <div class="killed" style="margin-top:14px">
+      <div class="kill">
+        <span class="claim">Replace the crude band with per-class size priors</span>
+        <span class="evidence">loses at every tolerance — 68.5% / 11.1% against
+          70.4% / 11.1%</span></div>
+    </div>
+    <p class="foot">Two structural reasons: 12 of 52 phrases have no prior and fall
+      through to the band anyway, and every surviving false positive is a
+      <em>wrong instance</em> whose size matches the right one. Kept behind a flag
+      rather than deleted — the argument was sound, only the data refutes it.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The platform</p>
+    <h2>The converter does not clamp. It discards.</h2>
+    <p><code>/way_point_with_heading</code> is not a position command. A waypoint
+      inside the obstacle inflation is not moved along our approach until it is
+      legal — it is thrown away, and a global re-minimisation picks a replacement
+      that owes nothing to the direction we meant. Asking for a point
+      <strong>0.19 m</strong> from a lantern sent the robot <strong>1.08 m to the
+      far side of it</strong>.</p>
+    <div class="code"><b>travArea</b>     ← <span class="g">/terrain_map</span> points with height-above-ground &lt; 0.05 m
+<b>obstacleArea</b> ← the rest                            <span class="c">both voxel 0.05</span>
+<b>legal</b>(p)     ← no obstacleArea point within 0.75 m of p
+
+<span class="g">snap</span>(waypoint, vehicle):
+    candidates ← travArea within 5.0 m <b>of the vehicle</b>
+    <b>return</b> argmin over <b>legal</b> candidates of
+               |p − waypoint| + <b>0.5</b> · |p − vehicle|
+
+<span class="g">settle</span>(waypoint, vehicle):     <span class="c"># the C++ re-snaps at 10 Hz and the vehicle
+</span>    v ← vehicle                <span class="c"># term re-centres as the robot moves, so the
+</span>    <b>while</b> |snap(waypoint, v) − v| ≥ 0.3:   <span class="c"># resting place is the fixed
+</span>        v ← v stepped toward snap(waypoint, v)  <span class="c"># point, not the first snap</span>
+    <b>return</b> v</div>
+    <p>So instead of publishing <code>range − standoff</code> and discovering the
+      result, publish <strong>the legal point nearest the target</strong> — a local
+      minimum of the converter's own score, republished as itself.</p>
+    <p class="foot">Every constant read off waypoint_converter.launch; nothing fitted.
+      <code>/terrain_map</code> is on the challenge's allowed-topic list.
+      scripts/waypoint_converter_model.py</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Does the model of the platform hold</p>
+    <h2>Predicted to within 0.1 m, three times</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Drive</th><th class="num">predicted</th><th class="num">actual</th><th class="num">error</th></tr></thead>
+        <tbody>
+          <tr><td>recorded run, waypoint (+1.10, −0.44) from origin</td>
+            <td class="num">(+0.93, +0.59)</td><td class="num">(+1.02, +0.64)</td>
+            <td class="num">0.104 m</td></tr>
+          <tr><td>the same drive replayed live</td>
+            <td class="num">(+0.93, +0.59)</td><td class="num">(+1.01, +0.61)</td>
+            <td class="num">0.081 m</td></tr>
+          <tr class="hi"><td>“you will move 0.05 m”</td><td class="num">0.05 m</td>
+            <td class="num">0.057 m</td><td class="num"><span class="em">—</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">Rewriting the loop around the prediction, on the same
+      question and the same start pose:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Run</th><th class="num">drive legs</th><th>ended</th>
+          <th class="num">final distance</th></tr></thead>
+        <tbody>
+          <tr><td>publish range − standoff</td><td class="num">2</td>
+            <td>stopped by hand</td><td class="num">1.14 m</td></tr>
+          <tr><td>predict, but still aim the old way</td><td class="num">2</td>
+            <td><span class="no">did not arrive</span></td><td class="num">1.06 m</td></tr>
+          <tr class="hi"><td>predict <em>and</em> aim at a legal point</td>
+            <td class="num"><span class="em">1</span></td>
+            <td><span class="em">ARRIVED</span></td><td class="num">1.06 m</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">The distance is identical, because that lantern sits
+      in a corner the platform will not enter. What changed is that the robot now
+      goes where it asked to go in one leg, and the loop stops on a fact about the
+      terrain rather than on a stall timeout.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The uncomfortable finding</p>
+    <h2>The bar we set ourselves is not reachable through this interface</h2>
+    <p><code>STANDOFF_M = 0.6</code> came from the median distance the reference
+      trajectories keep from the objects they name. We treated it as a target we
+      were falling short of. It is not reachable at all:</p>
+    <div class="grid g2">
+      <div class="card"><span class="stat r">42%</span>
+        <span class="stat-label">of the reference trajectory sits inside
+          obstacleDisThre</span>
+        <p style="margin-top:12px">Its closest approach has 0.36 m of clearance
+          against a required 0.75. <strong>The converter would reject half of the
+          organisers' own demonstration.</strong></p></div>
+      <div class="card"><span class="stat t">1.16 m</span>
+        <span class="stat-label">nearest legal standing point, japanese_room lantern</span>
+        <p style="margin-top:12px">Floor cells exist right up to it — 97 within
+          0.5 m of the box — but the best clearance any of them has is 0.53 m.
+          Wall, lantern and potted plant inflate into each other and seal the corner.</p></div>
+    </div>
+    <p style="margin-top:22px"><strong>Driving closer makes it worse.</strong>
+      Re-measured after one leg with 3× the terrain observed, the nearest legal stand
+      recedes from 1.16 m to 1.32 m: newly seen ground is mostly newly seen obstacle.
+      Where the robot already stands beats anything a further waypoint achieves.</p>
+    <p class="foot">Whether “go near X” scores at the ~1 m the platform allows for
+      objects in corners is unknown — the README publishes no distance threshold,
+      only “whether it follows the path constraints”. Worth asking the organisers,
+      because it is not a question our code can answer.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Compliance</p>
+    <h2>The arrival signal we were using is not ours to use</h2>
+    <p>The autonomy stack publishes <code>/way_point_reached</code>, and it is not
+      among the five topics the README allows an AI module to read at test time.
+      Both halves of the replacement come from <code>/state_estimation</code>.</p>
+    <div style="margin-top:8px;background:var(--card);border:1px solid var(--rule);
+                border-radius:10px;padding:clamp(14px,2vw,22px)">
+      <div class="rule-row"><span class="cond">gap ≤ 0.35 m</span>
+        <span>we got where we asked — our own distance to our own waypoint</span></div>
+      <div class="rule-row"><span class="cond">no motion &gt; 0.05 m for 4 s</span>
+        <span>the stack will not go closer</span></div>
+    </div>
+    <p style="margin-top:20px">Validated against the very signal it replaces.
+      Driving into the tea table, our pose-only number read
+      <strong>0.95631006</strong> against the stack's <strong>0.95631009</strong>.
+      In the latest japanese_room run the disallowed topic never fired at all —
+      our predicate got there first.</p>
+    <p class="foot">A distance test alone does hang, because the snap means we never
+      reach our literal XY. The missing half was never a topic — it was noticing that
+      the vehicle had <em>stopped</em>. app/main.py still subscribes to it in two
+      places, and that is submission-blocking.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Held to the same standard as the last deck</p>
+    <h2>What is measured, and what is load-bearing but not</h2>
+    <div class="grid g2">
+      <div class="card" style="border-color:color-mix(in srgb, var(--measured) 45%, var(--rule))">
+        <h3 style="color:var(--measured)">Measured</h3>
+        <ul class="tight" style="margin-top:10px">
+          <li>72.2% localisation from a single start-pose frame; 11.1% false
+            positives after gates; 0.11 m median error, 54 pairs.</li>
+          <li>The blind cone, on seven scenes — and its prediction that turning
+            fixes it, confirmed live twice.</li>
+          <li>The converter's behaviour, to ~0.1 m, on three drives.</li>
+          <li>Cost: 2 990 in / 460 out tokens = $0.0265 a call.</li>
+        </ul>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb, var(--retired) 40%, var(--rule))">
+        <h3 style="color:var(--retired)">Not measured</h3>
+        <ul class="tight" style="margin-top:10px">
+          <li><strong>Everything in the grounding result is one frame from the start
+            pose.</strong> Distance, occlusion and out-of-vocabulary targets are
+            untested.</li>
+          <li>The relational branch has <strong>one live phrase</strong> behind it,
+            not a sweep — and relational phrasings are 47–60% of the official set.</li>
+          <li>Multi-constraint instructions (<em>go near A, then take the path near B
+            to C</em>) are not implemented; the loop drives to one object and stops.</li>
+          <li><code>target_state</code> and <code>same_object_as_previous</code> are
+            logged and gate nothing.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="foot" style="margin-top:20px">The previous deck retracted six beliefs
+      when the numbers came back, and said the proposal on its next slides would be
+      held to the same standard. Three of the retractions on this one — blind lifts,
+      per-class size priors, and the platform “clamp” — are its own.</p>
+  </div>
+</section>
+
+</main>
+
+<div id="hud" aria-live="polite">01 / 16</div>
+
+<script>
+  (function () {
+    var deck = document.getElementById('deck');
+    var hud = document.getElementById('hud');
+    var slides = Array.prototype.slice.call(deck.querySelectorAll('section'));
+
+    function current() {
+      var best = 0, bestD = Infinity;
+      for (var i = 0; i < slides.length; i++) {
+        var d = Math.abs(slides[i].getBoundingClientRect().top);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function sync() {
+      hud.textContent = pad(current() + 1) + ' / ' + pad(slides.length);
+    }
+    deck.addEventListener('scroll', function () {
+      window.requestAnimationFrame(sync);
+    }, { passive: true });
+    sync();
+
+    function go(delta) {
+      var i = Math.min(Math.max(current() + delta, 0), slides.length - 1);
+      slides[i].scrollIntoView({ block: 'start' });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+        go(1); e.preventDefault();
+      } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+        go(-1); e.preventDefault();
+      } else if (e.key === 'Home') {
+        slides[0].scrollIntoView({ block: 'start' }); e.preventDefault();
+      } else if (e.key === 'End') {
+        slides[slides.length - 1].scrollIntoView({ block: 'start' }); e.preventDefault();
+      }
+    });
+    deck.focus();
+  })();
+</script>

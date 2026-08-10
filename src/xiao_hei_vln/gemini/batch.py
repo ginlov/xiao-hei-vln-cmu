@@ -395,6 +395,13 @@ def _compact_objects(scene: SceneRepresentation) -> list[dict]:
     """
     items: list[dict] = []
     for o in scene.objects:
+        # Architecture is not an instance: one wall/floor/ceiling mask fuses
+        # into dozens of overlapping nodes (68 "floors" against 1 in ground
+        # truth on our livingroom_3 run), which is both noise and a large
+        # share of the prompt. It is never the answer to a reference
+        # question, so it does not belong in the list Gemini reasons over.
+        if getattr(o, "is_structure", False):
+            continue
         item: dict = {
             "id": o.object_id,
             "label": o.label,

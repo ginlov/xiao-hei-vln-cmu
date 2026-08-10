@@ -15,6 +15,11 @@ exploration_logs/
 # Perception debug step images (generated when PERCEPTION_DEBUG is on)
 perception/debug/
 
+# Perception viewer: exported scene geometry (~130 MB, rebuild with
+# scripts/export_viz.py) and the three.js copy serve_viz.py fetches on demand.
+viz/data/
+viz/vendor/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -284,9 +289,15 @@ dataset_generator/captures/
 dataset_generator/branchA_sample/
 dataset_generator/live_frames/
 
+# Session artefacts — captured frames, sweep outputs, cached VLM replies
+snaps/
+frames_first/
+artifacts/
 
-# artifacts
-artifacts/*
+# RStudio leaves these next to any file it opens.
+.Rhistory
+
+# Perception benchmark outputs
 perception_benchmark/captures
 perception_benchmark/captures_nav
 perception_benchmark/debug

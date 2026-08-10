@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xiao Hei — perception viewer</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #2a323d; --fg: #d7dde5;
+    --dim: #8b949e; --ours: #35d0d8; --gt: #ff9f43; --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { display: flex; height: 100%; }
+  #side { width: 290px; flex: none; background: var(--panel);
+    border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 14px 40px; }
+  #stage { position: relative; flex: 1; min-width: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .02em; }
+  h1 small { color: var(--dim); font-weight: 400; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px;
+    margin: 12px 0 0; padding: 8px 10px 10px; }
+  legend { color: var(--dim); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .07em; padding: 0 4px; }
+  label.row { display: flex; align-items: center; gap: 7px; margin: 5px 0; cursor: pointer; }
+  label.row span.key { margin-left: auto; color: var(--dim); font-size: 11px; }
+  select, input[type=text], input[type=number] { width: 100%; background: #0d1117;
+    color: var(--fg); border: 1px solid var(--line); border-radius: 5px;
+    padding: 5px 7px; font: inherit; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  button { background: #21262d; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #08111f; border-color: var(--accent); }
+  .btnrow { display: flex; gap: 6px; margin-top: 6px; }
+  .btnrow button { flex: 1; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .tag { position: absolute; transform: translate(-50%, -50%);
+    padding: 1px 5px; border-radius: 3px; font-size: 11px; white-space: nowrap;
+    background: rgba(10,14,20,.78); border: 1px solid currentColor; }
+  #hud { position: absolute; left: 12px; bottom: 12px; color: var(--dim);
+    font-variant-numeric: tabular-nums; background: rgba(10,14,20,.7);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  #hud b { color: var(--fg); font-weight: 600; }
+  #pick { position: absolute; right: 12px; top: 12px; max-width: 300px;
+    background: rgba(10,14,20,.88); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 11px; display: none; }
+  #pick div { display: flex; gap: 10px; }
+  #pick div span:first-child { color: var(--dim); min-width: 74px; }
+  #loading { position: absolute; inset: 0; display: grid; place-items: center;
+    background: rgba(14,17,22,.9); font-size: 14px; color: var(--dim); }
+  .legend { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-size: 12px; }
+  kbd { background: #0d1117; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 3px; padding: 0 4px; font-size: 10px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1>Perception viewer <small id="ver"></small></h1>
+
+    <fieldset>
+      <legend>Scene</legend>
+      <select id="scene"></select>
+      <div class="btnrow">
+        <button id="fit">Fit view</button>
+        <button id="top">Top-down</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Frame</legend>
+      <input type="range" id="frame" min="0" max="0" value="0">
+      <div class="legend"><span class="val" id="frameLbl">0 / 0</span>
+        <span style="margin-left:auto;color:var(--dim)" id="tickLbl"></span></div>
+      <div class="btnrow">
+        <button id="prev">&#9664;</button>
+        <button id="play">Play</button>
+        <button id="next">&#9654;</button>
+      </div>
+      <label class="row"><input type="checkbox" id="follow">Camera follows robot</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Layers</legend>
+      <label class="row"><input type="checkbox" id="lWorld" checked>
+        <span class="swatch" style="background:#4a5568"></span>Accumulated cloud
+        <span class="key">1</span></label>
+      <label class="row"><input type="checkbox" id="lScan" checked>
+        <span class="swatch" style="background:#8fd3ff"></span>This frame's scan
+        <span class="key">2</span></label>
+      <label class="row"><input type="checkbox" id="lDetPts" checked>
+        <span class="swatch" style="background:#c084fc"></span>Lifted points (frame)
+        <span class="key">3</span></label>
+      <label class="row"><input type="checkbox" id="lDetBox">
+        <span class="swatch" style="background:#a78bfa"></span>Per-frame det boxes
+        <span class="key">4</span></label>
+      <label class="row"><input type="checkbox" id="lOurs" checked>
+        <span class="swatch" style="background:var(--ours)"></span>Our objects (fused)
+        <span class="key">5</span></label>
+      <select id="objMode" style="margin:2px 0 6px 17px; width: calc(100% - 17px)">
+        <option value="all">…whole run (final map)</option>
+        <option value="cum">…detected up to this frame</option>
+        <option value="cur">…seen in this frame</option>
+      </select>
+      <label class="row"><input type="checkbox" id="lGt" checked>
+        <span class="swatch" style="background:var(--gt)"></span>Ground-truth boxes
+        <span class="key">6</span></label>
+      <label class="row" style="margin-left:17px"><input type="checkbox" id="gtObb">
+        …drawn with heading (true OBB)</label>
+      <label class="row"><input type="checkbox" id="lGtCloud">
+        <span class="swatch" style="background:#e0b184"></span>GT scene cloud
+        <span class="key">8</span></label>
+      <label class="row"><input type="checkbox" id="lPath" checked>
+        <span class="swatch" style="background:#f472b6"></span>Robot path
+        <span class="key">7</span></label>
+      <label class="row"><input type="checkbox" id="lLabels" checked>
+        Labels <span class="key">L</span></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Filter</legend>
+      <input type="text" id="q" placeholder="label contains… (e.g. chair)">
+      <label class="row" style="margin-top:8px">
+        <input type="checkbox" id="hideStruct" checked>Hide walls / floor / ceiling</label>
+      <label class="row">Min score <span class="val" id="scoreLbl">0.35</span></label>
+      <input type="range" id="score" min="0" max="0.95" step="0.05" value="0.35">
+      <label class="row">Min observations <span class="val" id="obsLbl">1</span></label>
+      <input type="range" id="minObs" min="1" max="20" step="1" value="1">
+    </fieldset>
+
+    <fieldset>
+      <legend>Render</legend>
+      <label class="row">Point size <span class="val" id="psLbl">1.8</span></label>
+      <input type="range" id="ps" min="0.5" max="6" step="0.1" value="1.8">
+      <label class="row">Cloud opacity <span class="val" id="opLbl">0.55</span></label>
+      <input type="range" id="op" min="0.05" max="1" step="0.05" value="0.55">
+      <label class="row"><input type="checkbox" id="yUp">Y is up (default Z)</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Keys</legend>
+      <div style="color:var(--dim);font-size:11px">
+        <kbd>&larr;</kbd><kbd>&rarr;</kbd> step frame &nbsp;
+        <kbd>space</kbd> play &nbsp; <kbd>F</kbd> fit &nbsp;
+        <kbd>1</kbd>–<kbd>7</kbd> layers<br>
+        drag rotate · right-drag pan · wheel zoom · click a box to inspect
+      </div>
+    </fieldset>
+  </div>
+
+  <div id="stage">
+    <div id="overlay"></div>
+    <div id="hud"></div>
+    <div id="pick"></div>
+    <div id="loading">loading…</div>
+  </div>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
