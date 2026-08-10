@@ -8,7 +8,7 @@ are required — docker-compose sets them for you, but they can be overridden.
 | Variable | Default | Description |
 |---|---|---|
 | `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`, or `scene_gemini` (the submission stack) |
-| `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz |
+| `XIAO_HEI_VLM_TICK_HZ` | `1.0` | VLM tick rate in Hz |
 
 ## Gemini engine
 

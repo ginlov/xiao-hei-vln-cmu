@@ -48,6 +48,7 @@ class Detection:
     score: float
     bbox_xyxy: tuple[float, float, float, float]
     mask: np.ndarray
+    sam_score: float = 1.0        # SAM mask-quality (predicted IoU); 1.0 if absent
 
 
 class HTTPPerceptionClient:
@@ -132,7 +133,7 @@ class HTTPPerceptionClient:
         image_bgr: np.ndarray,
         *,
         classes: tuple[str, ...] | None = None,
-        score_threshold: float = 0.25,
+        score_threshold: float = 0.1,   # OWLv2 scale (was 0.25 for YOLO-World)
         iou_threshold: float = 0.5,
     ) -> list[Detection]:
         """JPEG-encode and POST the image, parse the response, decode
@@ -197,6 +198,7 @@ def _parse_detection(payload: dict) -> Detection:
         score=float(payload["score"]),
         bbox_xyxy=bbox,        # type: ignore[arg-type]
         mask=_decode_mask_rle(payload["mask_rle"], EQUIRECT_H, EQUIRECT_W),
+        sam_score=float(payload.get("sam_score", 1.0)),
     )
 
 

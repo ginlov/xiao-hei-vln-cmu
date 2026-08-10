@@ -212,6 +212,88 @@ Either is measurable on the frozen captures with
 
 ---
 
+## B4 — Reject objects beyond a range cap
+
+**Status:** proposed — not yet measured
+**Files:** `src/xiao_hei_vln/perception/lifter.py` (a hook already exists),
+`src/xiao_hei_vln/perception/responder.py`
+
+Detections far from the robot are lifted from very few LiDAR returns, because
+point density on a surface falls ~`1/r²`. Beyond ~4.5 m a whole object is
+carried by a handful of points, so its position is noisy and it is prone to the
+mask-spill failure of B1 (the few real points are easily outnumbered by spill
+onto a far wall). Rejecting objects past a range cap — default **~4.5 m**,
+adjustable — should trade a little recall on genuinely distant objects for
+cleaner, better-localised nodes.
+
+**Evidence** (`debug_k2` / `arabic_room` / `vp_017`): `potted plant` node #25,
+robot at `(-2.74, 1.07, 0.76)`, object at `(2.31, 4.04, 0.69)` — **5.86 m**
+away, lifted from only **19 inliers** (min_inliers is 10, so it barely
+cleared), `n_obs = 1`. A thin, one-shot, far detection is exactly the profile
+this would drop. For context the offline tooling already treats **8 m** as the
+edge of usable coverage (`verify_projection --max-range`, the overlay's
+GT-observability filter).
+
+**Two ways to do it (decide when picked up):**
+
+1. **Pre-filter the cloud** — drop scan returns farther than the cap from the
+   robot *before* lifting. A hook already exists: `PointLifter.max_depth_m`
+   (currently `None`, unused) caps camera-frame return distance for exactly
+   this reason ("a sparse return through a doorway snaps onto a far wall and
+   biases the median"). Wiring it to ~4.5 m and exposing it (env +
+   `replay_score`/`dump_debug` flags) is most of the work. Bonus: it also
+   starves far mask-spill of points, so it complements B1. Risk: it uses the
+   return's own range, so a near object seen past a far surface is unaffected —
+   which is correct.
+2. **Post-lift gate** — lift as now, then drop nodes whose lifted position is
+   farther than the cap from the robot pose that saw them. Simpler and purely
+   additive, but the lift already ran on the contaminated cloud (the median may
+   already be wrong), and it spends compute on detections it then discards.
+
+Prefer (1): it removes the bad points rather than the symptom, and reuses an
+existing, documented mechanism. Whichever is chosen, **measure the recall cost
+first** — count GT objects legitimately beyond 4.5 m per scene before setting
+the default, since those become guaranteed misses. Measurable on the frozen
+captures with `replay_score.py` (recall / cErr / counting MAE) and
+`box_quality.py` (tail volume).
+
+---
+
+## B5 — SAM mask quality
+
+**Status:** proposed — not yet measured
+**Files:** `perception/pipeline.py` (sidecar)
+
+The masks are not always clean, and a bad mask feeds the lift directly: a mask
+that under-covers starves the inlier count, one that over-spills pulls in a
+neighbouring surface (the B1 failure mode). The sidecar currently runs the
+**smallest** SAM 2.1 checkpoint — `sam2.1_hiera_tiny.pt`
+(`SAM_WEIGHTS`/`SAM_CONFIG` at `pipeline.py:251`).
+
+**Two solutions on the table:**
+
+1. **Upgrade the SAM model** — swap the tiny Hiera checkpoint for
+   small / base-plus / large. Just a weights + config change, but heavier per
+   call (SAM already runs once per YOLO box per face); measure the latency hit
+   against the tick budget, and the mask-quality gain, before committing.
+2. **Gate on SAM's confidence** — SAM2's `predict()` already returns a
+   mask-quality score (predicted IoU) that we currently discard
+   (`masks, _, _ = self._sam.predict(...)`, `pipeline.py:383`). Capture it,
+   thread it through `_FaceDetection` → `Detection`, and drop or demote
+   low-confidence masks. Nearly free, and it gives a per-mask signal the
+   pipeline has never had — complementary to the YOLO box score, which says
+   nothing about mask fit.
+
+The two are independent and could combine (better model *and* a confidence
+gate). Prefer starting with (2): it is cheap, measurable, and tells us how much
+of the problem is low-confidence masks in the first place — which also informs
+whether (1) is worth its cost. Both are measurable on the frozen captures via
+`box_quality.py` (extent tail) and `replay_score.py` (recall / precision),
+though note detection masks would change, so the frozen `detections.npz` must
+be re-dumped for a fair A/B.
+
+---
+
 ## Related gaps, not yet scheduled
 
 Recorded from the same investigation; no work planned yet.

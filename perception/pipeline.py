@@ -1,13 +1,13 @@
 """Perception pipeline — equirect frame → list of (label, bbox, mask).
 
-Runs inside the perception sidecar (Phase 2). Loads YOLOv8x-World v2 and
-SAM 2.1 Hiera Tiny on construction, then handles each ``/detect`` request
+Runs inside the perception sidecar (Phase 2). Loads OWLv2 (large) and
+SAM 2.1 Hiera Large on construction, then handles each ``/detect`` request
 by:
 
 1. Decoding the equirect JPEG to BGR ndarray.
 2. Unwrapping into 4 perspective faces (precomputed LUTs from
    :mod:`perception.geometry`, applied with ``cv2.remap``).
-3. Running YOLO-World on the 4 faces as a single batch.
+3. Running OWLv2 open-vocab detection on the 4 faces as a single batch.
 4. Running SAM 2.1 per detected bbox.
 5. Reprojecting each face mask back to equirectangular coordinates.
 6. Encoding the equirect masks as base64 COCO RLE for the wire format.
@@ -89,6 +89,7 @@ class DetectionRecord:
     score: float
     bbox_xyxy: tuple[float, float, float, float]
     mask_rle: str
+    sam_score: float = 1.0        # SAM's predicted mask IoU (mask quality)
 
 
 @dataclass
@@ -106,6 +107,7 @@ class _FaceDetection:
     score: float
     eq_bbox: tuple[float, float, float, float]
     eq_mask: NDArray[np.bool_]
+    sam_score: float = 1.0        # SAM's predicted IoU for this mask
 
 
 def _touches_face_border(
@@ -240,6 +242,7 @@ def merge_seam_duplicates(
                 float(boxes[:, 2].max()), float(boxes[:, 3].max()),
             ),
             eq_mask=mask,
+            sam_score=dets[best].sam_score,
         ))
     return merged
 
@@ -247,9 +250,20 @@ def merge_seam_duplicates(
 class PerceptionPipeline:
     """Model orchestrator. Construct once at server startup."""
 
-    YOLO_WEIGHTS = "/opt/perception/models/yolov8x-worldv2.pt"
-    SAM_WEIGHTS = "/opt/perception/models/sam2.1_hiera_tiny.pt"
-    SAM_CONFIG = "configs/sam2.1/sam2.1_hiera_t.yaml"
+    # OWLv2 (large, patch-14, ensemble) — open-vocab detector, replacing
+    # YOLO-World. Chosen for recall on the challenge's object vocabulary; at the
+    # 1 Hz tick the extra latency (~0.3–0.5 s over the 4-face batch on the A10G)
+    # is affordable, and SAM refines the box afterwards so OWLv2's looser
+    # localisation never reaches the lift. Weights are baked into the image
+    # (HF cache under HF_HOME); see the Dockerfile.
+    OWL_MODEL = "google/owlv2-large-patch14-ensemble"
+    # SAM 2.1 Hiera Large — best mask quality. VRAM is not the constraint on the
+    # A10G (measured: sidecar 2.2 GB tiny → 3.3 GB large under load, on a 22 GB
+    # card), and Task 1/2 answer within a 10-min budget, not real time, so the
+    # extra latency (~1.0 → ~1.5 s/frame) is affordable. Tiny remains in
+    # models/ for a quick revert.
+    SAM_WEIGHTS = "/opt/perception/models/sam2.1_hiera_large.pt"
+    SAM_CONFIG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
     def __init__(
         self, *, device: str | None = None, merge_seams: bool | None = None,
@@ -257,12 +271,13 @@ class PerceptionPipeline:
         import torch
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
-        from ultralytics import YOLOWorld
+        from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        log.info("loading YOLOWorld from %s", self.YOLO_WEIGHTS)
-        self._yolo = YOLOWorld(self.YOLO_WEIGHTS)
-        self._yolo.to(self._device)
+        log.info("loading OWLv2 from %s", self.OWL_MODEL)
+        self._processor = Owlv2Processor.from_pretrained(self.OWL_MODEL)
+        self._owl = Owlv2ForObjectDetection.from_pretrained(self.OWL_MODEL)
+        self._owl.to(self._device).eval()
 
         log.info("loading SAM2 (%s) from %s", self.SAM_CONFIG, self.SAM_WEIGHTS)
         sam_model = build_sam2(self.SAM_CONFIG, self.SAM_WEIGHTS, device=self._device)
@@ -300,17 +315,18 @@ class PerceptionPipeline:
     # ------------------------------------------------------------------
 
     def set_classes(self, classes: list[str]) -> int:
-        """Push a new open-vocab class list into YOLO-World.
+        """Set the open-vocab class list used as OWLv2's text queries.
 
-        Re-encoding the text prompt is the expensive part (~50 ms on a
-        4090 for ~50 classes); subsequent calls with the same list are
-        a no-op. Returns the cached class count.
+        OWLv2 has no persistent prompt to pre-encode (unlike YOLO-World):
+        the queries are tokenised and encoded jointly with the image on
+        every :meth:`detect` forward. So this just caches the list; the
+        text tower re-runs each tick, which is cheap for a handful of
+        classes and well within the 1 Hz budget. Returns the cached count.
         """
         if classes == self._current_classes:
             return len(self._current_classes)
-        self._yolo.set_classes(classes)
         self._current_classes = list(classes)
-        log.info("YOLO-World classes set: %d", len(classes))
+        log.info("OWLv2 classes set: %d", len(classes))
         return len(classes)
 
     @property
@@ -326,7 +342,7 @@ class PerceptionPipeline:
         equirect_bgr: NDArray[np.uint8],
         *,
         classes: list[str] | None = None,
-        score_threshold: float = 0.25,
+        score_threshold: float = 0.1,
         iou_threshold: float = 0.5,
     ) -> list[DetectionRecord]:
         """Detect + segment objects in an equirectangular frame.
@@ -349,12 +365,27 @@ class PerceptionPipeline:
         # 1. Unwrap to 4 faces.
         faces = self._unwrap_to_faces(equirect_bgr)
 
-        # 2. YOLO-World on the 4-face batch.
-        results = self._yolo(
-            faces,
-            conf=score_threshold,
-            iou=iou_threshold,
-            verbose=False,
+        # 2. OWLv2 open-vocab detection on the 4-face batch. The class list is
+        # passed as text queries per image; boxes come back in each face's own
+        # pixel coords. Faces are square (FACE_SIZE), so OWLv2's square-pad is a
+        # no-op and post-processing maps boxes back exactly (the padding-offset
+        # caveat only bites non-square inputs).
+        import torch
+        from torchvision.ops import nms
+
+        faces_rgb = [np.ascontiguousarray(f[..., ::-1]) for f in faces]  # BGR→RGB
+        inputs = self._processor(
+            text=[self._current_classes] * len(faces),
+            images=faces_rgb,
+            return_tensors="pt",
+        ).to(self._device)
+        with torch.no_grad():
+            outputs = self._owl(**inputs)
+        target_sizes = torch.tensor(
+            [f.shape[:2] for f in faces], device=self._device,
+        )
+        results = self._processor.post_process_object_detection(
+            outputs=outputs, threshold=score_threshold, target_sizes=target_sizes,
         )
 
         # 3 + 4. For each face: SAM per bbox → mask, project back.
@@ -364,28 +395,34 @@ class PerceptionPipeline:
         dbg_face_boxes: list[list[tuple]] = [[] for _ in faces]
         dbg_face_masks: list[list] = [[] for _ in faces]
         dbg_eq_items: list[tuple] = []
-        for face_idx, (face_img, face_result) in enumerate(
+        for face_idx, (face_img, res) in enumerate(
             zip(faces, results, strict=True),
         ):
-            boxes = face_result.boxes
-            if boxes is None or len(boxes) == 0:
+            boxes_t = res["boxes"]
+            if boxes_t.numel() == 0:
                 continue
 
-            xyxy = boxes.xyxy.detach().cpu().numpy()          # (N, 4)
-            scores = boxes.conf.detach().cpu().numpy()        # (N,)
-            class_ids = boxes.cls.detach().cpu().numpy().astype(int)  # (N,)
+            # OWLv2 emits overlapping boxes with no built-in NMS; apply it here
+            # per face (YOLO-World did this internally via its `iou=` arg).
+            keep = nms(boxes_t, res["scores"], iou_threshold)
+            xyxy = boxes_t[keep].clamp_(0, FACE_SIZE).detach().cpu().numpy()  # (N,4)
+            scores = res["scores"][keep].detach().cpu().numpy()               # (N,)
+            class_ids = res["labels"][keep].detach().cpu().numpy().astype(int)  # (N,)
 
             # Set the image once per face; SAM caches its image features.
             # `.copy()` is required because the [..., ::-1] view has a
             # negative stride, which torch.from_numpy refuses.
             self._sam.set_image(face_img[..., ::-1].copy())     # BGR → RGB
             for bbox, score, cls_id in zip(xyxy, scores, class_ids, strict=True):
-                masks, _, _ = self._sam.predict(
+                masks, sam_iou, _ = self._sam.predict(
                     box=bbox[None, :],
                     multimask_output=False,
                 )
-                # masks: (1, H, W) in float; threshold at 0.5.
+                # masks: (1, H, W) in float; threshold at 0.5. sam_iou: (1,)
+                # SAM's own estimate of this mask's IoU with the true object —
+                # a mask-quality signal the YOLO box score does not carry.
                 face_mask = masks[0] > 0.5
+                sam_score = float(sam_iou[0])
                 eq_mask = face_mask_to_equirect_mask(
                     face_mask, face_idx, self._inv_lut,
                 )
@@ -409,6 +446,7 @@ class PerceptionPipeline:
                     score=float(score),
                     eq_bbox=eq_bbox,
                     eq_mask=eq_mask,
+                    sam_score=sam_score,
                 ))
 
         # 7. Rejoin objects the face seams split (no-op when nothing straddles).
@@ -426,6 +464,7 @@ class PerceptionPipeline:
                 score=d.score,
                 bbox_xyxy=d.eq_bbox,
                 mask_rle=_encode_mask_rle(d.eq_mask),
+                sam_score=d.sam_score,
             )
             for d in found
         ]
@@ -455,7 +494,7 @@ class PerceptionPipeline:
 
             00_equirect.png          original equirect input
             01_faceK.png             the 4 perspective faces (K = 0..3)
-            02_faceK_bboxes.png      YOLO boxes drawn on each face
+            02_faceK_bboxes.png      detector boxes drawn on each face
             03_faceK_masks.png       SAM masks overlaid on each face
             04_equirect_overlay.png  masks + boxes reprojected onto equirect
         """

@@ -23,11 +23,18 @@ import glob
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+# The sidecar's geometry (perception/geometry.py at the repo root) builds the
+# face-unwrap LUTs; make it importable when streamlit runs from perception_benchmark/.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # Optional: clicking INSIDE a 3D scene. st.plotly_chart's on_select cannot do
 # this — plotly has no selection layer for scatter3d — but plotly's raw
@@ -254,6 +261,99 @@ def available_scenes(run=None):
     root = Path(run) if run else DEBUG_DIR
     return sorted(os.path.basename(os.path.dirname(p))
                   for p in glob.glob(str(root / "*" / "viz.json")))
+
+
+# matplotlib tab20, inlined so the viewer stays streamlit+plotly+numpy only.
+# The pre-baked overlay colours detections by tab20(i % 20); we match it so the
+# live re-composite reads the same as the PNG.
+_TAB20 = [
+    (31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
+    (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
+    (148, 103, 189), (197, 176, 213), (140, 86, 75), (196, 156, 148),
+    (227, 119, 194), (247, 182, 210), (127, 127, 127), (199, 199, 199),
+    (188, 189, 34), (219, 219, 141), (23, 190, 207), (158, 218, 229),
+]
+
+
+@st.cache_data(max_entries=12)
+def _frame_masks(cap_dir: str, scene: str, vpid: str):
+    """Raw RGB image + per-detection (label, yolo, sam, mask, orig_idx).
+
+    Read from the captures the viewer already points at — image.npy is the raw
+    equirect, detections.npz the frozen masks — so the 2D overlay can be
+    re-composited for a chosen class set without re-dumping. ``sam`` is SAM's
+    predicted mask IoU (1.0 for pre-B5 dumps that lack the field). Cached to a
+    dozen frames so scrubbing stays responsive without holding the whole scene
+    (each mask stack is tens of MB). Returns (None, []) when the frame lacks a
+    frozen detection file.
+    """
+    base = Path(cap_dir) / scene / vpid
+    img_f, det_f = base / "image.npy", base / "detections.npz"
+    if not (img_f.is_file() and det_f.is_file()):
+        return None, []
+    bgr = np.load(img_f)
+    rgb = bgr[:, :, ::-1] if bgr.ndim == 3 else bgr
+    z = np.load(det_f, allow_pickle=True)
+    n = len(z["labels"])
+    sam = z["sam_scores"] if "sam_scores" in z.files else np.ones(n, np.float32)
+    dets = [(str(lbl), float(sc), float(ss), m, i)
+            for i, (m, lbl, sc, ss) in enumerate(
+                zip(z["masks"], z["labels"], z["scores"], sam))]
+    return rgb, dets
+
+
+def _composite_overlay(rgb, dets):
+    """Blend each detection's mask onto ``rgb`` (0.5 alpha, tab20 by orig
+    index) and return the uint8 image plus label anchors, mirroring
+    debug_viewpoint._overlay_masks so the live view matches the baked PNG.
+
+    The label carries both scores — ``Y`` YOLO box confidence, ``S`` SAM mask
+    quality — so mask fit is visible alongside detection confidence."""
+    out = rgb.astype(np.float32) / 255.0
+    anchors = []
+    for label, score, sam, mask, orig in dets:
+        color = np.array(_TAB20[orig % 20], dtype=np.float32) / 255.0
+        m = np.asarray(mask, dtype=bool)
+        out[m] = 0.5 * out[m] + 0.5 * color
+        ys, xs = np.nonzero(m)
+        if len(xs):
+            anchors.append((int(xs.mean()), int(ys.mean()),
+                            f"{label} Y{score:.2f} S{sam:.2f}",
+                            _TAB20[orig % 20]))
+    return (np.clip(out, 0, 1) * 255).astype(np.uint8), anchors
+
+
+# Faces are built in perception/geometry.FACE_YAWS order [0, 90, 180, 270] =
+# front, right, back, left. Labelled by that index.
+_FACE_LABELS = {0: "Front 0°", 1: "Right 90°", 2: "Back 180°", 3: "Left 270°"}
+# Display left-to-right as they appear across the concatenated equirect —
+# verified by each face's centre column (back@0, left@480, front@960, right@1440),
+# so the strip reads back | left | front | right, with front centred.
+_FACE_ORDER_LR = [2, 3, 0, 1]
+
+
+@st.cache_resource
+def _forward_luts():
+    """Per-face integer sample indices into the equirect, built once.
+
+    ``build_forward_luts`` returns the same (map_x, map_y) the sidecar feeds
+    ``cv2.remap`` to unwrap each 640² face from the panorama. Rounded to int
+    here for a pure-numpy nearest-neighbour gather — no cv2 in the viewer. The
+    faces this produces are pixel-faithful to what YOLO/SAM actually ran on.
+    """
+    from perception.geometry import EQUIRECT_H, EQUIRECT_W, build_forward_luts
+    luts = []
+    for map_x, map_y in build_forward_luts():
+        xi = np.clip(np.rint(map_x).astype(np.int32), 0, EQUIRECT_W - 1)
+        yi = np.clip(np.rint(map_y).astype(np.int32), 0, EQUIRECT_H - 1)
+        luts.append((yi, xi))
+    return luts
+
+
+def _unwrap_faces(equirect_rgb):
+    """Unwrap an equirect image (raw or already mask-composited) into the four
+    perspective faces, so masks drawn on the panorama carry onto the faces."""
+    return [equirect_rgb[yi, xi] for yi, xi in _forward_luts()]
 
 
 @st.cache_data
@@ -491,8 +591,71 @@ with tab_graph:
                "into this view. `[OK]`/`[x]` on a detection = whether it produced a 3D point "
                "(cleared min_inliers). Compare the two: GT with no overlapping mask = a miss.")
     img_path = RUN_DIR / scene / f"{vp['id']}.png"
-    if img_path.exists():
-        st.image(str(img_path), use_container_width=True)
+
+    # The baked PNG carries every class. When a class filter is set we can
+    # re-composite the raw frame with only those masks — same blend as the dump,
+    # done live from the captures. A toggle keeps the (faster) PNG available and
+    # lets you filter the image even with no sidebar class selected.
+    rgb2d, dets2d = _frame_masks(str(CAP_DIR), scene, vp["id"])
+    can_recomp = rgb2d is not None
+    recomp = st.checkbox(
+        "Re-composite overlay (filter masks by class)", value=bool(classes),
+        disabled=not can_recomp,
+        help="Redraw the overlay from the raw image with only the sidebar's "
+             "classes. Off = the pre-baked PNG (all classes). Needs the frozen "
+             "detections.npz next to the captures.")
+    if not can_recomp and classes:
+        st.caption(f"_No frozen detections under `{CAP_DIR}/{scene}/{vp['id']}` "
+                   "— showing the all-class PNG. Run dump_detections.py to enable "
+                   "class filtering here._")
+
+    # The equirect the faces get unwrapped from: the filtered composite when
+    # re-compositing, else the raw frame. So masks/filter carry onto the faces.
+    equirect_src = None
+    if recomp and can_recomp:
+        shown = [d for d in dets2d if not classes or d[0] in classes]
+        overlay, anchors = _composite_overlay(rgb2d, shown)
+        equirect_src = overlay
+        fig2d = go.Figure(go.Image(z=overlay))
+        if anchors:
+            fig2d.add_trace(go.Scatter(
+                x=[a[0] for a in anchors], y=[a[1] for a in anchors],
+                mode="markers+text",
+                marker=dict(size=6, color=[f"rgb{a[3]}" for a in anchors]),
+                text=[a[2] for a in anchors], textposition="top center",
+                textfont=dict(size=9, color="white"), hoverinfo="text",
+                name="detections"))
+        fig2d.update_layout(height=430, margin=dict(l=0, r=0, t=0, b=0),
+                            showlegend=False,
+                            xaxis=dict(visible=False),
+                            yaxis=dict(visible=False))
+        fig2d.update_xaxes(range=[0, rgb2d.shape[1]])
+        fig2d.update_yaxes(range=[rgb2d.shape[0], 0])
+        st.plotly_chart(fig2d, use_container_width=True, key="overlay2d")
+        st.caption(f"_Re-composited live · {len(shown)} of {len(dets2d)} "
+                   "detections shown · zoom/pan enabled. GT diamonds are only on "
+                   "the baked PNG (toggle off to see them)._")
+    else:
+        if img_path.exists():
+            st.image(str(img_path), use_container_width=True)
+        if can_recomp:
+            equirect_src = rgb2d      # faces off the raw frame (no masks)
+
+    # ---- the 4 perspective faces the detector actually ran on ----
+    # Reconstructed from the equirect via the sidecar's forward LUTs (faces are
+    # not stored anywhere) — pixel-faithful to YOLO/SAM's input. Unwrapping the
+    # *composited* equirect above means the class-filtered masks appear on them.
+    show_faces = st.checkbox(
+        "Show 4 face views (front / right / back / left)", value=False,
+        disabled=equirect_src is None,
+        help="The 100° perspective crops the panorama is split into before "
+             "detection. Adjacent faces overlap ~10°, so a seam object shows "
+             "in two. Inherits the class filter / re-composite above.")
+    if show_faces and equirect_src is not None:
+        faces = _unwrap_faces(equirect_src)
+        for col, fi in zip(st.columns(4), _FACE_ORDER_LR, strict=True):
+            col.image(faces[fi], caption=_FACE_LABELS[fi],
+                      use_container_width=True)
 
     # ---- animations built by make_video.py ----
     # The slider shows one viewpoint; these show the graph assembling itself,

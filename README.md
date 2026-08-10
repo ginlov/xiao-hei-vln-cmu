@@ -48,7 +48,7 @@ Routing is handled by `xiao_hei_vln.adapters.ros.publishers.VLMOutputPublisher`.
 
 ## Tick frequency
 
-**The VLM runs at 2 Hz** (configurable via `XIAO_HEI_VLM_TICK_HZ`).
+**The VLM runs at 1 Hz** (configurable via `XIAO_HEI_VLM_TICK_HZ`).
 Sensor topics are 10–200 Hz; their callbacks just overwrite the
 relevant slot in a thread-safe `LatestCache`. On each 500 ms tick we
 atomically snapshot every slot into one `VLMInput`. Rationale and

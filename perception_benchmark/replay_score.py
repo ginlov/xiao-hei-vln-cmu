@@ -89,11 +89,15 @@ def _frozen_detections(vp_dir: Path):
     # allow_pickle: dump_detections.py writes `labels` as an object array, and
     # dump_lift_input / detect_2d_eval read it the same way. Our own file.
     z = np.load(f, allow_pickle=True)
+    n = len(z["labels"])
+    # sam_scores added later (B5); older frozen files default to 1.0 so the
+    # SAM-confidence gate is a no-op on them.
+    sam = z["sam_scores"] if "sam_scores" in z.files else np.ones(n, np.float32)
     return [
         Detection(label=str(lbl), score=float(sc), bbox_xyxy=tuple(map(float, bb)),
-                  mask=m)
-        for m, lbl, sc, bb in zip(z["masks"], z["labels"], z["scores"], z["bboxes"],
-                                  strict=True)
+                  mask=m, sam_score=float(ss))
+        for m, lbl, sc, bb, ss in zip(z["masks"], z["labels"], z["scores"],
+                                      z["bboxes"], sam, strict=True)
     ]
 
 
@@ -108,6 +112,8 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
                     scan_voxel_m: float = DEFAULT_VOXEL_M,
                     use_frozen: bool = True,
                     image_lag_s: float = 0.0,
+                    range_cap_m: float | None = None,
+                    sam_thresh: float = 0.0,
                     verbose: bool = True):
     np.random.seed(seed)                                # ObjectMap PTS_CAP subsample
     vp_dirs = sorted(glob.glob(str(CAP_DIR / scene / "vp_*")))
@@ -133,9 +139,13 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
         if not client.set_classes(classes):
             print(f"[{scene}] WARNING: set_classes did not confirm — "
                   "detections may be empty")
+    # range_cap_m (B4): drop scan returns farther than this from the sensor
+    # BEFORE lifting — far objects are lifted from too few points (density
+    # ~1/r²) and are prone to mask-spill onto far walls. Wires the lifter's
+    # existing max_depth_m hook.
     lifter = PointLifter(min_inliers=min_inliers,       # z-buffer on by default
                          range_gap_m=range_gap_m, cluster_voxel_m=cluster_voxel_m,
-                         inlier_filter=inlier_filter)
+                         inlier_filter=inlier_filter, max_depth_m=range_cap_m)
     omap = ObjectMap(nms_dist=nms_dist, nms_gap=nms_gap)
     # Production configuration: densify the scan across keyframes BEFORE lifting
     # (ScanAccumulator) AND fuse the lifted clouds across frames (ObjectMap).
@@ -162,6 +172,9 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
             dets = client.detect(img, score_threshold=score_threshold)
         else:
             n_frozen += 1
+        # sam_thresh (B5): drop low-quality masks before lifting.
+        if sam_thresh > 0:
+            dets = [d for d in dets if d.sam_score >= sam_thresh]
         n_det += len(dets)
         for det in dets:
             res = lifter.lift(det.mask, cloud, pos, ori_lift)
@@ -259,7 +272,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.1)  # OWLv2 scale
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     ap.add_argument("--keep-arch", action="store_true",
                     help="score against ALL objects incl. wall/floor/ceiling (default drops them)")
@@ -293,6 +306,12 @@ def main() -> int:
                          "the lift pose is de-rotated by lag x yaw_rate. "
                          "Measured at 0.368 on captures_nav/arabic_room "
                          "(TASK 27). 0 disables.")
+    ap.add_argument("--range-cap", type=float, default=None,
+                    help="B4: drop scan returns farther than this (m) from the "
+                         "sensor before lifting. Default: no cap.")
+    ap.add_argument("--sam-thresh", type=float, default=0.0,
+                    help="B5: drop detections whose SAM mask-quality score is "
+                         "below this (0-1). Default 0 = keep all.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--timeout", type=float, default=60.0, help="per-request HTTP timeout (s)")
     ap.add_argument("--out", type=Path, default=Path("perception_benchmark/scores"))
@@ -319,6 +338,7 @@ def main() -> int:
             seed=args.seed, out_dir=args.out, accumulate=args.accumulate,
             scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
             use_frozen=args.use_frozen, image_lag_s=args.image_lag,
+            range_cap_m=args.range_cap, sam_thresh=args.sam_thresh,
             range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
             inlier_filter=ifilter, nms_dist=args.nms_dist, nms_gap=args.nms_gap,
             request_timeout_s=args.timeout)

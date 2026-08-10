@@ -54,14 +54,17 @@ def dump_scene(scene, *, base_url, score_threshold, keep_arch, request_timeout_s
             masks = np.stack([d.mask for d in dets]).astype(bool)
             labels = np.array([d.label for d in dets], dtype=object)
             scores = np.array([d.score for d in dets], dtype=np.float32)
+            sam_scores = np.array([d.sam_score for d in dets], dtype=np.float32)
             bboxes = np.array([d.bbox_xyxy for d in dets], dtype=np.float32)
         else:
             masks = np.zeros((0, img.shape[0], img.shape[1]), dtype=bool)
             labels = np.array([], dtype=object)
             scores = np.zeros((0,), dtype=np.float32)
+            sam_scores = np.zeros((0,), dtype=np.float32)
             bboxes = np.zeros((0, 4), dtype=np.float32)
         np.savez_compressed(Path(vp_dir) / "detections.npz",
-                            masks=masks, labels=labels, scores=scores, bboxes=bboxes,
+                            masks=masks, labels=labels, scores=scores,
+                            sam_scores=sam_scores, bboxes=bboxes,
                             score_threshold=score_threshold, classes=np.array(classes, dtype=object))
         total += len(dets)
         sz = (Path(vp_dir) / "detections.npz").stat().st_size / 1024
@@ -74,7 +77,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", "http://localhost:8001"))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.1)  # OWLv2 scale
     ap.add_argument("--keep-arch", action="store_true",
                     help="detect ALL object classes incl. wall/floor/ceiling (default: scoreable only)")
     ap.add_argument("--timeout", type=float, default=60.0)

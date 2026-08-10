@@ -47,10 +47,10 @@ MAX_WAYPOINTS="${MAX_WAYPOINTS:-500}"
 TIMEOUT="${TIMEOUT:-510}"         # 8.5 min
 BOOT_TRIES="${BOOT_TRIES:-40}"    # x3s = up to 2 min for the sim to come up
 SETTLE_S="${SETTLE_S:-12}"        # extra wait after nav is up (Unity + terrain)
-# 2 Hz matches the live node's XIAO_HEI_VLM_TICK_HZ default, i.e. one recorded
-# frame per exploration tick. At ~4.2 MB/frame that is ~500 MB per minute of
+# 1 Hz matches the live node's XIAO_HEI_VLM_TICK_HZ default, i.e. one recorded
+# frame per exploration tick. At ~4.2 MB/frame that is ~250 MB per minute of
 # exploration per scene — check free space before a full sweep, or lower RATE_HZ.
-RATE_HZ="${RATE_HZ:-2.0}"
+RATE_HZ="${RATE_HZ:-1.0}"
 export DISPLAY="${DISPLAY:-:0}"
 
 ALL_SCENES=(arabic_room chinese_room home_building_1 home_building_2 hotel_room_1 \

@@ -20,41 +20,37 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /opt
 
-# --- runtime deps (SAM 2.1 + web layer + COCO RLE + OpenAI CLIP) ----------
-# The base image already brings torch, ultralytics, opencv-python-headless,
-# numpy and pillow. We only need what's missing. OpenAI's CLIP is the text
-# encoder YOLOv8x-World v2 actually uses (the YAML default of mobileclip
-# only kicks in for v1); pre-installing it stops Ultralytics from doing
-# an `AutoUpdate` git-clone on the first /reload_classes call.
+# --- runtime deps (SAM 2.1 + OWLv2 + web layer + COCO RLE) ----------------
+# The base image already brings torch, torchvision, opencv-python-headless,
+# numpy and pillow. We only need what's missing. `transformers` provides the
+# OWLv2 open-vocab detector (google/owlv2-large-patch14-ensemble), which
+# replaced YOLO-World (and with it the OpenAI-CLIP text encoder).
 RUN pip install --no-cache-dir \
         sam2==1.1.0 \
+        transformers==4.46.3 \
         fastapi==0.115.6 \
         "uvicorn[standard]==0.34.0" \
         python-multipart==0.0.20 \
-        pycocotools==2.0.8 \
-        git+https://github.com/ultralytics/CLIP.git
+        pycocotools==2.0.8
 
 # --- bake in model weights so first /detect is fast ----------------------
-# YOLOv8x-World v2 (~146 MB, largest open-vocab variant) and SAM 2.1
-# Hiera Tiny (~155 MB).
+# SAM 2.1 Hiera Large (~900 MB). YOLOv8x-World v2 was retired in favour of
+# OWLv2; its weights (and the OpenAI-CLIP text encoder it needed) are gone.
 RUN mkdir -p /opt/perception/models \
- && curl -fsSL -o /opt/perception/models/yolov8x-worldv2.pt \
-        https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8x-worldv2.pt \
- && curl -fsSL -o /opt/perception/models/sam2.1_hiera_tiny.pt \
-        https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
+ && curl -fsSL -o /opt/perception/models/sam2.1_hiera_large.pt \
+        https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 
-# --- bake in OpenAI CLIP ViT-B/32 weights for YOLO-World v2 ---------------
-# YOLOv8x-World v2's saved checkpoint actually uses `clip:ViT-B/32`
-# (not MobileCLIP, despite what the default-fallback model YAML
-# suggests). Ultralytics' CLIP loader fetches it from
-# openaipublic.azureedge.net on the first /reload_classes call;
-# Azure throttles individual connections to ~200 KB/s, which means a
-# cold call blocks ~30 minutes. We download host-side once (see
-# commit message) and COPY it into the image at the path
-# `ultralytics.utils.WEIGHTS_DIR / "clip"` so the loader finds it
-# without going to the network.
-RUN mkdir -p /ultralytics/weights/clip
-COPY ViT-B-32.pt /ultralytics/weights/clip/ViT-B-32.pt
+# --- bake in OWLv2 weights so the first /detect doesn't hit the network ---
+# google/owlv2-large-patch14-ensemble (~1.7 GB) → HF cache under HF_HOME.
+# Downloading at build time keeps the first live tick fast and the runtime
+# offline (no HuggingFace Hub call during the challenge).
+RUN python3 -c "from transformers import Owlv2Processor, Owlv2ForObjectDetection; m='google/owlv2-large-patch14-ensemble'; Owlv2Processor.from_pretrained(m); Owlv2ForObjectDetection.from_pretrained(m)"
+
+# Weights are now baked into the HF cache; forbid any Hub call at runtime so a
+# live tick never blocks on the network. (Set AFTER the bake so the download
+# above still runs.)
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 # Mark /opt/perception as a package so `from perception.geometry import ...`
 # resolves; place application files under it.

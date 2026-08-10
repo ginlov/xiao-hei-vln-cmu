@@ -126,7 +126,7 @@ class TestMergeSeamDuplicates:
 
     def test_same_face_duplicates_are_left_alone(self) -> None:
         # Two detections within one face are a detector duplicate, not a seam
-        # split — YOLO's own NMS owns that case.
+        # split — the pipeline's per-face NMS owns that case.
         dets = [
             _det(0, "chair", 100, 260, face_bbox=_CLIPPED_RIGHT),
             _det(0, "chair", 260, 400, face_bbox=_CLIPPED_RIGHT),

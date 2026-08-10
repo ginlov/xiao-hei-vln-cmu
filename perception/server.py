@@ -2,14 +2,14 @@
 
 FastAPI app wrapping :class:`perception.pipeline.PerceptionPipeline`.
 Models load on startup (blocking — uvicorn won't accept traffic until
-the lifespan event finishes), then ``/detect`` posts run YOLO-World +
+the lifespan event finishes), then ``/detect`` posts run OWLv2 +
 SAM 2.1 + mask reprojection over the wire.
 
 Endpoints
 ---------
 GET  /healthz         → { model_loaded, gpu_available, schema_version, notes }
-POST /reload_classes  → cache the open-vocab class list (and refresh the
-                        YOLO-World prompt embeddings)
+POST /reload_classes  → cache the open-vocab class list (used as OWLv2's
+                        text queries on each /detect)
 POST /detect          → multipart image + form fields → list of
                         DetectionRecord (label, score, bbox_xyxy, mask_rle)
 """
@@ -45,6 +45,10 @@ logging.basicConfig(
 class Detection(BaseModel):
     label: str
     score: float = Field(ge=0.0, le=1.0)
+    sam_score: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="SAM's predicted mask IoU (mask quality); 1.0 when a "
+                    "detector predates this field.")
     bbox_xyxy: list[float] = Field(min_length=4, max_length=4)
     mask_rle: str = Field(
         description=(
@@ -108,7 +112,7 @@ app = FastAPI(
     title="xiao-hei perception sidecar",
     version=SCHEMA_VERSION,
     description=(
-        "YOLOv8x-World v2 + SAM 2.1 Hiera Tiny over an equirectangular "
+        "OWLv2 (large) + SAM 2.1 Hiera Large over an equirectangular "
         "360°×120° camera. Detection runs on 4 perspective faces; masks "
         "are reprojected back into equirectangular pixel coordinates "
         "before they leave the sidecar."
@@ -151,7 +155,7 @@ async def detect(
             "list from the last /reload_classes call."
         ),
     ),
-    score_threshold: float = Form(0.25),
+    score_threshold: float = Form(0.1),   # OWLv2 scale (was 0.25 for YOLO-World)
     iou_threshold: float = Form(0.5),
 ) -> DetectResponse:
     if _pipeline is None:
@@ -186,6 +190,7 @@ async def detect(
             Detection(
                 label=d.label,
                 score=d.score,
+                sam_score=d.sam_score,
                 bbox_xyxy=list(d.bbox_xyxy),
                 mask_rle=d.mask_rle,
             )
