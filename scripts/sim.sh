@@ -64,8 +64,13 @@ say()  { printf '\033[1m%s\033[0m\n' "$*" >&2; }
 die()  { printf 'sim.sh: %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
-# The script body arrives on stdin; arguments follow `--`.
-remote() { ssh "$HOST" bash -s -- "$@"; }
+# The script body arrives on stdin; arguments follow `--`. When HOST names this
+# machine there is no ssh at all, which is what lets the same script be run from
+# a terminal on the box — see scripts/on_host.sh.
+is_local() { case "${HOST:-}" in local|localhost|127.0.0.1|"") return 0;; *) return 1;; esac; }
+remote() {
+  if is_local; then bash -s -- "$@"; else ssh "$HOST" bash -s -- "$@"; fi
+}
 
 # Find the scene directories on whichever box this is, once per invocation.
 # A candidate counts as the scenes directory if it holds at least one

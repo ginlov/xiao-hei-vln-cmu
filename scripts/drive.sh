@@ -25,6 +25,13 @@ set -euo pipefail
 
 HOST="${XIAO_HEI_SIM_HOST:-xiaohei1}"
 CTR="${XIAO_HEI_SIM_CONTAINER:-iros2026_system}"
+# `local` means this machine is the sim host: docker exec, no ssh. `sh_run`
+# then wraps the same command string either way, so the three call sites below
+# stay identical.
+case "$HOST" in local|localhost|127.0.0.1|"") HOST="";; esac
+sh_run() {
+  if [ -n "$HOST" ]; then ssh "$HOST" "$1"; else bash -lc "$1"; fi
+}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROS_ENV='source /opt/ros/jazzy/setup.bash && source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash && export ROS_DOMAIN_ID=0 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && '
 
@@ -33,7 +40,7 @@ usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
 # The bridge may not be in the container yet if the loop has not run since the
 # last restart, and pushing it costs nothing when it is.
-ssh "$HOST" "docker exec -i $CTR tee /tmp/robot_io.py >/dev/null" < "$HERE/robot_io.py"
+sh_run "docker exec -i $CTR tee /tmp/robot_io.py >/dev/null" < "$HERE/robot_io.py"
 
 report() {
   # Formatting lives in a file rather than inline, so the quoting survives
@@ -42,7 +49,7 @@ report() {
 }
 
 if [ "$1" = "where" ]; then
-  ssh "$HOST" "docker exec $CTR bash -lc '${ROS_ENV}python3 /tmp/robot_io.py capture'" \
+  sh_run "docker exec $CTR bash -lc '${ROS_ENV}python3 /tmp/robot_io.py capture'" \
     2>/dev/null | grep '^{' | report where
   exit 0
 fi
@@ -50,5 +57,5 @@ fi
 [ $# -ge 2 ] || usage
 X="$1"; Y="$2"; T="${3:-40}"
 
-ssh "$HOST" "docker exec $CTR bash -lc '${ROS_ENV}python3 /tmp/robot_io.py drive $X $Y --timeout $T'" \
+sh_run "docker exec $CTR bash -lc '${ROS_ENV}python3 /tmp/robot_io.py drive $X $Y --timeout $T'" \
   2>/dev/null | grep '^{' | report drive

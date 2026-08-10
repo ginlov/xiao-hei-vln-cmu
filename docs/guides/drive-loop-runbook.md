@@ -16,10 +16,10 @@ it a three-clause instruction and it will ground the sentence as a single thing,
 drive to whichever object it finds most identifiable, and report `ARRIVED` —
 having done a third of the question. That has happened; see §3.
 
-The split to keep in mind: **the API key never leaves the laptop.** The sim host
-runs only ROS. `approach_loop.py` runs locally and reaches the container over
-`ssh` + `docker exec`, so the server needs no key, no `uv`, and no checkout of
-this branch.
+**Two places to run them from**, too. Driving from the laptop over `ssh` +
+`docker exec` is the default and keeps the API key off the shared box entirely —
+the sim host then needs no key, no venv and no checkout. Driving from a terminal
+on the box (§3b) needs all three, but survives your laptop closing mid-question.
 
 ## The three containers
 
@@ -101,9 +101,11 @@ comparable, so do this between runs.
 
 ### Scenes
 
-Three are unpacked; the other fifteen are zipped in the same directory.
-`sim.sh up <scene>` unpacks on demand, so `./scripts/sim.sh up loft` just works.
-`./scripts/sim.sh scenes` lists both sets.
+Some are unpacked and the rest are zipped; `sim.sh up <scene>` unpacks on demand,
+so `./scripts/sim.sh up loft` just works even when only the zip is there. On a
+box where the two live in different directories it unpacks across (see the table
+above). `./scripts/sim.sh scenes` lists both sets and says which directories it
+found.
 
 ### What the script is doing, and why each part matters
 
@@ -223,6 +225,85 @@ destination is still reachable from wherever the robot now stands.
 
 ---
 
+## 3b. Running from a terminal on the box instead
+
+Everything above drives from the laptop over ssh. The alternative is to sit on
+the box itself, which is worth doing when **a run must outlive your laptop**: a
+question is up to ten minutes at ~30 s per step, and a dropped connection
+leaves the robot parked wherever it got to and the log half-written.
+
+`scripts/on_host.sh` is that path. One-off, on the box:
+
+```bash
+ssh xiaohei1
+cd ~/workspace/chengkai/vlm-drive          # see "getting the branch there"
+./scripts/on_host.sh setup                 # venv + deps, no root needed
+./scripts/on_host.sh check                 # says exactly what is missing
+```
+
+Then, per session:
+
+```bash
+tmux new -s drive                          # so the run survives the ssh session
+export ANTHROPIC_API_KEY=...               # this shell only — see below
+./scripts/on_host.sh sim restart home_building_2
+./scripts/on_host.sh run "Go near the magazine on the ottoman, then go to the potted plant on the dressing table." --out runs/hm2
+# ctrl-b d to detach; `tmux attach -t drive` to come back
+```
+
+`on_host.sh one "<phrase>"` is the single-destination equivalent.
+
+**The API key.** These boxes are shared — `~/workspace` has several people's
+directories in it. Export it per session and let it die with the shell. Do not
+put it in `~/.bashrc`, `~/.profile` or any file in the repo: a key in a dotfile
+on a shared machine is readable by everyone with an account and outlives the
+reason you needed it. `on_host.sh` never writes it anywhere, and refuses to run
+without it rather than failing at the first grounding call.
+
+**What `setup` installs, and why so little.** `numpy`, `opencv-python-headless`,
+`anthropic`, `pillow`, `pydantic`, `scipy` — into `.venv-drive`, its own venv,
+not the repo's `.venv` (that one belongs to whatever else is set up on the box).
+No ROS: `robot_io.py` is copied *into* the container and run there, so `rclpy`
+and the message packages are the container's problem. `scipy` is the converter
+model's cKDTree; `pillow` and `pydantic` are only there because `vlm_locate`
+imports `xiao_hei_vln.perception.geometry` and that package's `__init__` eagerly
+pulls in the ROS responder.
+
+It uses **uv**, and not by preference: the system python on these boxes has
+neither `pip` nor the `venv` module, and `python3 -m venv` fails asking for
+`python3-venv`, which needs root. uv is already at `~/.local/bin/uv` on
+xiaohei1. If it is ever missing, `setup` prints how to get it.
+
+> `~/.local/bin` is not on `PATH` for `ssh box 'cmd'` (a non-login shell), so a
+> scripted check can report uv missing while it is perfectly present for the
+> person typing at the terminal. `on_host.sh` looks in `~/.local/bin` directly.
+
+**Getting the branch there.** xiaohei1 can `git fetch` (ssh remote); xiaohei2
+cannot (https remote, no credentials — use a git bundle). Do **not** switch the
+branch of `~/workspace/chengkai/xiao-hei-vln-cmu`: on xiaohei1 that checkout has
+other people's modified files in it. Add a worktree instead, which touches
+nothing that is already there:
+
+```bash
+cd ~/workspace/chengkai/xiao-hei-vln-cmu
+git fetch origin feature/vlm-approach-loop
+git worktree add ~/workspace/chengkai/vlm-drive origin/feature/vlm-approach-loop
+```
+
+To update it later: `git -C ~/workspace/chengkai/vlm-drive fetch origin
+feature/vlm-approach-loop && git -C ~/workspace/chengkai/vlm-drive reset --hard
+origin/feature/vlm-approach-loop`.
+
+**`local` as a host.** `on_host.sh` exports `XIAO_HEI_SIM_HOST=local`, which
+makes `sim.sh`, `drive.sh` and the loop all skip ssh and talk to the local
+docker. You can set it by hand for the same effect:
+
+```bash
+export XIAO_HEI_SIM_HOST=local
+./scripts/sim.sh status
+./scripts/drive.sh 3.54 -2.60
+```
+
 ## 4. Read a run back
 
 ```bash
@@ -322,6 +403,8 @@ the ground-truth answer, measuring 10.46 m against a true 10.22 m.
 | `529 OverloadedError` | API under sustained load | `max_retries` is already 8; raise with `XIAO_HEI_API_MAX_RETRIES` |
 | robot wedged, moves 0.02 m and stops | it is against the obstacle inflation | `./scripts/sim.sh restart`; the converter model now predicts this before driving |
 | `sim.sh up` times out after 120 s | Unity failed to start | `ssh xiaohei1 'docker exec iros2026_system cat /tmp/sim.log'` |
+| on the box: `ModuleNotFoundError` after `setup` said "done" | the venv is fine but an import reaches further than the dep list | `on_host.sh check` names the missing module; add it to `cmd_setup` |
+| on the box: `uv venv` refuses, "already exists" | a failed `python3 -m venv` left a directory with no python in it | `setup` clears it now; by hand, `rm -rf .venv-drive` |
 | a run "finished" suspiciously fast, one destination of three | the question went to `approach_loop.py`, which grounds it as one object | use `execute_plan.py`; see §3 |
 | `plan.json` missing | it is written at the end — the run is still going, or it died | `ps aux \| grep execute_plan`; `steps.jsonl` is written as it goes |
 | steps from two different runs in one directory | `--out` was re-used; colliding names were overwritten and the rest left | fresh `--out` per run |

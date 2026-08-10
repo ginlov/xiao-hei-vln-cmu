@@ -64,7 +64,13 @@ CTR = os.environ.get("XIAO_HEI_SIM_CONTAINER", "iros2026_system")
 # `sim.sh` read the variable while the loop needed `--host` meant a scene could
 # be restarted on one and driven on the other — both commands succeed, the
 # robot is at the origin of a scene nobody is watching, and nothing says so.
-DEFAULT_HOST = os.environ.get("XIAO_HEI_SIM_HOST") or None
+#
+# `local` means this machine *is* the sim host: no ssh, `docker exec` straight
+# into the container. Spelled out rather than left as the empty string, so that
+# running on the box is a stated intent and not a variable someone forgot.
+LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", ""}
+_env_host = os.environ.get("XIAO_HEI_SIM_HOST", "")
+DEFAULT_HOST = None if _env_host.lower() in LOCAL_HOSTS else _env_host
 ROS_ENV = ("source /opt/ros/jazzy/setup.bash && "
            "source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash && "
            "export ROS_DOMAIN_ID=0 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && ")
