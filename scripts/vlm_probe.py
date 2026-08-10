@@ -239,6 +239,57 @@ _CONSTRAINT_FIELDS = """  "avoid": [
 """
 
 
+_WAY_BRANCH = """
+WHEN THE TARGET IS NOT VISIBLE, POINT AT THE WAY OUT. A heading alone is not
+enough. The robot turns your heading into a bearing and then drives along
+whatever the floor allows, and the floor almost always allows the open room
+more than it allows a doorway: a door is a metre wide with a wall two metres
+behind it, a hallway runs six. So a heading that means "through that door"
+arrives as "along the wall beside it", and the robot searches the same room
+until its time runs out.
+
+If the way onward is something you can see — a doorway, an archway, an opening,
+the mouth of a corridor, the foot of a stair — box it in "way", exactly as you
+would box a target. Box the *opening*, not the door leaf and not the room
+beyond: the gap the robot drives through, floor to lintel. Then the robot can
+be sent to the opening itself rather than in its general direction.
+
+If you can see no opening at all — a blank wall, a room whose exits are all
+behind you — leave "way" null and give the heading alone. Do not box a
+promising-looking wall.
+"""
+
+_WAY_FIELDS = """  "way": {{"name": "doorway to the hall", "image_index": n,
+           "box_2d": [...]}} or null,
+      the opening to drive to when visible is false; null if none is in sight
+"""
+
+
+def _make_v6() -> str:
+    """v6 = v5 plus a boxed way out, by the same surgery so v5 stays exact.
+
+    `explore.heading_deg` was the loop's only way of being told where to go
+    when the target is not in sight, and a bearing cannot express "through that
+    door". `home_building_1` leg 1 measured the cost: the model named a visible
+    doorway on seven of nine calls, the loop walked 20 m for 7 m of net
+    displacement, and the leg ended without entering a single room. The
+    scoring fix in `explore_direction` stops the bearing being swung onto the
+    corridor; this stops it being a bearing at all, so the opening can be
+    lifted to a coordinate with the same `_lift_xy` that already places
+    targets, anchors and gates.
+    """
+    # v5 already inserted its branch ahead of this line, so the blank line v4
+    # and v3 anchor on is gone; anchor on the single newline v5 leaves.
+    a = "\nA laser scanner measures the distance to whatever"
+    b = '  "explore": {{"heading_deg": 0-359, "why": "..."}}'
+    assert PROMPT_V5.count(a) == 1, "v6 anchor is not unique in v5"
+    out = PROMPT_V5.replace(a, "\n" + _WAY_BRANCH + a.lstrip("\n"), 1)
+    out = out.replace(b, _WAY_FIELDS + b, 1)
+    assert out.count("POINT AT THE WAY OUT") == 1, "way branch not inserted"
+    assert out.count('"way": {{') == 1, "way field not inserted"
+    return out
+
+
 def _make_v5() -> str:
     """v5 = v4 plus route constraints, again by surgery so v4 stays exact.
 
@@ -274,13 +325,17 @@ def _make_v4() -> str:
 
 PROMPT_V4 = _make_v4()
 PROMPT_V5 = _make_v5()
+PROMPT_V6 = _make_v6()
 
 PROMPTS: dict[str, str] = {
     "v3-occlusion-distance": PROMPT_V3,   # what TASK 26's numbers were measured on
     "v4-relational": PROMPT_V4,
     "v5-constraints": PROMPT_V5,
+    "v6-way-out": PROMPT_V6,
 }
-DEFAULT_PROMPT_VER = "v5-constraints"
+# v5 stays reachable by name: the offline scripts and the 117 cached replies are
+# keyed to it, and a scene that never leaves one room does not need v6.
+DEFAULT_PROMPT_VER = "v6-way-out"
 
 # Back-compat for callers that imported the module-level name.
 PROMPT = PROMPT_V3

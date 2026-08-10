@@ -15,8 +15,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from approach_loop import (JUMP_M, REVISIT_M, bind_target,  # noqa: E402
-                           corroborated, revisited)
+from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
+                           REVISIT_M,
+                           SPENT_CONE_DEG, SPENT_PENALTY, already_tried,
+                           bind_target, corroborated, explore_direction,
+                           lift_way, WAY_MAX_M,
+                           revisited)
 from execute_plan import (THROUGH_M, far_side_goal, gate_point,  # noqa: E402
                           same_thing, through_point, went_between, xy_of)
 from vlm_probe import parse  # noqa: E402
@@ -231,6 +235,302 @@ class TestRevisited:
         """Landing on a waypoint already visited has to count as a return."""
         from waypoint_converter_model import WAYPOINT_XY_RADIUS
         assert REVISIT_M > WAYPOINT_XY_RADIUS
+
+
+class TestAlreadyTried:
+    """Departure memory: the model cannot hold it, so the loop does.
+
+    Positions are the eight poses of `home_building_1` q5 leg 1, which searched
+    one hall for 183 s of a 400 s slice and left it by the same two doors.
+    """
+
+    def test_the_same_door_from_the_same_spot(self):
+        spent = [(np.array([0.0, 0.0]), np.array([-0.71, -0.70]))]
+        assert already_tried(np.array([0.05, -0.02]),
+                             np.array([-0.70, -0.71]), spent)
+
+    def test_the_same_heading_from_another_room_is_a_different_move(self):
+        spent = [(np.array([0.0, 0.0]), np.array([-0.71, -0.70]))]
+        assert not already_tried(np.array([-5.13, 0.16]),
+                                 np.array([-0.71, -0.70]), spent)
+
+    def test_another_door_from_the_same_spot_is_the_whole_point(self):
+        spent = [(np.array([0.0, 0.0]), np.array([-0.71, -0.70]))]
+        assert not already_tried(np.array([0.05, -0.02]),
+                                 np.array([0.0, 1.0]), spent)
+
+    def test_nothing_spent_yet(self):
+        assert not already_tried(np.array([0.0, 0.0]),
+                                 np.array([1.0, 0.0]), [])
+
+    def test_the_cone_is_wider_than_the_face_quantisation(self):
+        """The model's heading comes off 90° faces; the cone must survive that.
+
+        Otherwise the same corridor, nominated as 180° on one call and 135° on
+        the next, reads as two different corridors and nothing is ever spent.
+        """
+        assert SPENT_CONE_DEG >= 22.5
+
+    def test_a_repeat_is_discounted_not_forbidden(self):
+        """A room with one exit must keep that exit reachable."""
+        assert 0.0 < SPENT_PENALTY < 1.0
+
+
+class FlatTerrain:
+    """A converter model stand-in: everything drivable, nothing preferred."""
+
+    def reach_along(self, origin, u):
+        return 5.0
+
+
+class Doorway:
+    """A short opening straight ahead, a long corridor 30° off it.
+
+    The shape that made leg 1 unable to enter a room: the door the model wants
+    reaches 2 m, the hallway beside it reaches 6.
+    """
+
+    def reach_along(self, origin, u):
+        ang = np.degrees(np.arctan2(float(u[1]), float(u[0])))
+        if abs(ang) < 7.5:
+            return 2.0
+        if abs(ang - 30.0) < 7.5:
+            return 6.0
+        return 0.3
+
+
+class TestExploreDirectionMemory:
+    def test_the_door_beats_the_corridor(self):
+        """The whole fix, in one assertion.
+
+        `reach · cos(Δ)` scores the corridor 6·cos30 = 5.20 against the door's
+        2·cos0 = 2.00 and takes the corridor. Reach as a gate takes the door.
+        """
+        u, reach, delta = explore_direction(Doorway(), np.array([0.0, 0.0]),
+                                            0.0, [])
+        assert delta == 0.0
+        assert reach == 2.0
+        assert u[0] == pytest.approx(1.0)
+
+    def test_a_bearing_that_goes_nowhere_is_still_refused(self):
+        """loft drove into a wall three times; that gate has to survive.
+
+        Its numbers: the heading asked for reached 0.00 m and 30° off it
+        reached 5.16. Preferring the asked-for bearing must not mean taking one
+        the vehicle cannot move along at all.
+        """
+
+        class Loft:
+            def reach_along(self, origin, u):
+                ang = np.degrees(np.arctan2(float(u[1]), float(u[0])))
+                return 5.16 if abs(ang - 30.0) < 7.5 else 0.0
+
+        u, reach, delta = explore_direction(Loft(), np.array([0.0, 0.0]),
+                                            0.0, [])
+        assert reach == pytest.approx(5.16)
+        assert reach >= MIN_EXPLORE_M
+        assert delta == 30.0
+
+    def test_an_untried_direction_beats_a_spent_one(self):
+        """Equal reach both ways, so only the history can break the tie."""
+        want = 0.0
+        spent = [(np.array([0.0, 0.0]), np.array([1.0, 0.0]))]
+        u, _, delta = explore_direction(FlatTerrain(), np.array([0.0, 0.0]),
+                                        want, spent)
+        assert abs(delta) > 0.0
+        assert not already_tried(np.array([0.0, 0.0]), u, spent)
+
+    def test_with_no_history_it_takes_what_was_asked_for(self):
+        u, reach, delta = explore_direction(FlatTerrain(),
+                                            np.array([0.0, 0.0]), 0.0, [])
+        assert delta == 0.0
+        assert reach == 5.0
+        assert u[0] == pytest.approx(1.0)
+
+    def test_the_only_way_out_stays_reachable(self):
+        """One drivable bearing, already taken: it must still be chosen."""
+
+        class OneCorridor:
+            def reach_along(self, origin, u):
+                return 5.0 if float(u[0]) > 0.9 else 0.0
+
+        spent = [(np.array([0.0, 0.0]), np.array([1.0, 0.0]))]
+        u, reach, _ = explore_direction(OneCorridor(), np.array([0.0, 0.0]),
+                                        0.0, spent)
+        assert reach == 5.0
+        assert u[0] == pytest.approx(1.0)
+
+    def test_hemmed_in_on_all_sides_it_still_moves(self):
+        """Nothing clears the gate, so the old rule picks the least bad."""
+
+        class Boxed:
+            def reach_along(self, origin, u):
+                return 0.4 if float(u[0]) > 0.5 else 0.1
+
+        u, reach, _ = explore_direction(Boxed(), np.array([0.0, 0.0]), 0.0, [])
+        assert reach == pytest.approx(0.4)
+        assert u[0] > 0.5
+
+    def test_reach_no_longer_decides_between_viable_bearings(self):
+        """Two ways out, both fine, the nearer one wins however short it is."""
+
+        class TwoWays:
+            def reach_along(self, origin, u):
+                ang = np.degrees(np.arctan2(float(u[1]), float(u[0])))
+                if abs(ang - 15.0) < 7.5:
+                    return 0.6
+                if abs(ang - 90.0) < 7.5:
+                    return 40.0
+                return 0.0
+
+        _, reach, delta = explore_direction(TwoWays(), np.array([0.0, 0.0]),
+                                            0.0, [])
+        assert delta == 15.0 and reach == pytest.approx(0.6)
+
+
+class TestPromptV6:
+    """The way-out field, and that adding it left the older versions alone."""
+
+    def test_v5_is_byte_for_byte_unchanged(self):
+        """117 cached replies and every offline script are keyed to v5."""
+        from vlm_probe import PROMPT_V3, PROMPT_V4, PROMPT_V5, PROMPTS
+        assert PROMPTS["v5-constraints"] is PROMPT_V5
+        assert PROMPTS["v4-relational"] is PROMPT_V4
+        assert PROMPTS["v3-occlusion-distance"] is PROMPT_V3
+        assert "POINT AT THE WAY OUT" not in PROMPT_V5
+
+    def test_v6_asks_for_a_box_not_just_a_bearing(self):
+        from vlm_probe import PROMPT_V6
+        assert '"way": {{' in PROMPT_V6, "the schema must declare the field"
+        schema = PROMPT_V6.split('"way": {{')[1][:200]
+        assert "box_2d" in schema and "image_index" in schema
+
+    def test_v6_keeps_everything_v5_asked_for(self):
+        """Surgery, not a rewrite: the constraint and relational fields stay."""
+        from vlm_probe import PROMPT_V6
+        for field in ('"gate": [', '"avoid": [', '"candidates"', '"anchors"',
+                      '"explore"'):
+            assert field in PROMPT_V6, field
+
+    def test_v6_is_the_default_and_v5_is_still_selectable(self):
+        from vlm_probe import DEFAULT_PROMPT_VER, PROMPTS
+        assert DEFAULT_PROMPT_VER == "v6-way-out"
+        assert "v5-constraints" in PROMPTS
+
+    def test_it_says_to_box_the_opening_not_the_door(self):
+        """A door leaf is a flat panel; the scanner would return the panel."""
+        from vlm_probe import PROMPT_V6
+        assert "not the door leaf" in PROMPT_V6
+
+    def test_it_allows_saying_there_is_no_way_out(self):
+        """Otherwise the model boxes a wall to satisfy the schema."""
+        from vlm_probe import PROMPT_V6
+        assert "null" in PROMPT_V6.split('"way": {{')[1][:300]
+        assert "leave \"way\" null" in PROMPT_V6
+
+
+class TestLiftWay:
+    """`lift_way` reads the field; the lift itself is `_lift_xy`'s test."""
+
+    def test_no_way_field_is_no_way(self):
+        assert lift_way({}, np.zeros((0, 3)), {}) is None
+        assert lift_way({"way": None}, np.zeros((0, 3)), {}) is None
+
+    def test_a_partial_box_is_refused(self):
+        """Half an answer would lift to a wrong place rather than to nothing."""
+        assert lift_way({"way": {"box_2d": [0, 0, 10, 10]}},
+                        np.zeros((0, 3)), {}) is None
+        assert lift_way({"way": {"image_index": 0}},
+                        np.zeros((0, 3)), {}) is None
+
+    def test_a_string_where_an_object_belongs(self):
+        """The model sometimes answers a field with prose; that is not a box."""
+        assert lift_way({"way": "the doorway on the left"},
+                        np.zeros((0, 3)), {}) is None
+
+
+class TestWayRange:
+    """The lift's bearing is the model's; its range is the scanner's guess.
+
+    Recorded from `runs/hm1_q2_v6`, where four of seven lifts came back beyond
+    9 m because the ray passed through the opening and stopped in the room
+    after next.
+    """
+
+    @staticmethod
+    def clamp(here, seen):
+        """What `lift_way` does to a lifted point, without the lift."""
+        here, seen = np.asarray(here, float), np.asarray(seen, float)
+        v = seen - here
+        d = float(np.linalg.norm(v))
+        return here + v / d * min(d, WAY_MAX_M)
+
+    def test_the_first_step_no_longer_aims_outside_the_house(self):
+        """13.69 m to (+8.57, -10.68) — beyond anything the GT path visits."""
+        got = self.clamp([0.0, 0.0], [8.57, -10.68])
+        assert np.linalg.norm(got) == pytest.approx(WAY_MAX_M)
+
+    def test_the_bearing_survives_the_clamp(self):
+        """Only the range is doubted, so the direction must be untouched."""
+        here, seen = np.array([0.0, 0.0]), np.array([8.57, -10.68])
+        got = self.clamp(here, seen)
+        cos = float(np.dot(got, seen) / (np.linalg.norm(got)
+                                         * np.linalg.norm(seen)))
+        assert cos == pytest.approx(1.0)
+
+    def test_the_lift_that_worked_is_left_alone(self):
+        """4.47 m, and it is the one that drove the robot into the bedroom."""
+        here, seen = np.array([3.00, -3.18]), np.array([5.08, -7.13])
+        assert np.allclose(self.clamp(here, seen), seen)
+
+    def test_the_cap_clears_a_room(self):
+        """Under a room's width it would stop short of doorways worth taking."""
+        assert WAY_MAX_M >= 5.0
+
+    def test_lift_way_itself_clamps(self, monkeypatch):
+        """The shipped path, not just the arithmetic beside it."""
+        import approach_loop as al
+
+        monkeypatch.setattr(al, "_lift_xy",
+                            lambda *a, **k: np.array([8.57, -10.68, 0.0]))
+        monkeypatch.setattr(al, "scan_to_camera", lambda scan, pose: scan)
+        reply = {"way": {"box_2d": [0, 0, 10, 10], "image_index": 0}}
+        got = al.lift_way(reply, np.zeros((0, 3)),
+                          {"position": [0.0, 0.0, 0.0]})
+        assert got is not None
+        assert np.linalg.norm(got) == pytest.approx(WAY_MAX_M)
+
+    def test_lift_way_passes_a_near_opening_through(self, monkeypatch):
+        import approach_loop as al
+
+        monkeypatch.setattr(al, "_lift_xy",
+                            lambda *a, **k: np.array([5.08, -7.13, 0.0]))
+        monkeypatch.setattr(al, "scan_to_camera", lambda scan, pose: scan)
+        reply = {"way": {"box_2d": [0, 0, 10, 10], "image_index": 0}}
+        got = al.lift_way(reply, np.zeros((0, 3)),
+                          {"position": [3.00, -3.18, 0.0]})
+        assert np.allclose(got, [5.08, -7.13])
+
+    def test_lift_way_survives_a_lift_onto_the_vehicle(self, monkeypatch):
+        """A zero-length vector would divide by zero on the way to the cap."""
+        import approach_loop as al
+
+        monkeypatch.setattr(al, "_lift_xy",
+                            lambda *a, **k: np.array([1.0, 2.0, 0.0]))
+        monkeypatch.setattr(al, "scan_to_camera", lambda scan, pose: scan)
+        reply = {"way": {"box_2d": [0, 0, 10, 10], "image_index": 0}}
+        assert al.lift_way(reply, np.zeros((0, 3)),
+                           {"position": [1.0, 2.0, 0.0]}) is None
+
+
+class TestLoopBudget:
+    def test_a_leg_may_come_back_before_it_gives_up(self):
+        """The fix in one line: one return is no longer fatal.
+
+        Leg 1 stopped on its first return with 217 s of its slice unspent, and
+        the corridor it wanted was found five steps later by another clause.
+        """
+        assert MAX_LOOPS > 1
 
 
 class FakeWp:

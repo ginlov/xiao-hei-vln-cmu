@@ -550,7 +550,7 @@ def main() -> int:
     ap.add_argument("--container", default=CTR)
     ap.add_argument("--backend", choices=["claude", "gemini"], default="claude")
     ap.add_argument("--model", default=None)
-    ap.add_argument("--goto-steps", type=int, default=9,
+    ap.add_argument("--goto-steps", type=int, default=20,
                     help="safety cap on grounding calls per destination; the "
                          "real governor is the leg's share of --budget")
     ap.add_argument("--budget", type=float, default=BUDGET_S,

@@ -112,6 +112,26 @@ MIN_VIEW_MOVE_M = WAYPOINT_XY_RADIUS + 0.2
 # that landing on a waypoint already visited counts, and well under the 1.4 m
 # hops the ring around an object is walked in. See the circling test.
 REVISIT_M = 0.5
+# Two departures within this angle of each other are the same door. Wide,
+# because the model's heading is a guess off a 90° face and the terrain then
+# moves it up to another 90°; anything tighter would call the same corridor a
+# new one every time.
+SPENT_CONE_DEG = 40.0
+# What a repeated departure is worth. Not zero — see `explore_direction`.
+SPENT_PENALTY = 0.25
+# How many times a leg may loop back to a place it has already stood before we
+# accept that it cannot find the room. Three is one more than the two doors a
+# small hall usually offers, so a leg that is genuinely working its way round
+# is not cut off, while one oscillating between two of them is.
+MAX_LOOPS = 3
+# How far a boxed opening is allowed to be believed. The scanner sees *through*
+# a doorway and returns whatever stands behind it, which is what puts the lifted
+# point usefully past the threshold at close range and uselessly in the next
+# room but one at long range. On `home_building_1` four of seven lifts came back
+# beyond 9 m and the first, at 13.69 m, landed at (+8.57, -10.68) — outside the
+# whole extent the reference trajectory ever visits — which is what aimed the
+# leg east from its first move. Past this, keep the bearing and drop the range.
+WAY_MAX_M = 7.0
 
 
 class Robot:
@@ -220,8 +240,52 @@ def bind_constraints(reply: dict, scan: np.ndarray, pose: dict,
     return avoid
 
 
-def explore_direction(cm: ConverterModel, origin: np.ndarray,
-                      want: float) -> tuple[np.ndarray, float, float]:
+def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
+    """The opening the model boxed, as a point on the floor plan.
+
+    Same lift as a target or a gate anchor, on the one field that says where to
+    go rather than what to look at. Returns `None` when nothing was boxed or
+    the scanner had no return through it.
+
+    The range is trusted only out to `WAY_MAX_M`. What the model knows is which
+    way the opening lies; the distance comes from a ray that went *through* the
+    gap and stopped on whatever was behind it, so it is right near to hand and
+    meaningless far away. Beyond the cap the bearing is kept and the point is
+    pulled back onto it, which makes the robot approach the opening and look
+    again rather than commit to a coordinate in another room.
+    """
+    w = reply.get("way")
+    if not isinstance(w, dict) or w.get("box_2d") is None \
+            or w.get("image_index") is None:
+        return None
+    xy = _lift_xy(to_pixels(w["box_2d"], reply.get("coord_space"), G.FACE_SIZE),
+                  int(w["image_index"]), scan_to_camera(scan, pose), pose)
+    if xy is None:
+        return None
+    here = np.asarray(pose["position"], float)[:2]
+    v = np.asarray(xy, float)[:2] - here
+    d = float(np.linalg.norm(v))
+    if d <= 1e-6:
+        return None
+    return here + v / d * min(d, WAY_MAX_M)
+
+
+def already_tried(origin: np.ndarray, u: np.ndarray,
+                  spent: list[tuple[np.ndarray, np.ndarray]]) -> bool:
+    """Has the robot already left roughly here, going roughly this way?
+
+    Same place within `REVISIT_M`, same bearing within `SPENT_CONE_DEG`. Both
+    halves are needed: the same heading from a room away is a different move,
+    and the same spot by a different door is the whole point of coming back.
+    """
+    lim = float(np.cos(np.deg2rad(SPENT_CONE_DEG)))
+    return any(float(np.linalg.norm(origin - p)) < REVISIT_M
+               and float(np.dot(u, v)) > lim for p, v in spent)
+
+
+def explore_direction(cm: ConverterModel, origin: np.ndarray, want: float,
+                      spent: list[tuple[np.ndarray, np.ndarray]] | None = None,
+                      ) -> tuple[np.ndarray, float, float]:
     """A direction that is both what the model asked for and drivable.
 
     The model says which way is worth looking; the terrain says which way the
@@ -229,19 +293,51 @@ def explore_direction(cm: ConverterModel, origin: np.ndarray,
     three times — heading 270° had 0.00 m of reach while 30° away had 5.16 m,
     and every one of those refusals cost a grounding call.
 
-    Scored as `reach · cos(Δ)`: progress made in the direction actually asked
-    for, so a long detour never beats a shorter leg that goes the right way.
+    Reach is a **gate, not an objective**. Among the bearings the vehicle can
+    actually make `MIN_EXPLORE_M` along, the one nearest what was asked wins;
+    how much further any of them run does not enter the score.
+
+    It used to maximise `reach · cos(Δ)`, and that quietly made the loop unable
+    to leave a room. A doorway is a *short*-reach bearing — an 0.9 m opening
+    onto a small room stops the ray a couple of metres in — while the corridor
+    beside it runs five or six. Maximising reach therefore prefers the open
+    space to the door, every time, by construction. On `home_building_1` leg 1
+    that showed up as: the model named a door it could see on seven of nine
+    calls ("the wide framed doorway ... opens into a bedroom-like room with a
+    bed and lamp"), five of those nine were swung 15-30° off onto bearings
+    reaching 4.4-6.8 m, and the leg walked 20 m for 7 m of net displacement
+    without once entering a room.
+
+    `spent` holds departures already made in this leg, and one that repeats is
+    scored down by `SPENT_PENALTY` rather than forbidden. The model has no
+    record of which door it has already been through, so it keeps nominating
+    the one it just came out of; the terrain cannot tell those apart and only
+    the history can. Discounting rather than forbidding matters when a room has
+    exactly one exit: the way back is then the only legal move, and it must
+    stay reachable once everything else has been discounted equally.
+
+    When nothing clears the gate the old rule decides, so a vehicle hemmed in
+    on all sides still moves rather than standing still.
+
     Returns `(unit direction, reach, Δ in degrees)`.
     """
+    spent = spent or []
     best = (0.0, np.array([np.cos(want), np.sin(want)]), 0.0, 0.0)
+    fallback = (0.0, np.array([np.cos(want), np.sin(want)]), 0.0, 0.0)
     for delta in range(-90, 91, 15):
         th = want + np.deg2rad(delta)
         u = np.array([np.cos(th), np.sin(th)])
         reach = cm.reach_along(origin, u)
-        score = reach * float(np.cos(np.deg2rad(delta)))
-        if score > best[0]:
-            best = (score, u, reach, float(delta))
-    return best[1], best[2], best[3]
+        near = float(np.cos(np.deg2rad(delta)))
+        if already_tried(origin, u, spent):
+            near *= SPENT_PENALTY
+        if reach >= MIN_EXPLORE_M and near > best[0]:
+            best = (near, u, reach, float(delta))
+        far = reach * float(np.cos(np.deg2rad(delta)))
+        if far > fallback[0]:
+            fallback = (far, u, reach, float(delta))
+    win = best if best[0] > 0.0 else fallback
+    return win[1], win[2], win[3]
 
 
 def revisited(here: np.ndarray, stood: list[np.ndarray]) -> bool:
@@ -491,8 +587,11 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
     number is unique within a run.
     """
     prev_crop, bound, arrived = None, None, False
-    misses = stuck_explores = 0
+    misses = stuck_explores = loops = 0
     stood: list[np.ndarray] = []
+    # Departures already made in this leg, as (from, unit direction). The model
+    # cannot remember which door it has been through; this can.
+    spent: list[tuple[np.ndarray, np.ndarray]] = []
     # Readings the binding refused, so that two in a row agreeing with each
     # other can overrule it. Per-leg: the next clause is a different object.
     pending: list[np.ndarray] = []
@@ -552,11 +651,35 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                 ctx.record(rec)
                 return Outcome(True, f"arrived, circled back ({d:.2f} m)",
                                bound["xy"], prev_crop)
-            print(f"      back where it already stood and nothing is bound — "
-                  f"this leg is going in circles")
-            rec["stopped"] = "circling with nothing bound"
-            ctx.record(rec)
-            return Outcome(False, "circling with nothing bound", None, prev_crop)
+            # With nothing bound this used to end the leg, and that was wrong.
+            # Backing out of a dead end and returning to the hall to try another
+            # door is what searching a building *is*; the constant was written
+            # for a leg circling an object it had already found, where coming
+            # back means there is nothing more to gain. Here it means the
+            # opposite. On `home_building_1` it fired at step 8 of a leg holding
+            # 400 s and threw away 217 of them — the corridor to the bedrooms was
+            # then spotted five steps later, by a different clause.
+            #
+            # So: count it, tell the model, discount the ways already taken, and
+            # keep going. The leg still ends — on its own time slice, or after
+            # `MAX_LOOPS` returns, which is a bound on fruitless oscillation
+            # rather than on searching.
+            loops += 1
+            print(f"      back where it already stood, nothing bound "
+                  f"({loops}/{MAX_LOOPS}) — the way taken from here led nowhere "
+                  f"new; discounting it and looking again")
+            rec["looped"] = loops
+            ctx.visited.append(
+                "(the robot came back to this spot after leaving it — whatever "
+                "route it took from here revealed nothing new, so send it a "
+                "different way)")
+            if loops >= MAX_LOOPS:
+                print(f"      {loops} returns to the same ground with nothing "
+                      f"bound — this leg is going in circles")
+                rec["stopped"] = "circling with nothing bound"
+                ctx.record(rec)
+                return Outcome(False, "circling with nothing bound", None,
+                               prev_crop)
         stood.append(o[:2].copy())
 
         # Before the visibility branch: a keep-out anchor is most likely to be
@@ -620,29 +743,65 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # go that way. Ask the terrain instead, and then go as far as it
             # says — a leg that moves 0.13 m costs the same call as one that
             # moves 3 m and reveals nothing.
-            asked = None
+            asked = u = None
+            # An opening the model could actually see beats any bearing: a
+            # doorway is a short-reach direction with a long corridor beside it,
+            # so "through that door" and "along the wall past it" are only a few
+            # degrees apart as headings and a room apart as destinations.
+            way = lift_way(reply, scan, pose)
+            if way is not None and float(np.linalg.norm(way - o[:2])) \
+                    < MIN_VIEW_MOVE_M:
+                print(f"      way out boxed but already at it — falling back "
+                      f"to the heading")
+                way = None
             try:
                 cm = ConverterModel(terrain, keepout=keepout)
                 want = yaw_of(pose) - np.deg2rad(float(h))
                 asked = cm.reach_along(
                     o[:2], np.array([np.cos(want), np.sin(want)]))
-                u, reach, delta = explore_direction(cm, o[:2], want)
-                if reach >= MIN_EXPLORE_M:
-                    goal = o[:2] + u * min(reach, MAX_EXPLORE_M)
-                    best = cm.best_waypoint_toward(goal, o[:2],
+                if way is not None:
+                    # Aim past the opening, not at it. The scanner returns the
+                    # far side of the gap, and a waypoint on the threshold parks
+                    # the vehicle in the doorway the way a passage midpoint did.
+                    best = cm.best_waypoint_toward(way, o[:2],
                                                    min_move=MIN_VIEW_MOVE_M)
-                    if best is not None:
-                        goal = best[0]
+                    goal = way if best is None else best[0]
+                else:
+                    u, reach, delta = explore_direction(cm, o[:2], want, spent)
+                    if reach >= MIN_EXPLORE_M:
+                        goal = o[:2] + u * min(reach, MAX_EXPLORE_M)
+                        best = cm.best_waypoint_toward(goal, o[:2],
+                                                       min_move=MIN_VIEW_MOVE_M)
+                        if best is not None:
+                            goal = best[0]
             except ValueError as e:
                 print(f"      converter model unavailable ({e})")
-            if asked is not None:
+            if way is not None:
+                nm = (reply.get("way") or {}).get("name") or "opening"
+                wd = float(np.linalg.norm(way - o[:2]))
+                capped = " (range capped; bearing kept)" \
+                    if wd >= WAY_MAX_M - 1e-3 else ""
+                print(f"      way out: {nm!r} lifted to "
+                      f"({way[0]:+.2f}, {way[1]:+.2f}), "
+                      f"{wd:.2f} m away{capped}")
+            elif asked is not None:
+                repeat = u is not None and already_tried(o[:2], u, spent)
                 print(f"      heading {h}° reaches {asked:.2f} m; best drivable "
-                      f"is {delta:+.0f}° off it at {reach:.2f} m")
+                      f"is {delta:+.0f}° off it at {reach:.2f} m"
+                      f"{' (already taken from here)' if repeat else ''}")
             print(f"      NOT_VISIBLE — heading {h}°, "
                   f"driving to ({goal[0]:+.2f}, {goal[1]:+.2f})")
             rec["action"] = {"kind": "explore", "heading_deg": h,
                              "goal": goal.tolist(), "reach_m": reach,
-                             "delta_deg": delta}
+                             "delta_deg": delta,
+                             "way": None if way is None else way.tolist()}
+            # Remember the departure, not the heading the model asked for: what
+            # must not be repeated is the move actually made. Recorded from the
+            # goal so the fallback path — no converter, no `u` — is covered too.
+            step_v = goal - o[:2]
+            if float(np.linalg.norm(step_v)) > 1e-6:
+                spent.append((o[:2].copy(),
+                              step_v / float(np.linalg.norm(step_v))))
             if not ctx.dry_run:
                 rec["drive"] = ctx.robot.drive_to(goal[0], goal[1],
                                                   min(20.0, ctx.left()))
