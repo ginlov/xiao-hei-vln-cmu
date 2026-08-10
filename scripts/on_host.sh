@@ -2,6 +2,7 @@
 # scripts/on_host.sh — run the drive loop from a terminal ON the sim box.
 #
 #   scripts/on_host.sh setup                    one-off: venv + deps, no root needed
+#   scripts/on_host.sh key                      one-off: store the API key, 0600
 #   scripts/on_host.sh check                    is this box ready to drive?
 #   scripts/on_host.sh sim restart <scene>      the sim, without ssh
 #   scripts/on_host.sh run "<question>" [args]  drive a whole question
@@ -16,15 +17,24 @@
 # Pair it with tmux so the run outlives the ssh session too:
 #
 #   tmux new -s drive
-#   export ANTHROPIC_API_KEY=...
 #   scripts/on_host.sh run "Go near the magazine on the ottoman, ..."
 #   # detach with ctrl-b d; come back with `tmux attach -t drive`
 #
-# THE API KEY. These boxes are shared — ~/workspace has several people's
-# directories in it. Export the key for the session and let it die with the
-# shell. Do NOT put it in ~/.bashrc, ~/.profile or any file in the repo: a key
-# in a dotfile on a shared machine is readable by everyone with an account, and
-# outlives the reason you needed it. This script never writes it anywhere.
+# THE API KEY. Two ways, and the trade between them is persistence.
+#
+#   export ANTHROPIC_API_KEY=...    per session; dies with the shell
+#   scripts/on_host.sh key          stored in ~/.config/xiao-hei/env, mode 0600
+#
+# `key` prompts without echoing, so the value never reaches your shell history,
+# the process list, or this repo. The file lives outside the checkout on purpose
+# — a key committed to a repo that is going to be made public is the one mistake
+# here that cannot be undone by deleting the file.
+#
+# These boxes are shared: ~/workspace holds several people's directories. 0600
+# on the file and 0700 on its directory keep other accounts out, but the key is
+# now at rest on a machine you do not solely control, so **use a separate key
+# for the box** — one you can revoke without touching your laptop's. Never put
+# it in ~/.bashrc or ~/.profile, where it leaks into every process you start.
 
 set -euo pipefail
 
@@ -38,10 +48,14 @@ PY_MIN="3.12"
 # and the loop all agree without being told twice.
 export XIAO_HEI_SIM_HOST=local
 
+# Outside the repo, always. `git clean`, a branch switch, or a stray `git add`
+# cannot reach it there, and the submission repo is going to be public.
+ENV_FILE="${XIAO_HEI_ENV_FILE:-$HOME/.config/xiao-hei/env}"
+
 say()  { printf '\033[1m%s\033[0m\n' "$*" >&2; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31mon_host.sh: %s\033[0m\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
 # A venv of its own, deliberately not the repo's `.venv`: that one belongs to
 # whatever else is set up on this box, and adding opencv to someone's working
@@ -63,6 +77,45 @@ find_uv() {
 need_venv() {
   [ -x "$VENV/bin/python" ] ||
     die "no venv — run: scripts/on_host.sh setup"
+}
+
+# An explicit export always wins, so a one-off key for one run needs no edit to
+# the stored one. KEY_FROM records which, because "the key is set" and "the key
+# I think is set" are not the same claim when a stale file is lying around.
+KEY_FROM=""
+load_key() {
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then KEY_FROM="this shell"; return 0; fi
+  [ -f "$ENV_FILE" ] || return 0
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FROM="$ENV_FILE"
+  return 0
+}
+
+cmd_key() {
+  local key=""
+  # `read -s` keeps it off the terminal, and reading from the tty rather than
+  # stdin means a pasted heredoc or a pipe cannot smuggle it in unnoticed.
+  printf 'Anthropic API key (input hidden, ctrl-c to abort): ' >&2
+  read -rs key < /dev/tty || die "aborted"
+  printf '\n' >&2
+  [ -n "$key" ] || die "nothing entered — no file written"
+  case "$key" in
+    sk-ant-*) ;;
+    *) warn "that does not look like an Anthropic key (expected sk-ant-...);"
+       warn "writing it anyway — check it with: scripts/on_host.sh check" ;;
+  esac
+
+  mkdir -p "$(dirname "$ENV_FILE")"
+  chmod 700 "$(dirname "$ENV_FILE")"
+  # Create with the right mode *before* writing, not after: a world-readable
+  # moment is still a moment, and on a shared box that is the whole risk.
+  ( umask 077; : > "$ENV_FILE" )
+  chmod 600 "$ENV_FILE"
+  printf 'export ANTHROPIC_API_KEY=%s\n' "$key" >> "$ENV_FILE"
+  say "wrote $ENV_FILE ($(stat -c '%a %U' "$ENV_FILE" 2>/dev/null || echo 600))"
+  warn "this key is now at rest on a shared machine — use one you can revoke"
+  warn "separately from your laptop's. Remove it with: rm $ENV_FILE"
 }
 
 cmd_setup() {
@@ -153,10 +206,16 @@ cmd_check() {
     printf 'docker    unavailable — is this actually the sim box?\n'; bad=1
   fi
 
+  load_key
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    printf 'api key   set in this shell (%d chars)\n' "${#ANTHROPIC_API_KEY}"
+    printf 'api key   %d chars, from %s\n' "${#ANTHROPIC_API_KEY}" "$KEY_FROM"
+    if [ "$KEY_FROM" != "this shell" ]; then
+      local mode; mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
+      if [ "$mode" = 600 ]; then printf '  ok      %s is 0600\n' "$ENV_FILE"
+      else printf '  WARN    %s is %s, not 0600 — chmod 600 it\n' "$ENV_FILE" "$mode"; fi
+    fi
   else
-    printf 'api key   NOT set — export ANTHROPIC_API_KEY=... (this shell only)\n'
+    printf 'api key   NOT set — scripts/on_host.sh key, or export it for one shell\n'
     bad=1
   fi
   [ "$bad" -eq 0 ] && say "ready" || warn "not ready — see above"
@@ -164,13 +223,18 @@ cmd_check() {
 }
 
 require_key() {
+  load_key
   [ -n "${ANTHROPIC_API_KEY:-}" ] || die \
-"ANTHROPIC_API_KEY is not set in this shell.
+"no API key. Either store one:
+
+  scripts/on_host.sh key          -> $ENV_FILE, mode 0600
+
+or export it for this shell only:
 
   export ANTHROPIC_API_KEY=...
 
-Do not add it to ~/.bashrc on a shared box; export it per session so it dies
-with the shell."
+Not in ~/.bashrc, and not in this repo."
+  export ANTHROPIC_API_KEY
 }
 
 # The scene must be reset between runs — two runs from different starting poses
@@ -195,6 +259,7 @@ cmd_one() {
 
 case "${1:-}" in
   setup) shift; cmd_setup "$@" ;;
+  key)   shift; cmd_key "$@" ;;
   check) shift; cmd_check "$@" ;;
   sim)   shift; cmd_sim "$@" ;;
   run)   shift; cmd_run "$@" ;;

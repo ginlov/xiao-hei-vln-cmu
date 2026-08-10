@@ -238,6 +238,7 @@ leaves the robot parked wherever it got to and the log half-written.
 ssh xiaohei1
 cd ~/workspace/chengkai/vlm-drive          # see "getting the branch there"
 ./scripts/on_host.sh setup                 # venv + deps, no root needed
+./scripts/on_host.sh key                   # store the API key, once
 ./scripts/on_host.sh check                 # says exactly what is missing
 ```
 
@@ -245,7 +246,6 @@ Then, per session:
 
 ```bash
 tmux new -s drive                          # so the run survives the ssh session
-export ANTHROPIC_API_KEY=...               # this shell only — see below
 ./scripts/on_host.sh sim restart home_building_2
 ./scripts/on_host.sh run "Go near the magazine on the ottoman, then go to the potted plant on the dressing table." --out runs/hm2
 # ctrl-b d to detach; `tmux attach -t drive` to come back
@@ -253,12 +253,34 @@ export ANTHROPIC_API_KEY=...               # this shell only — see below
 
 `on_host.sh one "<phrase>"` is the single-destination equivalent.
 
-**The API key.** These boxes are shared — `~/workspace` has several people's
-directories in it. Export it per session and let it die with the shell. Do not
-put it in `~/.bashrc`, `~/.profile` or any file in the repo: a key in a dotfile
-on a shared machine is readable by everyone with an account and outlives the
-reason you needed it. `on_host.sh` never writes it anywhere, and refuses to run
-without it rather than failing at the first grounding call.
+### The API key on the box
+
+Two ways, and the trade between them is persistence:
+
+```bash
+./scripts/on_host.sh key         # once: ~/.config/xiao-hei/env, mode 0600
+export ANTHROPIC_API_KEY=...     # per shell; dies with it. Wins if both are set.
+```
+
+`key` prompts **without echoing** and reads from the tty, so the value never
+reaches your shell history, the process list, or a script's stdin. It creates
+the file under `umask 077` before writing a byte — a world-readable moment is
+still a moment — and puts it at `0600` inside a `0700` directory.
+
+Three things worth being deliberate about:
+
+- **It lives outside the checkout**, at `~/.config/xiao-hei/env`. A key
+  committed to a repo that is going to be made public is the one mistake here
+  that cannot be undone by deleting the file. Override with `XIAO_HEI_ENV_FILE`.
+- **Use a separate key for the box**, one you can revoke without touching your
+  laptop's. It is now at rest on a machine you do not solely control: `0600`
+  keeps the other accounts in `~/workspace` out, but root and snapshots are
+  still root and snapshots.
+- **Never `~/.bashrc` or `~/.profile`**, where it leaks into every process you
+  start, including anything else anyone runs in your session.
+
+`check` reports which source the key came from and warns if the file's mode has
+drifted off `0600`. `rm ~/.config/xiao-hei/env` undoes it.
 
 **What `setup` installs, and why so little.** `numpy`, `opencv-python-headless`,
 `anthropic`, `pillow`, `pydantic`, `scipy` — into `.venv-drive`, its own venv,
