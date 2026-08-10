@@ -158,6 +158,30 @@ Two lines that are not optional:
   tool-spawned shell has no key. This form pulls that one line and never prints
   the value.
 
+### The API key on the laptop
+
+The `eval` line above assumes the key is already in `~/.zshrc`:
+
+```bash
+printf '\nexport ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' >> ~/.zshrc
+chmod 600 ~/.zshrc
+```
+
+(Prefix that with a space, or edit the file, so the key does not land in your
+shell history.) On a single-user laptop a dotfile is fine; on the box it is not,
+which is why §3b says otherwise.
+
+If you would rather not leave it in plaintext, macOS Keychain works and the
+`eval` line becomes a `security` call:
+
+```bash
+security add-generic-password -a "$USER" -s anthropic-api-key -w   # prompts, hidden
+export ANTHROPIC_API_KEY="$(security find-generic-password -a "$USER" -s anthropic-api-key -w)"
+```
+
+Use a different key for the box than for the laptop — the point of two is being
+able to revoke one without losing the other.
+
 **Give every run a fresh `--out`.** Re-using a directory overwrites the files
 that collide and leaves the ones that do not, so the result is two runs mixed
 together with no marker saying which step came from which.
@@ -227,84 +251,63 @@ destination is still reachable from wherever the robot now stands.
 
 ## 3b. Running from a terminal on the box instead
 
-Everything above drives from the laptop over ssh. The alternative is to sit on
-the box itself, which is worth doing when **a run must outlive your laptop**: a
-question is up to ten minutes at ~30 s per step, and a dropped connection
-leaves the robot parked wherever it got to and the log half-written.
+Worth doing when **a run must outlive your laptop**: a question is up to ten
+minutes at ~30 s per step, and a dropped ssh leaves the robot parked wherever it
+got to and the log half-written.
 
-`scripts/on_host.sh` is that path. One-off, on the box:
+One-off, on the box:
 
 ```bash
 ssh xiaohei1
-cd ~/workspace/chengkai/vlm-drive          # see "getting the branch there"
-./scripts/on_host.sh setup                 # venv + deps, no root needed
-./scripts/on_host.sh key                   # store the API key, once
-./scripts/on_host.sh check                 # says exactly what is missing
+cd ~/workspace/chengkai/vlm-drive     # see "getting the branch there"
+./scripts/on_host.sh setup            # builds .venv-drive; needs no root
 ```
 
-Then, per session:
+Then it is two exports and the normal commands:
 
 ```bash
-tmux new -s drive                          # so the run survives the ssh session
-./scripts/on_host.sh sim restart home_building_2
-./scripts/on_host.sh run "Go near the magazine on the ottoman, then go to the potted plant on the dressing table." --out runs/hm2
+tmux new -s drive
+export XIAO_HEI_SIM_HOST=local        # this machine is the sim box
+export ANTHROPIC_API_KEY=sk-ant-...
+
+./scripts/sim.sh restart home_building_2
+.venv-drive/bin/python scripts/execute_plan.py "<question>" --out runs/x
 # ctrl-b d to detach; `tmux attach -t drive` to come back
 ```
 
-`on_host.sh one "<phrase>"` is the single-destination equivalent.
+`./scripts/on_host.sh check` says what is missing if something is.
 
-### The API key on the box
+**Why the venv, and why `setup` is the only part with a script.** The system
+python on these boxes has neither pip nor the venv module — `python3 -m venv`
+fails asking for `python3-venv`, which needs root — so `uv` is the only way to
+install anything, and `.venv-drive/bin/python` is the only interpreter that can
+run the loop. Everything else is a plain command.
 
-Two ways, and the trade between them is persistence:
+It installs six things: `numpy`, `opencv-python-headless`, `anthropic`,
+`pillow`, `pydantic`, `scipy`. No ROS — `robot_io.py` is copied *into* the
+container and run there.
+
+**`XIAO_HEI_SIM_HOST=local`** is what makes `sim.sh`, `drive.sh` and the loop
+talk to the local docker instead of ssh-ing somewhere. Forget it and they try to
+ssh to `xiaohei1` from `xiaohei1`.
+
+**The key** is a plain export, and on a shared box that is the right default —
+it dies with the shell. If you tire of retyping it, put it in a file only you
+can read, **not `~/.bashrc`**, which leaks it into every process you start:
 
 ```bash
-./scripts/on_host.sh key         # once: ~/.config/xiao-hei/env, mode 0600
-export ANTHROPIC_API_KEY=...     # per shell; dies with it. Wins if both are set.
+mkdir -p ~/.config/xiao-hei && chmod 700 ~/.config/xiao-hei
+( umask 077; printf 'export ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' > ~/.config/xiao-hei/env )
+source ~/.config/xiao-hei/env
 ```
 
-`key` prompts **without echoing** and reads from the tty, so the value never
-reaches your shell history, the process list, or a script's stdin. It creates
-the file under `umask 077` before writing a byte — a world-readable moment is
-still a moment — and puts it at `0600` inside a `0700` directory.
-
-Three things worth being deliberate about:
-
-- **It lives outside the checkout**, at `~/.config/xiao-hei/env`. A key
-  committed to a repo that is going to be made public is the one mistake here
-  that cannot be undone by deleting the file. Override with `XIAO_HEI_ENV_FILE`.
-- **Use a separate key for the box**, one you can revoke without touching your
-  laptop's. It is now at rest on a machine you do not solely control: `0600`
-  keeps the other accounts in `~/workspace` out, but root and snapshots are
-  still root and snapshots.
-- **Never `~/.bashrc` or `~/.profile`**, where it leaks into every process you
-  start, including anything else anyone runs in your session.
-
-`check` reports which source the key came from and warns if the file's mode has
-drifted off `0600`. `rm ~/.config/xiao-hei/env` undoes it.
-
-**What `setup` installs, and why so little.** `numpy`, `opencv-python-headless`,
-`anthropic`, `pillow`, `pydantic`, `scipy` — into `.venv-drive`, its own venv,
-not the repo's `.venv` (that one belongs to whatever else is set up on the box).
-No ROS: `robot_io.py` is copied *into* the container and run there, so `rclpy`
-and the message packages are the container's problem. `scipy` is the converter
-model's cKDTree; `pillow` and `pydantic` are only there because `vlm_locate`
-imports `xiao_hei_vln.perception.geometry` and that package's `__init__` eagerly
-pulls in the ROS responder.
-
-It uses **uv**, and not by preference: the system python on these boxes has
-neither `pip` nor the `venv` module, and `python3 -m venv` fails asking for
-`python3-venv`, which needs root. uv is already at `~/.local/bin/uv` on
-xiaohei1. If it is ever missing, `setup` prints how to get it.
-
-> `~/.local/bin` is not on `PATH` for `ssh box 'cmd'` (a non-login shell), so a
-> scripted check can report uv missing while it is perfectly present for the
-> person typing at the terminal. `on_host.sh` looks in `~/.local/bin` directly.
+Use a key you can **revoke separately from your laptop's**: `~/workspace` on
+these boxes holds four people's directories.
 
 **Getting the branch there.** xiaohei1 can `git fetch` (ssh remote); xiaohei2
-cannot (https remote, no credentials — use a git bundle). Do **not** switch the
-branch of `~/workspace/chengkai/xiao-hei-vln-cmu`: on xiaohei1 that checkout has
-other people's modified files in it. Add a worktree instead, which touches
-nothing that is already there:
+cannot (https remote, no credentials — send a `git bundle`). Do **not** switch
+the branch of `~/workspace/chengkai/xiao-hei-vln-cmu`; both boxes have other
+people's modified files in it. Add a worktree, which touches nothing:
 
 ```bash
 cd ~/workspace/chengkai/xiao-hei-vln-cmu
@@ -312,19 +315,6 @@ git fetch origin feature/vlm-approach-loop
 git worktree add ~/workspace/chengkai/vlm-drive origin/feature/vlm-approach-loop
 ```
 
-To update it later: `git -C ~/workspace/chengkai/vlm-drive fetch origin
-feature/vlm-approach-loop && git -C ~/workspace/chengkai/vlm-drive reset --hard
-origin/feature/vlm-approach-loop`.
-
-**`local` as a host.** `on_host.sh` exports `XIAO_HEI_SIM_HOST=local`, which
-makes `sim.sh`, `drive.sh` and the loop all skip ssh and talk to the local
-docker. You can set it by hand for the same effect:
-
-```bash
-export XIAO_HEI_SIM_HOST=local
-./scripts/sim.sh status
-./scripts/drive.sh 3.54 -2.60
-```
 
 ## 4. Read a run back
 
