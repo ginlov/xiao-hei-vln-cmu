@@ -10,8 +10,16 @@
 # `up` blocks until /terrain_map is publishing, so the next command in a script
 # can assume a live stack rather than sleeping and hoping.
 #
-#   XIAO_HEI_SIM_HOST   ssh host                 (default: xiaohei1)
-#   XIAO_HEI_SIM_SCENE  scene when none is given (default: japanese_room)
+#   XIAO_HEI_SIM_HOST       ssh host                 (default: xiaohei1)
+#   XIAO_HEI_SIM_SCENE      scene when none is given (default: japanese_room)
+#   XIAO_HEI_SIM_REPO       repo path on the box, relative to $HOME
+#   XIAO_HEI_SIM_SCENES     unpacked scene dirs      (default: discovered)
+#   XIAO_HEI_SIM_ARCHIVE    scene .zip dir           (default: discovered)
+#   XIAO_HEI_SIM_CONTAINER  sim container name       (default: iros2026_system)
+#
+# Set XIAO_HEI_SIM_HOST once and it governs the loop too — `execute_plan.py`
+# and `approach_loop.py` default `--host` to it, so a scene cannot be restarted
+# on one box and driven on the other.
 #
 # The API key never comes here: this file only starts ROS. The loop itself runs
 # on the laptop — see docs/guides/drive-loop-runbook.md.
@@ -26,27 +34,88 @@ set -euo pipefail
 HOST="${XIAO_HEI_SIM_HOST:-xiaohei1}"
 DEFAULT_SCENE="${XIAO_HEI_SIM_SCENE:-japanese_room}"
 # Relative to the remote $HOME, so they survive being passed as plain arguments.
-REPO_REL='workspace/chengkai/xiao-hei-vln-cmu'
-DATA_REL='workspace/dataset/unity-scene'
-CTR=iros2026_system
+REPO_REL="${XIAO_HEI_SIM_REPO:-workspace/chengkai/xiao-hei-vln-cmu}"
+CTR="${XIAO_HEI_SIM_CONTAINER:-iros2026_system}"
 READY_TIMEOUT=120
+
+# Where the scenes live, which the two boxes do not agree on:
+#
+#   xiaohei1  workspace/dataset/unity-scene            unpacked dirs AND zips
+#   xiaohei2  workspace/dataset/unity_scenes_extracted unpacked dirs
+#             workspace/dataset/unity_scenes           zips
+#
+# So it is two paths, not one, and they are discovered on the box rather than
+# assumed. Hardcoding xiaohei1's single directory is what made this script
+# xiaohei1-only: every other part of it was already host-agnostic.
+# An array, not a newline-joined string: `remote` ends up as `ssh host bash -s
+# -- "$@"`, and ssh concatenates argv into ONE remote command line, so an
+# embedded newline stops being data and becomes a command separator. That fails
+# loudly on one box ("No such file or directory") and quietly on the other.
+SCENE_CANDIDATES=(
+  workspace/dataset/unity-scene
+  workspace/dataset/unity_scenes_extracted
+  workspace/dataset/unity_scenes
+)
+
+SCENES_REL="${XIAO_HEI_SIM_SCENES:-}"     # unpacked scene directories
+ARCHIVE_REL="${XIAO_HEI_SIM_ARCHIVE:-}"   # the .zip files
 
 say()  { printf '\033[1m%s\033[0m\n' "$*" >&2; }
 die()  { printf 'sim.sh: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
-# The script body arrives on stdin; arguments follow `--`.
-remote() { ssh "$HOST" bash -s -- "$@"; }
+# The script body arrives on stdin; arguments follow `--`. When HOST names this
+# machine there is no ssh at all, which is what lets the same script be run from
+# a terminal on the box — see scripts/on_host.sh.
+is_local() { case "${HOST:-}" in local|localhost|127.0.0.1|"") return 0;; *) return 1;; esac; }
+remote() {
+  if is_local; then bash -s -- "$@"; else ssh "$HOST" bash -s -- "$@"; fi
+}
+
+# Find the scene directories on whichever box this is, once per invocation.
+# A candidate counts as the scenes directory if it holds at least one
+# subdirectory, and as the archive if it holds at least one zip — which lets one
+# directory be both, as it is on xiaohei1, without special-casing either box.
+discover_scenes() {
+  [ -n "$SCENES_REL" ] && [ -n "$ARCHIVE_REL" ] && return 0
+  local found
+  found="$(remote "${SCENE_CANDIDATES[@]}" <<'SH'
+scenes=; archive=
+for rel in "$@"; do
+  d="$HOME/$rel"
+  [ -d "$d" ] || continue
+  if [ -z "$scenes" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null)" ]; then
+    scenes="$rel"; echo "scenes=$rel"
+  fi
+  if [ -z "$archive" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -name '*.zip' -print -quit 2>/dev/null)" ]; then
+    archive="$rel"; echo "archive=$rel"
+  fi
+done
+SH
+)" || true
+  [ -n "$SCENES_REL" ]  || SCENES_REL="$(printf '%s\n' "$found" | sed -n 's/^scenes=//p'  | head -1)"
+  [ -n "$ARCHIVE_REL" ] || ARCHIVE_REL="$(printf '%s\n' "$found" | sed -n 's/^archive=//p' | head -1)"
+  # An archive-only box can still be unpacked into; a box with neither cannot
+  # be used at all, and saying so beats a mount of a path that does not exist.
+  [ -n "$SCENES_REL" ] || SCENES_REL="$ARCHIVE_REL"
+  [ -n "$ARCHIVE_REL" ] || ARCHIVE_REL="$SCENES_REL"
+  [ -n "$SCENES_REL" ] || die "no unity scene directory on $HOST — looked in:
+$(printf '  ~/%s\n' "${SCENE_CANDIDATES[@]}")
+set XIAO_HEI_SIM_SCENES (and XIAO_HEI_SIM_ARCHIVE) to point at it"
+}
 
 cmd_scenes() {
-  remote "$DATA_REL" <<'SH'
-data="$HOME/$1"
+  discover_scenes
+  say "scenes on $HOST: ~/$SCENES_REL${ARCHIVE_REL:+, zips in ~/$ARCHIVE_REL}"
+  remote "$SCENES_REL" "$ARCHIVE_REL" <<'SH'
+scenes="$HOME/$1"; archive="$HOME/$2"
 echo "unpacked:"
-ls -d "$data"/*/ 2>/dev/null | xargs -n1 basename | sed 's/^/  /' || echo "  (none)"
+ls -d "$scenes"/*/ 2>/dev/null | xargs -n1 basename | sed 's/^/  /' || echo "  (none)"
 echo "zipped only:"
-for z in "$data"/*.zip; do
+for z in "$archive"/*.zip; do
+  [ -e "$z" ] || continue
   n=$(basename "$z" .zip)
-  [ -d "$data/$n" ] || echo "  $n"
+  [ -d "$scenes/$n" ] || echo "  $n"
 done
 SH
 }
@@ -63,8 +132,9 @@ SH
 }
 
 cmd_status() {
-  remote "$CTR" <<'SH'
-ctr="$1"
+  discover_scenes
+  remote "$CTR" "$(basename "$SCENES_REL")" <<'SH'
+ctr="$1"; scenes_dir="$2"
 docker ps --format '{{.Names}}\t{{.Status}}' | sed 's/^/  /'
 docker ps --format '{{.Names}}' | grep -qx "$ctr" || { echo "  simulation: not running"; exit 0; }
 
@@ -82,7 +152,7 @@ p=$(docker exec "$ctr" bash -lc 'source /opt/ros/jazzy/setup.bash && ROS_DOMAIN_
     | tr -d ' ' | grep -E '^[xyz]:' | paste -sd' ' -) || p=
 [ -n "$p" ] && echo "  pose: $p"
 scene=$(docker inspect "$ctr" --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
-        | sed -n 's#.*/unity-scene/\([^/]*\).*#\1#p' | head -1) || scene=
+        | grep -F "/$scenes_dir/" | head -1 | xargs -r basename) || scene=
 [ -n "$scene" ] && echo "  scene: $scene"
 exit 0
 SH
@@ -103,9 +173,10 @@ SH
 # The scene currently bind-mounted, so `restart` with no argument reuses it
 # instead of silently switching to the default.
 current_scene() {
-  remote "$CTR" <<'SH' 2>/dev/null || true
+  discover_scenes
+  remote "$CTR" "$(basename "$SCENES_REL")" <<'SH' 2>/dev/null || true
 docker inspect "$1" --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
-  | sed -n 's#.*/unity-scene/\([^/]*\).*#\1#p' | head -1
+  | grep -F "/$2/" | head -1 | xargs -r basename
 SH
 }
 
@@ -113,6 +184,11 @@ cmd_up() {
   local scene="${1:-}"
   [ -n "$scene" ] || scene="$(current_scene)"
   [ -n "$scene" ] || scene="$DEFAULT_SCENE"
+  # Again here, and not only inside `current_scene`: that one runs in a command
+  # substitution, so what it discovers never reaches this scope. Without this
+  # the scene directory would be empty and the mount would be "$HOME/" — a
+  # container that starts, mounts the home directory, and renders nothing.
+  discover_scenes
 
   # Always tear down first. `docker/run dummy up -d` is a no-op when the
   # container already runs the requested scene, but this script then launches a
@@ -121,14 +197,17 @@ cmd_up() {
   # drive that timed out. Idempotent beats fast here.
   cmd_down
   say "starting $scene on $HOST"
-  remote "$scene" "$REPO_REL" "$DATA_REL" <<'SH'
+  remote "$scene" "$REPO_REL" "$SCENES_REL" "$ARCHIVE_REL" <<'SH'
 set -eu
-scene="$1"; repo="$HOME/$2"; data="$HOME/$3"
+scene="$1"; repo="$HOME/$2"; data="$HOME/$3"; archive="$HOME/$4"
 
 if [ ! -d "$data/$scene" ]; then
-  if [ -f "$data/$scene.zip" ]; then
-    echo "  unpacking $scene.zip"
-    (cd "$data" && unzip -q "$scene.zip")
+  if [ -f "$archive/$scene.zip" ]; then
+    # Unpacked into the scenes directory, which is not always the one the zip
+    # came from: on xiaohei2 the archives and the extracted scenes are separate.
+    echo "  unpacking $scene.zip -> $data/"
+    mkdir -p "$data"
+    (cd "$data" && unzip -q "$archive/$scene.zip")
   else
     echo "sim.sh: no scene '$scene' — try: scripts/sim.sh scenes" >&2
     exit 2

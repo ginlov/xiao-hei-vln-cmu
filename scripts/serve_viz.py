@@ -5,7 +5,7 @@ The viewer is plain files, so any static server works; this one exists so that
 `viz/vendor/` populates itself and the correct headers go out for the float32
 blob. Runs on whichever machine holds `viz/data` -- on the box, reach it with
 
-    ssh -N -L 8765:localhost:8765 xiaohei1
+    ssh -N -L 8765:localhost:8765 "${XIAO_HEI_SIM_HOST:-xiaohei1}"
 
 and open http://localhost:8765 in a local browser. No desktop session needed.
 

@@ -111,4 +111,4 @@ uv run python -c "import cv2" >/dev/null 2>&1 \
 rm -f "$OUT/_raw.jpg"
 echo
 echo "pull them to your laptop with:"
-echo "  rsync -a xiaohei1:${OUT#$HOME/} ./"
+echo "  rsync -a ${XIAO_HEI_SIM_HOST:-xiaohei1}:${OUT#$HOME/} ./"
