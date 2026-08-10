@@ -1,8 +1,20 @@
 # Runbook — stopping, starting, and driving the loop
 
-Operating instructions for `scripts/approach_loop.py` against the simulator on
-`xiaohei1`. Everything here was run on 2026-08-06; the failure notes are things
-that actually happened that day, not hypotheticals.
+Operating instructions for driving the simulator on `xiaohei1`. Everything here
+was run against it; the failure notes are things that actually happened, not
+hypotheticals. Sections 1–2 date from 2026-08-06, §3 onward from 2026-08-09.
+
+**Two entry points, and picking the wrong one costs a whole run.**
+
+| script | takes | use it for |
+|---|---|---|
+| `scripts/execute_plan.py` | a **whole question** | anything from `questions.json` — it decomposes the sentence and walks the clauses in order |
+| `scripts/approach_loop.py` | **one object phrase** | a single destination, or debugging one leg in isolation |
+
+`approach_loop.py` treats whatever you hand it as *one object description*. Give
+it a three-clause instruction and it will ground the sentence as a single thing,
+drive to whichever object it finds most identifiable, and report `ARRIVED` —
+having done a third of the question. That has happened; see §3.
 
 The split to keep in mind: **the API key never leaves the laptop.** The sim host
 runs only ROS. `approach_loop.py` runs locally and reaches the container over
@@ -86,17 +98,18 @@ ssh xiaohei1 "export DISPLAY=:0; xhost +local: >/dev/null 2>&1
 
 ---
 
-## 3. Run the loop
+## 3. Drive a whole question
 
-From the laptop, in the repo root:
+**This is the normal command.** From the laptop, in the repo root:
 
 ```bash
 cd ~/Workspace/vln-challenge/xiao-hei-vln-cmu
+./scripts/sim.sh restart home_building_2          # reset the pose first
 eval "$(grep -E '^[[:space:]]*export ANTHROPIC_API_KEY=' ~/.zshrc)"
 
-uv run --with anthropic python scripts/approach_loop.py \
-  "lantern closest to the fan decoration" \
-  --host xiaohei1 --out runs/jp5
+uv run --with anthropic python scripts/execute_plan.py \
+  "Go near the magazine on the ottoman, then go to the potted plant on the dressing table." \
+  --host xiaohei1 --out runs/hm2_v6
 ```
 
 Two lines that are not optional:
@@ -108,16 +121,49 @@ Two lines that are not optional:
   tool-spawned shell has no key. This form pulls that one line and never prints
   the value.
 
-### Flags
+**Give every run a fresh `--out`.** Re-using a directory overwrites the files
+that collide and leaves the ones that do not, so the result is two runs mixed
+together with no marker saying which step came from which.
+
+### See the plan without touching the robot
+
+```bash
+uv run --with anthropic python scripts/execute_plan.py "<question>" --plan-only
+```
+
+Costs one cached model call and no driving. Check the clause order before
+spending ten minutes of sim time on it.
+
+### Flags — `execute_plan.py`
 
 | flag | default | what it does |
 |---|---|---|
-| `--dry-run` | — | ground once, print the waypoint, drive nothing |
-| `--max-steps` | 6 | ceiling on grounding calls; each is ≈ $0.0265 |
-| `--prompt-version` | `v4-relational` | `v3-occlusion-distance` to compare against the pre-relational prompt |
-| `--standoff` | 0.6 | mostly superseded by the converter model choosing a legal point |
-| `--backend` | `claude` | `gemini` needs `XIAO_HEI_GEMINI_API_KEY` in `.env`, which does not exist yet |
+| `--plan-only` | — | decompose and print; touch no robot |
+| `--dry-run` | — | ground and compute waypoints, publish nothing |
+| `--budget` | 540 | seconds for the **whole question**; README allows 600 |
+| `--goto-steps` | 20 | safety cap on grounding calls per destination — the real governor is the leg's share of `--budget` |
+| `--model` | `claude-opus-5` | any vision model: `claude-sonnet-5`, `claude-fable-5`, `claude-haiku-4-5-20251001` |
+| `--backend` | `claude` | `gemini` reads `XIAO_HEI_GEMINI_API_KEY` (or `GEMINI_API_KEY`) from the environment; default model `gemini-2.5-flash` |
+| `--prompt-version` | `v6-way-out` | `v5-constraints` is the version the cached replies and the offline scripts are keyed to |
 | `--host` | — | omit to run inside the container instead of over ssh |
+
+`--model` does **not** reach the decomposition step, which always uses
+`claude-opus-5` — one cached call per question, 3.3 s, 30/30 on drive order.
+
+### One destination only
+
+```bash
+uv run --with anthropic python scripts/approach_loop.py \
+  "lantern closest to the fan decoration" \
+  --host xiaohei1 --out runs/jp5
+```
+
+Same flags minus the plan ones; `--max-steps` (default 6) replaces
+`--goto-steps`. **Do not hand this a multi-clause instruction.** Given
+`home_building_1` q5 it ground the whole sentence as one object, drove straight
+to the trash can in the last clause, skipped the bedroom and the passage
+entirely, and reported `ARRIVED` in 5 calls for $0.13 — a third of the question,
+scored as if it were the answer.
 
 ### What you get
 
@@ -125,17 +171,73 @@ Two lines that are not optional:
 
 | file | contents |
 |---|---|
+| `plan.json` | the decomposed clauses and one result row each — written **at the end**, so its absence means the run is still going or died |
 | `steps.jsonl` | one row per step: `pose`, `reply`, `relation`, `waypoint`, `converter` (the predicted settle point), `drive` |
 | `step<N>_face{0..3}.jpg` | the four faces sent to the model that step |
 | `step<N>_target.jpg` | the chosen box, cropped — fed to the next call as continuity |
+| `step<N>_{scan,terrain}.npy` | the geometry, so a waypoint can be re-derived after the fact |
 
-A run ends `ARRIVED` when the vehicle reached the point it asked for, or when
-the converter model says no legal point is any closer. `did not arrive` means
-it stopped for another reason, and `steps.jsonl` says which.
+A leg ends `arrived` when the vehicle reached the point it asked for, or when
+the converter model says no legal point is any closer. **A failed leg does not
+end the run** — scoring is per-constraint with partial credit, and the next
+destination is still reachable from wherever the robot now stands.
+
+`plan.json`'s `xy` is the **bound target**, not where the robot parked. To answer
+"did it actually get there", you need both that and the last `pose` in
+`steps.jsonl`.
 
 ---
 
-## Probing one phrase without driving
+## 4. Read a run back
+
+```bash
+uv run python scripts/show_run.py runs/hm2_v6              # whole run
+uv run python scripts/show_run.py runs/hm2_v6 --leg 1      # one clause
+uv run python scripts/show_run.py runs/hm2_v6 --full       # untruncated reasoning
+```
+
+Prints the scorecard, then one block per step: position, whether the target was
+visible, where it decided to go, and why. `steps.jsonl` carries several hundred
+words per row that the executor never reads; this shows the parts that decided
+where the robot went.
+
+Lines worth looking for:
+
+| line | means |
+|---|---|
+| `way out: '...' lifted to (x, y), N m away` | the v6 branch fired — the model boxed an opening and we drove to it rather than along a bearing |
+| `(range capped; bearing kept)` | the lift came back past `WAY_MAX_M`; the scanner saw through the opening into the room after next |
+| `heading N° reaches ... best drivable is ±D° off it` | no opening was boxed, so it fell back to a bearing |
+| `back where it already stood, nothing bound (k/3)` | a loop; not fatal until the third |
+| `seen, but the relation is unmeasurable` | the right *kind* of object, not the one the phrase names — still searching |
+| `no legal point closer than where we stand` | arrival at the platform's floor, which `obstacleDisThre` sets at roughly 0.9 m from furniture |
+
+## 5. Drive one waypoint by hand
+
+```bash
+./scripts/drive.sh 3.54 -2.60        # go there, print the whole driven track
+./scripts/drive.sh where             # current pose
+```
+
+For settling arguments about whether the stack *can* get somewhere. It prints
+the track, not just the endpoint, which is how a passage that was gone *around*
+rather than *through* gets caught.
+
+## 6. Decompose a sentence offline
+
+```bash
+uv run --with anthropic python scripts/decompose.py "<sentence>"
+uv run --with anthropic python scripts/decompose.py --diff        # all 30 official questions
+uv run --with anthropic python scripts/decompose.py --json --limit 5
+```
+
+`--diff` compares the model's split against the regex fallback on what the
+executor actually consumes: clause kinds in order, plus the keep-out count.
+Costs no sim time and caches to `artifacts/decompose_cache.json`.
+
+---
+
+## 7. Probing one phrase without driving
 
 ```bash
 uv run --with anthropic python scripts/vlm_probe.py \
@@ -185,6 +287,12 @@ the ground-truth answer, measuring 10.46 m against a true 10.22 m.
 | `529 OverloadedError` | API under sustained load | `max_retries` is already 8; raise with `XIAO_HEI_API_MAX_RETRIES` |
 | robot wedged, moves 0.02 m and stops | it is against the obstacle inflation | `./scripts/sim.sh restart`; the converter model now predicts this before driving |
 | `sim.sh up` times out after 120 s | Unity failed to start | `ssh xiaohei1 'docker exec iros2026_system cat /tmp/sim.log'` |
+| a run "finished" suspiciously fast, one destination of three | the question went to `approach_loop.py`, which grounds it as one object | use `execute_plan.py`; see §3 |
+| `plan.json` missing | it is written at the end — the run is still going, or it died | `ps aux \| grep execute_plan`; `steps.jsonl` is written as it goes |
+| steps from two different runs in one directory | `--out` was re-used; colliding names were overwritten and the rest left | fresh `--out` per run |
+| a leg reports `arrived` on the wrong object | the model matched the distinguishing feature and dropped the head noun — a clock on a TV sideboard answered "the nightstand with a clock on it" | not fixed; check the `evidence` field, which named the sideboard |
+| a search leg never leaves the first room | before TASK 35 this was `reach · cos(Δ)` preferring the corridor to the doorway | fixed; if it recurs, check whether `way out:` appears in the log at all |
+| output of a backgrounded run is empty | piping into `tail` buffers until the process exits | drop the pipe, or watch `steps.jsonl` |
 
 ## Reading the outcome offline
 
