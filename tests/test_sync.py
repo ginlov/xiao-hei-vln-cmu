@@ -106,6 +106,65 @@ class TestLatestCacheBasics:
         assert third.question is None
 
 
+class TestTimestampMatching:
+    """The camera lags, so snapshot() must pair pose+scan to the IMAGE stamp,
+    not hand back the freshest pose (TASK 27)."""
+
+    def test_pose_is_matched_to_the_image_stamp_not_the_latest(self) -> None:
+        cache = LatestCache()
+        cache.put_image(_image(1.0))            # camera is 0.4 s behind
+        for t in (0.8, 1.0, 1.2, 1.4):          # pose stream runs ahead
+            cache.put_pose(_pose(t))
+        snap = cache.snapshot(0, Stamp.from_seconds(1.4))
+        # Nearest to the image (1.0), not the newest (1.4).
+        assert snap.pose.header.stamp.to_seconds() == pytest.approx(1.0)
+
+    def test_registered_scan_is_matched_too(self) -> None:
+        cache = LatestCache()
+        cache.put_image(_image(2.0))
+        for t in (1.9, 2.05, 2.5):
+            cache.put_registered_scan(_scan("registered", t))
+        snap = cache.snapshot(0, Stamp.from_seconds(2.5))
+        assert snap.registered_scan.header.stamp.to_seconds() == pytest.approx(2.05)
+
+    def test_no_image_falls_back_to_latest(self) -> None:
+        # Without an anchor there is nothing to match to; latest is the only
+        # honest choice (and the old behaviour).
+        cache = LatestCache()
+        cache.put_pose(_pose(1.0))
+        cache.put_pose(_pose(2.0))
+        snap = cache.snapshot(0, Stamp.from_seconds(3.0))
+        assert snap.pose.header.stamp.to_seconds() == pytest.approx(2.0)
+
+    def test_gap_wider_than_window_falls_back_to_latest(self) -> None:
+        # A pose 5 s from the image is not "the image's pose" — a stream
+        # dropped out. Pairing them would be worse than using latest.
+        cache = LatestCache()
+        cache.put_image(_image(10.0))
+        cache.put_pose(_pose(2.0))
+        cache.put_pose(_pose(3.0))
+        snap = cache.snapshot(0, Stamp.from_seconds(10.0))
+        assert snap.pose.header.stamp.to_seconds() == pytest.approx(3.0)
+
+    def test_within_window_matches_even_when_latest_is_far(self) -> None:
+        cache = LatestCache()
+        cache.put_image(_image(5.0))
+        cache.put_pose(_pose(4.7))              # 0.3 s away — inside the window
+        cache.put_pose(_pose(9.0))              # newest, but way off
+        snap = cache.snapshot(0, Stamp.from_seconds(9.0))
+        assert snap.pose.header.stamp.to_seconds() == pytest.approx(4.7)
+
+    def test_history_bound_does_not_break_matching(self) -> None:
+        # More poses than the ring holds; the matched one must still be there
+        # as long as it is recent relative to the image.
+        cache = LatestCache()
+        for t in range(0, 400):
+            cache.put_pose(_pose(float(t) * 0.1))
+        cache.put_image(_image(39.5))
+        snap = cache.snapshot(0, Stamp.from_seconds(39.9))
+        assert snap.pose.header.stamp.to_seconds() == pytest.approx(39.5, abs=0.06)
+
+
 class TestLatestCacheConcurrency:
     def test_concurrent_writers_and_snapshots(self) -> None:
         cache = LatestCache()

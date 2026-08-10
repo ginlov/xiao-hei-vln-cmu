@@ -293,9 +293,10 @@ def replay_lift(
     min_inliers: int = 10,
     max_depth_m: float | None = None,
     use_object_map: bool = True,
-    # Off, to match production: app/main.py defaults XIAO_HEI_SCAN_KEYFRAMES to
-    # 0, which leaves the responder without an accumulator. Replaying with one
-    # measures a configuration we do not ship — and flatters nothing: stacking
+    # Off, which no longer matches production: app/main.py now defaults
+    # XIAO_HEI_SCAN_KEYFRAMES to 10 (main's value — see the note there).
+    # Left off here deliberately, so replay keeps measuring what this branch
+    # measured; flip it to compare — and flatters nothing: stacking
     # keyframes stretches an object's cloud, inflates its box, and splits it
     # into more nodes.
     use_scan_accumulator: bool = False,

@@ -74,8 +74,8 @@ class PerceptionResponder:
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
         take_waypoint_reached_signals: Callable[[], int] | None = None,
         logger: VLMLogger | None = None,
-        object_map: ObjectMap | None = None,
-        scan_accumulator: ScanAccumulator | None = None,
+        object_map: ObjectMap,
+        scan_accumulator: ScanAccumulator,
     ) -> None:
         """
         Args:
@@ -105,21 +105,17 @@ class PerceptionResponder:
                 ``trajectory_path``, but Phase A unit tests must
                 inject a stateful counter.
             logger: optional VLMLogger; receives per-tick records.
-            object_map: optional :class:`ObjectMap`. When supplied, each
-                detection's lifted LiDAR cloud is fused here (cross-frame
-                point-cloud union → converged 3D box, NMS, wall-sheet
-                rejection) and the fused snapshot is synced into ``scene``
-                every tick via ``sync_from_object_map`` — instead of the
-                per-detection ``scene.add_object`` path. ``None`` keeps the
-                historical add_object behaviour.
-            scan_accumulator: optional :class:`ScanAccumulator`, which
-                densifies the per-tick registered scan with a rolling window
-                of keyframes before lifting. **``None`` (the default) lifts
-                against the single current sweep**, which measured better on
-                both scenes we have corpora for: accumulation merges returns
-                taken metres apart, and the lifter's depth clustering cannot
-                separate those the way it separates an object from the wall
-                behind it. Pass one explicitly to re-enable it.
+            object_map: the :class:`ObjectMap` every detection's lifted
+                LiDAR cloud is fused into (cross-frame point-cloud union →
+                converged 3D box, NMS, wall-sheet rejection). The fused
+                snapshot is synced into ``scene`` every tick via
+                ``sync_from_object_map``.
+            scan_accumulator: the :class:`ScanAccumulator` that densifies
+                the per-tick registered scan with a rolling window of
+                keyframes before lifting, so small objects clear the
+                lifter's ``min_inliers`` gate with genuine on-surface
+                returns. The buffer persists across questions (the physical
+                scene is the same for the whole session).
         """
         self._scene = scene
         self._client = client
@@ -184,7 +180,7 @@ class PerceptionResponder:
     def ingest(self, snapshot: VLMInput) -> None:
         """Build the scene from this frame *without* answering.
 
-        Runs only the detect → lift → add_object cycle. The exploration
+        Runs only the detect → lift → fuse cycle. The exploration
         phase calls this every tick so the scene graph keeps growing while
         the explorer drives movement — importantly, it does **not** emit an
         answer even when a question is already active, so a question that
@@ -260,11 +256,11 @@ class PerceptionResponder:
         return ans
 
     # ------------------------------------------------------------------
-    # Scene maintenance — detect → lift → add_object
+    # Scene maintenance — detect → lift → fuse
     # ------------------------------------------------------------------
 
     def _inject_visible(self, snapshot: VLMInput) -> None:
-        """Run a detect → lift → add_object cycle for this tick.
+        """Run a detect → lift → fuse cycle for this tick.
 
         Silently skipped when the snapshot lacks the inputs the
         pipeline needs (no image, no pose, no scan). Empties from the
@@ -321,6 +317,9 @@ class PerceptionResponder:
             if self._scan_accum is not None
             else snapshot.registered_scan.points
         )
+        # The pose here is already matched to the image's stamp by LatestCache
+        # (TASK 27), so it is the pose the camera had when the frame was taken —
+        # no per-lift time-skew correction is needed.
         for det in detections:
             result = self._lifter.lift(
                 mask=det.mask,
@@ -331,27 +330,15 @@ class PerceptionResponder:
             if result.position is None:
                 continue
             color_rgb, color_name = _mask_color(bgr, det.mask)
-            if self._object_map is not None:
-                # Fuse this detection's lifted cloud across frames; the scene
-                # object layer is rebuilt from the fused snapshot below.
-                self._object_map.add(
-                    det.label, det.score, result.inlier_points,
-                    color_rgb, color_name,
-                )
-                continue
-            self._scene.add_object(ObjectObservation(
-                label=det.label,
-                position=result.position,
-                confidence=det.score,
-                color_rgb=color_rgb,      # median RGB of the masked pixels
-                color_name=color_name,    # nearest basic-colour label
-                bbox_min=None,            # AABB from a 2D mask isn't a 3D bbox;
-                bbox_max=None,            # leave None until we estimate it.
-            ))
+            # Fuse this detection's lifted cloud across frames; the scene
+            # object layer is rebuilt from the fused snapshot below.
+            self._object_map.add(
+                det.label, det.score, result.inlier_points,
+                color_rgb, color_name,
+            )
 
-        if self._object_map is not None:
-            # One fused snapshot → scene objects (with real 3D boxes) per tick.
-            self._scene.sync_from_object_map(self._object_map.export())
+        # One fused snapshot → scene objects (with real 3D boxes) per tick.
+        self._scene.sync_from_object_map(self._object_map.export())
 
     # ------------------------------------------------------------------
     # Question handlers — read from the live scene graph
@@ -483,7 +470,7 @@ def _size_from_obs(obs: ObjectObservation) -> Vector3:
     return Vector3(x=0.0, y=0.0, z=0.0)
 
 
-def _image_frame_to_bgr(image_frame) -> "np.ndarray":  # type: ignore[name-defined]
+def _image_frame_to_bgr(image_frame) -> np.ndarray:  # type: ignore[name-defined]
     """Convert an :class:`ImageFrame` into a ``(H, W, 3)`` BGR ndarray.
 
     The image arrives as raw bytes in ``bgr8`` encoding (per the
@@ -522,8 +509,8 @@ _COLOR_ANCHORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
 
 
 def _mask_color(
-    bgr: "np.ndarray",  # type: ignore[name-defined]
-    mask: "np.ndarray",  # type: ignore[name-defined]
+    bgr: np.ndarray,  # type: ignore[name-defined]
+    mask: np.ndarray,  # type: ignore[name-defined]
 ) -> tuple[tuple[int, int, int] | None, str | None]:
     """Return ``((r, g, b), name)`` for the pixels under ``mask``.
 

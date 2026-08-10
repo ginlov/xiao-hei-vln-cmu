@@ -38,6 +38,21 @@ V_FOV: float = 2.0 * np.pi / 3.0    # 120° vertical crop
 #
 # Encoded as a 4×4 homogeneous transform applied to *points in the sensor
 # frame* to get points in the *camera frame*: ``p_cam = T @ p_sensor``.
+#
+# NOTE the ROS translation is expressed in the SENSOR frame and has to be
+# rotated before it can be used here. With the camera origin at c = (0, 0, 0.1)
+# in sensor coords,
+#
+#     p_cam = R (p_sensor - c) = R p_sensor - R c
+#     -R c  = -0.1 * R ẑ = -0.1 * (0, -1, 0) = (0, +0.1, 0)
+#
+# i.e. 0.1 m along camera **+y (down)**, because the LiDAR sits below the
+# camera. This constant was previously (0, 0, 0.1) — the ROS numbers pasted in
+# unrotated, which displaced the camera 0.1 m FORWARD instead of 0.1 m
+# vertically. TASK 27 measured the cost against ground truth on
+# `captures_nav/arabic_room`: elevation residual 2.98° → 2.26°, forced-pair
+# agreement within 10° 68% → 98%, and the residual bias fell from -1.5° to
+# -0.5° (nothing systematic left to correct).
 
 _SENSOR_TO_CAMERA_ROTATION: np.ndarray = np.array([
     [0.0, -1.0,  0.0],
@@ -45,7 +60,7 @@ _SENSOR_TO_CAMERA_ROTATION: np.ndarray = np.array([
     [1.0,  0.0,  0.0],
 ], dtype=np.float64)
 
-_SENSOR_TO_CAMERA_TRANSLATION: np.ndarray = np.array([0.0, 0.0, 0.1], dtype=np.float64)
+_SENSOR_TO_CAMERA_TRANSLATION: np.ndarray = np.array([0.0, 0.1, 0.0], dtype=np.float64)
 
 
 def sensor_to_camera_transform() -> tuple[np.ndarray, np.ndarray]:

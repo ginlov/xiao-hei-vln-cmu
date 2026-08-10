@@ -6,8 +6,8 @@ Adapts SysNav's three-level hierarchical graph to the challenge sensor suite:
                 frame seen so far and the registered-scan bounding box.
     Viewpoint — one node per distinct robot pose; added when the robot moves
                 more than `viewpoint_radius` m from every existing node.
-    Object    — one node per detected instance; populated by the caller after
-                VLM inference via `add_object()`.
+    Object    — one node per detected instance; the whole layer is replaced
+                each tick from a fused `ObjectMap` via `sync_from_object_map()`.
 """
 
 from __future__ import annotations
@@ -61,12 +61,12 @@ class ObjectObservation:
 
     `position` is in the map frame.  `bbox_min`/`bbox_max` form an AABB;
     both may be `None` when LiDAR-based localisation is unavailable.
-    Confidence and position are updated in-place when a higher-confidence
-    observation of the same label arrives within `merge_radius`.
+    Every field is refreshed from the fused `ObjectMap` node this
+    observation mirrors, on each :meth:`SceneRepresentation.sync_from_object_map`.
 
     ``object_id`` is a stable identifier assigned by
-    :meth:`SceneRepresentation.add_object` — monotonic across the scene
-    lifetime and never reused. Callers should treat the default ``0``
+    :meth:`SceneRepresentation.sync_from_object_map` — monotonic across the
+    scene lifetime and never reused. Callers should treat the default ``0``
     as "unassigned" and not rely on it for identity; the scene
     representation stamps every accepted observation with a real id.
     """
@@ -78,8 +78,7 @@ class ObjectObservation:
     # ``color_rgb`` is the median (R, G, B) in 0-255; ``color_name`` is the
     # nearest basic-colour label (e.g. "red", "brown"). Both are ``None``
     # when no producer supplied a colour (e.g. LiDAR-only observations).
-    # Refreshed in lock-step with ``position`` when a higher-confidence
-    # observation of the same object arrives.
+    # The fused node keeps them in step with its best-scoring observation.
     color_rgb: tuple[int, int, int] | None = None
     color_name: str | None = None
     bbox_min: Vector3 | None = None
@@ -96,11 +95,11 @@ class ObjectObservation:
     last_tick_id: int = 0
     # Stable viewpoint ids (i.e. ``ViewpointNode.tick_id`` values) from
     # which this object has been observed. Each entry corresponds to a
-    # real Viewpoint node; ``add_object`` resolves the *current*
+    # real Viewpoint node; ``sync_from_object_map`` resolves the *current*
     # viewpoint (the latest viewpoint added at-or-before the observing
     # tick) so this list always doubles as the reverse Viewpoint→Object
     # edge.
-    observing_viewpoint_ids: list[int] = field(default_factory=list)  # edge: Viewpoint → Object (reverse)
+    observing_viewpoint_ids: list[int] = field(default_factory=list)  # edge: Viewpoint→Object
 
 
 # ---------------------------------------------------------------------------
@@ -112,25 +111,21 @@ class SceneRepresentation:
     """Incrementally maintained three-level scene graph.
 
     Instantiate once per question and call `update()` on every tick before
-    VLM inference. After inference, call `add_object()` whenever the VLM
-    output identifies an object instance.
+    VLM inference. After inference, call `sync_from_object_map()` with the
+    fused `ObjectMap` snapshot to refresh the object layer.
     """
 
     def __init__(
         self,
         *,
         viewpoint_radius: float = 2.0,
-        merge_radius: float = 1.5,
     ) -> None:
         """
         Args:
             viewpoint_radius: Minimum distance (m) the robot must travel
                 before a new `ViewpointNode` is added.
-            merge_radius: Maximum distance (m) between two detections of the
-                same label for them to be merged into one node.
         """
         self._viewpoint_radius = viewpoint_radius
-        self._merge_radius = merge_radius
 
         self._room = RoomNode()
         self._viewpoints: list[ViewpointNode] = []
@@ -175,69 +170,20 @@ class SceneRepresentation:
         if snapshot.registered_scan is not None:
             self._update_scene_bounds(snapshot.registered_scan)
 
-    def add_object(self, obs: ObjectObservation) -> None:
-        """Register an object detection from VLM output.
-
-        If an existing node has the same `label` within `merge_radius`, the
-        higher-confidence observation wins; otherwise a new node is appended.
-
-        ``observing_viewpoint_ids`` is appended with the *current*
-        viewpoint id — i.e. the latest viewpoint added at-or-before
-        ``self._tick_id`` — so the field is always a real edge into the
-        viewpoint nodes (no synthetic / non-viewpoint ticks land in it).
-        When no viewpoint exists yet (object reported before the robot
-        moved past the first viewpoint radius), nothing is appended; the
-        renderer falls back to anchoring such objects manually.
-        """
-        obs.last_tick_id = self._tick_id
-        vp_id = self._current_viewpoint_id()
-        for existing in self._objects:
-            if (
-                existing.label == obs.label
-                and _dist3(existing.position, obs.position) < self._merge_radius
-            ):
-                if obs.confidence >= existing.confidence:
-                    existing.position = obs.position
-                    existing.confidence = obs.confidence
-                    existing.bbox_min = obs.bbox_min
-                    existing.bbox_max = obs.bbox_max
-                    existing.last_tick_id = self._tick_id
-                    # Keep colour in step with position — only overwrite when
-                    # the new observation actually carries one, so a colourless
-                    # (e.g. LiDAR-only) update doesn't wipe a known colour.
-                    if obs.color_rgb is not None:
-                        existing.color_rgb = obs.color_rgb
-                        existing.color_name = obs.color_name
-                    if vp_id is not None and (
-                        not existing.observing_viewpoint_ids
-                        or existing.observing_viewpoint_ids[-1] != vp_id
-                    ):
-                        existing.observing_viewpoint_ids.append(vp_id)
-                return
-        obs.first_tick_id = self._tick_id
-        if vp_id is not None:
-            obs.observing_viewpoint_ids.append(vp_id)
-        # Overwrite any caller-provided object_id — the scene rep is the
-        # only authority on stable ids.
-        obs.object_id = self._next_object_id
-        self._next_object_id += 1
-        self._objects.append(obs)
-
     def sync_from_object_map(self, nodes: list[dict]) -> None:
         """Replace the object layer with a fused ``ObjectMap`` export.
 
-        This is the alternative to per-detection :meth:`add_object`: instead
-        of merging one median point at a time, the responder accumulates each
-        detection's LiDAR cloud in an :class:`ObjectMap`, then hands the fused
-        snapshot here every tick. Each ``nodes`` entry is a dict from
-        ``ObjectMap.export()`` (``node_id``, ``label``, ``score``,
-        ``center_3d``, ``bbox_aabb``, ``color_rgb``, ``color_name``).
+        This is the only way objects enter the graph. The responder
+        accumulates each detection's LiDAR cloud in an :class:`ObjectMap`,
+        then hands the fused snapshot here every tick. Each ``nodes`` entry
+        is a dict from ``ObjectMap.export()`` / ``to_list()`` (``node_id``,
+        ``label``, ``score``, ``center_3d``, ``bbox_aabb``, ``color_rgb``,
+        ``color_name``).
 
-        Unlike ``add_object``, fused nodes carry a real 3D box, so
-        ``bbox_min``/``bbox_max`` are populated. ``object_id`` is kept stable
-        per ``node_id`` across ticks (via :attr:`_node_object_ids`), and the
-        current viewpoint is recorded as an observing edge. Spatial relations
-        already attached to a surviving object are preserved.
+        Fused nodes carry a real 3D box, so ``bbox_min``/``bbox_max`` are
+        always populated. ``object_id`` is kept stable per ``node_id`` across
+        ticks (via :attr:`_node_object_ids`), and the current viewpoint is
+        recorded as an observing edge.
         """
         vp_id = self._current_viewpoint_id()
         prev = {o.object_id: o for o in self._objects}

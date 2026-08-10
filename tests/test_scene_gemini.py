@@ -37,7 +37,7 @@ from xiao_hei_vln.messages import (
     WaypointPathResponse,
 )
 from xiao_hei_vln.messages.sensors import TerrainMap
-from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
+from xiao_hei_vln.scene import SceneRepresentation
 from xiao_hei_vln.scene_gemini import SceneGeminiResponder
 
 
@@ -114,14 +114,22 @@ class FakePerception:
     def ingest(self, snapshot: VLMInput) -> None:
         self.ingest_calls += 1
         if self._add_label and self._scene is not None:
-            # Spread objects > merge_radius apart so the scene keeps them
-            # distinct (same-label detections within 1.5 m would merge).
-            self._scene.add_object(
-                ObjectObservation(
-                    label=self._add_label,
-                    position=Vector3(x=float(self.ingest_calls) * 3.0, y=0.0, z=0.5),
-                ),
-            )
+            # One fused node per ingest, mirroring the real responder: it
+            # re-syncs the whole object layer from the ObjectMap each tick,
+            # so every node seen so far must be re-sent.
+            self._scene.sync_from_object_map([
+                {
+                    "node_id": i,
+                    "label": self._add_label,
+                    "score": 1.0,
+                    "center_3d": [float(i) * 3.0, 0.0, 0.5],
+                    "bbox_aabb": {"min": [float(i) * 3.0 - 0.1, -0.1, 0.4],
+                                  "max": [float(i) * 3.0 + 0.1, 0.1, 0.6]},
+                    "color_rgb": None,
+                    "color_name": None,
+                }
+                for i in range(1, self.ingest_calls + 1)
+            ])
 
     def reset(self) -> None:
         self.reset_calls += 1

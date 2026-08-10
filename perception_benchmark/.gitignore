@@ -1,0 +1,10 @@
+# Large / regenerable benchmark artifacts. Code + key results are committed;
+# raw captures and debug dumps are not (regenerate with the scripts).
+captures/
+debug/
+__pycache__/
+*.pyc
+# review montages — regenerate with viz_viewpoints.py
+viewpoints/*.png
+# fused scene graphs — regenerate with replay_score.py
+scores/*_scene.json

@@ -21,7 +21,6 @@ _ALL_VARS = (
     "XIAO_HEI_PERCEPTION_BASE_URL",
     "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
     "XIAO_HEI_PERCEPTION_MIN_INLIERS",
-    "XIAO_HEI_OBJECT_MAP",
     "XIAO_HEI_SCAN_KEYFRAMES",
     "XIAO_HEI_SCAN_MIN_MOVE_M",
     "XIAO_HEI_SCAN_MIN_ROT_DEG",
@@ -50,17 +49,15 @@ def test_defaults_track_the_source_constants(clean_env: None) -> None:
     assert s.base_url == DEFAULT_BASE_URL
     assert s.score_threshold == DEFAULT_SCORE_THRESHOLD
     assert s.min_inliers == DEFAULT_MIN_INLIERS
-    assert s.use_object_map is False
 
 
 def test_scan_accumulator_defaults(clean_env: None) -> None:
     s = _PerceptionSettings.from_env()
 
-    # Accumulation is off by default: merging sweeps taken metres apart
-    # inflates every fused box, measurably on both scenes we have corpora for.
-    # The remaining knobs still carry their tuned values for when it is
-    # switched back on.
-    assert s.scan_keyframes == 0
+    # Accumulation is on by default at main's value. This branch measured 0 as
+    # better on the two scenes it has corpora for; see the note in
+    # `app/main.py`, where that disagreement is recorded rather than settled.
+    assert s.scan_keyframes == 10
     assert s.scan_min_move_m == pytest.approx(0.25)
     assert s.scan_min_rot_deg == pytest.approx(15.0)
     assert s.scan_voxel_m == pytest.approx(0.05)
@@ -93,22 +90,17 @@ def test_every_knob_is_overridable_and_typed(
     assert s.scan_voxel_m == pytest.approx(0.1)
 
 
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "Yes", "on", "ON"])
-def test_object_map_truthy_spellings(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch, value: str
+def test_object_map_fusion_is_not_configurable(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XIAO_HEI_OBJECT_MAP", value)
-    assert _PerceptionSettings.from_env().use_object_map is True
+    """ObjectMap fusion is unconditional; the old opt-in flag is gone.
 
+    A stale ``XIAO_HEI_OBJECT_MAP`` in someone's shell must not resurrect a
+    second code path — there is only one now, so the var is inert.
+    """
+    monkeypatch.setenv("XIAO_HEI_OBJECT_MAP", "0")
 
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
-def test_object_map_defaults_off_for_anything_else(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    """Off unless explicitly enabled — an unrecognised value must not enable
-    fusion, since that silently changes how objects reach the scene graph."""
-    monkeypatch.setenv("XIAO_HEI_OBJECT_MAP", value)
-    assert _PerceptionSettings.from_env().use_object_map is False
+    assert not hasattr(_PerceptionSettings.from_env(), "use_object_map")
 
 
 # --- logging ----------------------------------------------------------------
@@ -125,7 +117,6 @@ def test_log_config_is_json_safe_and_complete(clean_env: None) -> None:
         "perception_base_url",
         "score_threshold",
         "min_inliers",
-        "object_map",
     }
     json.loads(json.dumps(cfg))  # raises if a value isn't JSON-native
 
@@ -134,12 +125,12 @@ def test_log_config_reflects_overrides(
     clean_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", "0.75")
-    monkeypatch.setenv("XIAO_HEI_OBJECT_MAP", "1")
+    monkeypatch.setenv("XIAO_HEI_PERCEPTION_MIN_INLIERS", "25")
 
     cfg = _PerceptionSettings.from_env().as_log_config()
 
     assert cfg["score_threshold"] == pytest.approx(0.75)
-    assert cfg["object_map"] is True
+    assert cfg["min_inliers"] == 25
 
 
 def test_api_key_never_reachable_through_log_config(clean_env: None) -> None:

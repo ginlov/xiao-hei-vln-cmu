@@ -296,3 +296,14 @@ artifacts/
 
 # RStudio leaves these next to any file it opens.
 .Rhistory
+
+# Perception benchmark outputs
+perception_benchmark/captures
+perception_benchmark/captures_nav
+perception_benchmark/debug
+perception_benchmark/debug_noaccum
+perception_benchmark/scores
+perception_benchmark/viewpoints
+perception_benchmark/debug_baseline
+perception_benchmark/videos
+perception_benchmark/sweeps

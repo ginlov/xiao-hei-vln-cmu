@@ -64,19 +64,18 @@ def _exploration_dir() -> Path:
 
 @dataclass(frozen=True)
 class _PerceptionSettings:
-    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` / `XIAO_HEI_OBJECT_MAP`
-    knobs shared by every perception-backed responder.
+    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` knobs shared by every
+    perception-backed responder.
 
     Split out from `_build_responder` so the `perception` and `scene_gemini`
     branches read the environment through one code path — they used to parse
-    the same nine variables independently, which meant a default could drift
+    the same variables independently, which meant a default could drift
     between the two responders without anything failing.
     """
 
     base_url: str
     score_threshold: float
     min_inliers: int
-    use_object_map: bool
     scan_keyframes: int
     scan_min_move_m: float
     scan_min_rot_deg: float
@@ -98,14 +97,7 @@ class _PerceptionSettings:
             min_inliers=int(os.environ.get(
                 "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
             )),
-            # Opt-in: fuse detections across frames with ObjectMap (converged
-            # 3D boxes + NMS + wall-sheet rejection) instead of per-detection
-            # add_object. Off by default → the pipeline behaves as before.
-            use_object_map=os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
-                "1", "true", "yes", "on",
-            ),
-            # 0 disables multi-sweep accumulation — the measured default.
-            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "0")),
+            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
             scan_min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
             scan_min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
             scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
@@ -120,7 +112,6 @@ class _PerceptionSettings:
             "perception_base_url": self.base_url,
             "score_threshold": self.score_threshold,
             "min_inliers": self.min_inliers,
-            "object_map": self.use_object_map,
         }
 
 
@@ -140,6 +131,7 @@ def _build_perception_responder(
     from xiao_hei_vln.perception import PerceptionResponder
     from xiao_hei_vln.perception.client import HTTPPerceptionClient
     from xiao_hei_vln.perception.lifter import PointLifter
+    from xiao_hei_vln.perception.object_map import ObjectMap
     from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
     from xiao_hei_vln.perception.vocab import Vocabulary
 
@@ -151,12 +143,18 @@ def _build_perception_responder(
     # rejected (default in PointLifter). Independent of ObjectMap fusion.
     lifter = PointLifter(min_inliers=settings.min_inliers)
 
-    # Multi-sweep accumulation, off by default (XIAO_HEI_SCAN_KEYFRAMES=0).
-    # It densifies the sparse single sweep, but it does so by merging returns
-    # taken from viewpoints metres apart, and that inflates every fused box:
-    # measured on two scenes, disabling it cut box size error from 2.28x to
-    # 1.28x (livingroom_3) and 1.52x to 0.87x (chinese_room) while improving
-    # precision and recall. Set the env var above 0 to bring it back.
+    # Multi-sweep accumulation, ON by default (XIAO_HEI_SCAN_KEYFRAMES=10),
+    # which is main's value and the one this branch merged to.
+    #
+    # UNRESOLVED, and the merge could not decide it. This branch measured the
+    # opposite and defaulted it to 0: accumulation merges returns taken from
+    # viewpoints metres apart, and that inflated every fused box — box size
+    # error 2.28x -> 1.28x (livingroom_3) and 1.52x -> 0.87x (chinese_room)
+    # on disabling it, with precision and recall improving too. main's
+    # rationale is that the density is what lets small objects clear the
+    # lifter's `min_inliers` gate at all. Both were measured; neither
+    # measurement covers the other's scenes. Set the env var to 0 to get this
+    # branch's behaviour back while that is settled.
     scan_accum = (
         ScanAccumulator(
             max_keyframes=settings.scan_keyframes,
@@ -168,11 +166,6 @@ def _build_perception_responder(
         else None
     )
 
-    object_map = None
-    if settings.use_object_map:
-        from xiao_hei_vln.perception.object_map import ObjectMap
-        object_map = ObjectMap()
-
     return PerceptionResponder(
         scene,
         client=client,
@@ -182,7 +175,7 @@ def _build_perception_responder(
         trajectory_path=trajectory_path,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
         logger=logger,
-        object_map=object_map,
+        object_map=ObjectMap(),
         scan_accumulator=scan_accum,
     )
 
@@ -473,7 +466,6 @@ def main() -> None:
         "tick_hz": TICK_HZ,
         "scene": _EXPLORATION_SCENE,
         "exploration_strategy": _EXPLORATION_STRATEGY,
-        "object_map": os.environ.get("XIAO_HEI_OBJECT_MAP", ""),
         "score_threshold": os.environ.get("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", ""),
         "min_inliers": os.environ.get("XIAO_HEI_PERCEPTION_MIN_INLIERS", ""),
     })
@@ -544,7 +536,7 @@ def main() -> None:
         if explorer is not None and not explorer.is_complete():
             # Build the scene graph on the fly *while* exploring. scene.update()
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
-            # perception detect→lift→add_object cycle without ever emitting an
+            # perception detect→lift→fuse cycle without ever emitting an
             # answer (so a pending question stays deferred). Responders without
             # a scene path (dummy) simply don't expose ingest().
             scene.update(snapshot)
