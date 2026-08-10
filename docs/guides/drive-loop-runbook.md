@@ -48,6 +48,41 @@ Run it from the laptop; it does everything over ssh.
 straight into a run rather than sleeping and hoping. Measured on `xiaohei1`:
 `down` ~11 s, `up` ~12 s, `restart` ~24 s.
 
+### Choosing the box: `xiaohei1` or `xiaohei2`
+
+**Export it once and everything follows**, including the loop — `sim.sh`,
+`drive.sh`, `execute_plan.py` and `approach_loop.py` all read the same
+variable, so a scene cannot be restarted on one box and driven on the other:
+
+```bash
+export XIAO_HEI_SIM_HOST=xiaohei2
+./scripts/sim.sh restart home_building_2
+uv run --with anthropic python scripts/execute_plan.py "<question>" --out runs/x
+```
+
+`--host` still wins where it is given; it just no longer has to be.
+
+The two boxes keep their scenes in **different places**, so `sim.sh` finds them
+rather than assuming:
+
+| | unpacked scenes | zips |
+|---|---|---|
+| `xiaohei1` | `~/workspace/dataset/unity-scene` | same directory |
+| `xiaohei2` | `~/workspace/dataset/unity_scenes_extracted` | `~/workspace/dataset/unity_scenes` |
+
+Override with `XIAO_HEI_SIM_SCENES` / `XIAO_HEI_SIM_ARCHIVE` on a box that
+matches neither, and `XIAO_HEI_SIM_REPO` / `XIAO_HEI_SIM_CONTAINER` for the
+checkout path and the container name.
+
+**`xiaohei2` is shared** — `~/workspace` has `chengkai`, `long`, `rajath` and
+`yuxin` in it, and `xiao_hei_perception` is often running. `sim.sh down`, which
+`up` and `restart` both begin with, stops that container. Check `sim.sh status`
+and ask before taking the box.
+
+Both hosts' aliases live in `~/.ssh/config`, and **the public IP changes on
+every instance restart** — a connection timeout means the `HostName` there is
+stale, not that the box is down.
+
 ```
 $ ./scripts/sim.sh status
   iros2026_system	Up 11 seconds

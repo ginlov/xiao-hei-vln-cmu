@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import subprocess
 import sys
 import time
@@ -57,7 +58,13 @@ from vlm_probe import (DEFAULT_PROMPT_VER, NAMES, ask_claude,  # noqa: E402
 from faces import faces_of  # noqa: E402
 
 BRIDGE = Path(__file__).resolve().parent / "robot_io.py"
-CTR = "iros2026_system"
+CTR = os.environ.get("XIAO_HEI_SIM_CONTAINER", "iros2026_system")
+# The sim host, shared with `sim.sh` and `drive.sh` so that one setting governs
+# the whole session. There are two boxes, `xiaohei1` and `xiaohei2`, and having
+# `sim.sh` read the variable while the loop needed `--host` meant a scene could
+# be restarted on one and driven on the other — both commands succeed, the
+# robot is at the origin of a scene nobody is watching, and nothing says so.
+DEFAULT_HOST = os.environ.get("XIAO_HEI_SIM_HOST") or None
 ROS_ENV = ("source /opt/ros/jazzy/setup.bash && "
            "source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash && "
            "export ROS_DOMAIN_ID=0 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && ")
@@ -1050,8 +1057,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("phrase")
-    ap.add_argument("--host", default=None,
-                    help="ssh target running the sim; omit if this IS the sim host")
+    ap.add_argument("--host", default=DEFAULT_HOST,
+                    help="ssh target running the sim (default: $XIAO_HEI_SIM_HOST, "
+                         f"currently {DEFAULT_HOST or 'unset'}); omit and leave "
+                         "the variable unset if this IS the sim host")
     ap.add_argument("--container", default=CTR)
     ap.add_argument("--backend", choices=["claude", "gemini"], default="claude")
     ap.add_argument("--model", default=None)

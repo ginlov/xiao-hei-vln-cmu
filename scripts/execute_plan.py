@@ -55,8 +55,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
-from approach_loop import (COST_PER_CALL, CTR, KEEPOUT_M,  # noqa: E402
-                           MIN_VIEW_MOVE_M, PROGRESS_M, Ctx, Outcome, Robot,
+from approach_loop import (COST_PER_CALL, CTR, DEFAULT_HOST,  # noqa: E402
+                           KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M, Ctx,
+                           Outcome, Robot,
                            bind_constraints, explore_direction, explore_goal,
                            ground, run_goto, yaw_of)
 from decompose import decompose  # noqa: E402
@@ -545,8 +546,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("question")
-    ap.add_argument("--host", default=None,
-                    help="ssh target running the sim; omit if this IS the sim host")
+    ap.add_argument("--host", default=DEFAULT_HOST,
+                    help="ssh target running the sim (default: $XIAO_HEI_SIM_HOST, "
+                         f"currently {DEFAULT_HOST or 'unset'}); omit and leave "
+                         "the variable unset if this IS the sim host")
     ap.add_argument("--container", default=CTR)
     ap.add_argument("--backend", choices=["claude", "gemini"], default="claude")
     ap.add_argument("--model", default=None)

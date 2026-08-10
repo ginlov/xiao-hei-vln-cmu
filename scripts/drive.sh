@@ -15,12 +15,16 @@
 # is not the straight line between the two waypoints, and for a passage
 # question the difference is the entire answer.
 #
-#   XIAO_HEI_SIM_HOST   ssh host   (default: xiaohei1)
+#   XIAO_HEI_SIM_HOST       ssh host        (default: xiaohei1)
+#   XIAO_HEI_SIM_CONTAINER  sim container   (default: iros2026_system)
+#
+# Same variables `sim.sh` and the loop read, so one export points all three at
+# the same box.
 
 set -euo pipefail
 
 HOST="${XIAO_HEI_SIM_HOST:-xiaohei1}"
-CTR=iros2026_system
+CTR="${XIAO_HEI_SIM_CONTAINER:-iros2026_system}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROS_ENV='source /opt/ros/jazzy/setup.bash && source /home/docker/autonomy_stack_mecanum_wheel_platform/install/setup.bash && export ROS_DOMAIN_ID=0 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && '
 
