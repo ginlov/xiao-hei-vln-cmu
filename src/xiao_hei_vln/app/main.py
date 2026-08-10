@@ -64,19 +64,18 @@ def _exploration_dir() -> Path:
 
 @dataclass(frozen=True)
 class _PerceptionSettings:
-    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` / `XIAO_HEI_OBJECT_MAP`
-    knobs shared by every perception-backed responder.
+    """The `XIAO_HEI_PERCEPTION_*` / `XIAO_HEI_SCAN_*` knobs shared by every
+    perception-backed responder.
 
     Split out from `_build_responder` so the `perception` and `scene_gemini`
     branches read the environment through one code path — they used to parse
-    the same nine variables independently, which meant a default could drift
+    the same variables independently, which meant a default could drift
     between the two responders without anything failing.
     """
 
     base_url: str
     score_threshold: float
     min_inliers: int
-    use_object_map: bool
     scan_keyframes: int
     scan_min_move_m: float
     scan_min_rot_deg: float
@@ -98,12 +97,6 @@ class _PerceptionSettings:
             min_inliers=int(os.environ.get(
                 "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
             )),
-            # Opt-in: fuse detections across frames with ObjectMap (converged
-            # 3D boxes + NMS + wall-sheet rejection) instead of per-detection
-            # add_object. Off by default → the pipeline behaves as before.
-            use_object_map=os.environ.get("XIAO_HEI_OBJECT_MAP", "").lower() in (
-                "1", "true", "yes", "on",
-            ),
             scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
             scan_min_move_m=float(os.environ.get("XIAO_HEI_SCAN_MIN_MOVE_M", "0.25")),
             scan_min_rot_deg=float(os.environ.get("XIAO_HEI_SCAN_MIN_ROT_DEG", "15")),
@@ -119,7 +112,6 @@ class _PerceptionSettings:
             "perception_base_url": self.base_url,
             "score_threshold": self.score_threshold,
             "min_inliers": self.min_inliers,
-            "object_map": self.use_object_map,
         }
 
 
@@ -139,6 +131,7 @@ def _build_perception_responder(
     from xiao_hei_vln.perception import PerceptionResponder
     from xiao_hei_vln.perception.client import HTTPPerceptionClient
     from xiao_hei_vln.perception.lifter import PointLifter
+    from xiao_hei_vln.perception.object_map import ObjectMap
     from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
     from xiao_hei_vln.perception.vocab import Vocabulary
 
@@ -159,11 +152,6 @@ def _build_perception_responder(
         voxel_m=settings.scan_voxel_m,
     )
 
-    object_map = None
-    if settings.use_object_map:
-        from xiao_hei_vln.perception.object_map import ObjectMap
-        object_map = ObjectMap()
-
     return PerceptionResponder(
         scene,
         client=client,
@@ -173,7 +161,7 @@ def _build_perception_responder(
         trajectory_path=trajectory_path,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
         logger=logger,
-        object_map=object_map,
+        object_map=ObjectMap(),
         scan_accumulator=scan_accum,
     )
 
@@ -512,7 +500,7 @@ def main() -> None:
         if explorer is not None and not explorer.is_complete():
             # Build the scene graph on the fly *while* exploring. scene.update()
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
-            # perception detect→lift→add_object cycle without ever emitting an
+            # perception detect→lift→fuse cycle without ever emitting an
             # answer (so a pending question stays deferred). Responders without
             # a scene path (dummy) simply don't expose ingest().
             scene.update(snapshot)

@@ -35,7 +35,6 @@ are required — docker-compose sets them for you, but they can be overridden.
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Sidecar URL the responder talks to |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate. Lower → more detections, more noise |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped |
-| `XIAO_HEI_OBJECT_MAP` | (off) | `1` fuses detections into converged 3D boxes (NMS + wall-sheet rejection) |
 | `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Keyframes accumulated to densify the sparse single sweep before lifting |
 | `XIAO_HEI_SCAN_MIN_MOVE_M` | `0.25` | Minimum translation (m) between accumulated keyframes |
 | `XIAO_HEI_SCAN_MIN_ROT_DEG` | `15` | Minimum rotation (deg) between accumulated keyframes |

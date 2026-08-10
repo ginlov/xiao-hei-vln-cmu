@@ -29,7 +29,7 @@ from xiao_hei_vln.messages import (
     VLMInput,
 )
 from xiao_hei_vln.perception.global_map import GlobalMap
-from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
+from xiao_hei_vln.scene import SceneRepresentation
 
 
 def _stamp() -> Stamp:
@@ -112,15 +112,20 @@ class TestBuildBundle:
 
     def test_scene_objects_appear_in_dict(self) -> None:
         gm = _populated_map()
-        scene = SceneRepresentation(viewpoint_radius=0.5, merge_radius=0.5)
+        scene = SceneRepresentation(viewpoint_radius=0.5)
         scene.update(_snapshot(0, _pose(0.0, 0.0)))
-        scene.add_object(
-            ObjectObservation(
-                label="cup",
-                position=Vector3(x=1.0, y=0.5, z=0.7),
-                confidence=0.9,
-            ),
-        )
+        scene.sync_from_object_map([
+            {
+                "node_id": 0,
+                "label": "cup",
+                "score": 0.9,
+                "center_3d": [1.0, 0.5, 0.7],
+                "bbox_aabb": {"min": [1.0 - 0.1, 0.5 - 0.1, 0.7 - 0.1],
+                               "max": [1.0 + 0.1, 0.5 + 0.1, 0.7 + 0.1]},
+                "color_rgb": None,
+                "color_name": None,
+            },
+        ])
         bundle = build_bundle(
             snapshot=_snapshot(0, _pose(0.0, 0.0)),
             scene=scene,

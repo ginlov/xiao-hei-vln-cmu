@@ -121,8 +121,6 @@ services:
       - XIAO_HEI_PERCEPTION_BASE_URL=${XIAO_HEI_PERCEPTION_BASE_URL:-http://localhost:8001}
       - XIAO_HEI_PERCEPTION_SCORE_THRESHOLD
       - XIAO_HEI_PERCEPTION_MIN_INLIERS
-      # Opt-in ObjectMap fusion (converged 3D boxes + NMS). Empty → off.
-      - XIAO_HEI_OBJECT_MAP=${XIAO_HEI_OBJECT_MAP:-}
       # Gemini reasoning. The key is required; interpolated (not bare) so a
       # value in .env is picked up — `docker compose` only feeds .env into
       # ${...} substitutions, never into bare `- VAR` pass-throughs.

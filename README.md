@@ -206,7 +206,6 @@ Optional knobs (all have defaults; just `export` to override):
 | Env var | Default | Purpose |
 |---|---|---|
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | frontier sweep budget; `0` disables exploration |
-| `XIAO_HEI_OBJECT_MAP` | (off) | `1` fuses detections into converged 3D boxes (NMS + wall-sheet rejection) |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate |
 | `XIAO_HEI_GEMINI_MODEL` | `gemini-2.5-flash` | model id |
 | `XIAO_HEI_GEMINI_TEMPERATURE` | `0.2` | sampling temperature |

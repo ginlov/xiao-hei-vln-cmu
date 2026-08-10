@@ -39,11 +39,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from xiao_hei_vln.eval_sampler.object_list import parse_object_list
 from xiao_hei_vln.gemini.engine import GeminiEngineProtocol
 from xiao_hei_vln.messages import QuestionType, VLMOutput
 from xiao_hei_vln.messages.common import Vector3
-from xiao_hei_vln.scene import ObjectObservation, SceneRepresentation
+from xiao_hei_vln.perception.object_map import ObjectMap
+from xiao_hei_vln.scene import SceneRepresentation
 
 log = logging.getLogger(__name__)
 
@@ -258,61 +261,106 @@ def offline_system_prompt(qtype: QuestionType) -> str:
 # --- scene-graph reconstruction --------------------------------------------
 
 
+def _verbatim_object_map() -> ObjectMap:
+    """An :class:`ObjectMap` that stores every box exactly as handed to it.
+
+    The offline sources below are already one entry per object — VLA-3D
+    ground truth, or a scene dump the live ObjectMap has *already* fused —
+    so a second round of fusion could only lose objects the caller listed.
+    Merging is disabled with an unreachable IoU (>1) and a negative centre
+    distance; suppression with an unreachable NMS IoU and ``nms_dist=0``,
+    which :meth:`ObjectMap._suppresses` treats as "off".
+    """
+    return ObjectMap(merge_iou=2.0, merge_dist=-1.0, nms_iou=2.0,
+                     nms_dist=0.0, nms_gap=0.0)
+
+
+def _corner_points(bmin: Vector3, bmax: Vector3) -> np.ndarray:
+    """The 8 corners of an AABB.
+
+    ``_Node`` derives its centre and box from the points it is given, so this
+    is how an already-known box is expressed in the point-cloud vocabulary
+    ObjectMap speaks. The corner set reproduces both exactly: ``_aabb`` returns
+    ``(bmin, bmax)``, and the centre is the box centre under either branch of
+    ``robust_center`` (the corners are symmetric about it, so the gated mean
+    and the median fallback agree).
+    """
+    return np.array(
+        [[x, y, z] for x in (bmin.x, bmax.x)
+         for y in (bmin.y, bmax.y)
+         for z in (bmin.z, bmax.z)],
+        dtype=np.float64,
+    )
+
+
+def _sync_boxes(scene: SceneRepresentation, boxes: list[dict]) -> None:
+    """Push ``boxes`` into *scene* through the ObjectMap path.
+
+    ``boxes`` entries carry ``label``, ``score``, ``bmin``/``bmax`` and
+    optional colour. Nodes are emitted with :meth:`ObjectMap.to_list` rather
+    than :meth:`ObjectMap.export`, deliberately: ``export`` runs ``finalize``
+    + ``prune``, which would drop these single-observation nodes on
+    ``min_pts`` and could discard flat-label ground truth as a wall sheet.
+    """
+    omap = _verbatim_object_map()
+    for b in boxes:
+        omap.add(b["label"], b["score"], _corner_points(b["bmin"], b["bmax"]),
+                 b.get("color_rgb"), b.get("color_name"))
+    scene.sync_from_object_map(omap.to_list())
+
+
 def build_scene(object_list: list[str]) -> SceneRepresentation:
     """Rebuild a :class:`SceneRepresentation` from a VLA-3D ``object_list``.
 
-    Each object becomes one :class:`ObjectObservation` with an
-    axis-aligned bbox derived from its centre + size. Same-label merging
-    is disabled (``merge_radius=0``) so every ground-truth object is kept
-    distinct; ``near`` spatial edges are then derived so the graph Gemini
-    sees carries relational context.
+    Each object becomes one ObjectMap node with an axis-aligned bbox derived
+    from its centre + size, synced into the scene's object layer. Fusion is
+    disabled (see :func:`_verbatim_object_map`) so every ground-truth object
+    is kept distinct; ``near`` spatial edges are then derived so the graph
+    Gemini sees carries relational context.
     """
-    scene = SceneRepresentation(merge_radius=0.0)
+    scene = SceneRepresentation()
     entries = parse_object_list(object_list)
+    boxes = []
     for oid in sorted(entries):
         e = entries[oid]
         bmin, bmax = _aabb(e.center, e.size)
-        scene.add_object(
-            ObjectObservation(
-                label=e.label,
-                position=e.center,
-                confidence=1.0,
-                bbox_min=bmin,
-                bbox_max=bmax,
-                color_name=e.color,
-            )
-        )
+        boxes.append({"label": e.label, "score": 1.0, "bmin": bmin, "bmax": bmax,
+                      "color_name": e.color})
+    _sync_boxes(scene, boxes)
     _set_scene_bounds(scene)
     return scene
 
 
 def scene_from_to_dict(data: dict[str, Any]) -> SceneRepresentation:
-    """Rebuild a scene from a ``SceneRepresentation.to_dict()`` dump."""
-    scene = SceneRepresentation(merge_radius=0.0)
+    """Rebuild a scene from a ``SceneRepresentation.to_dict()`` dump.
+
+    An object with no stored bbox (a dump from before ObjectMap fusion was
+    unconditional) becomes a zero-size box at its centre — the ObjectMap path
+    has no way to express "centre known, extent unknown".
+    """
+    scene = SceneRepresentation()
+    boxes = []
     for obj in data.get("objects") or []:
         pos = obj.get("position") or [0.0, 0.0, 0.0]
+        center = Vector3(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]))
         bmin = obj.get("bbox_min")
         bmax = obj.get("bbox_max")
         color_rgb = obj.get("color_rgb")
-        scene.add_object(
-            ObjectObservation(
-                label=str(obj.get("label") or "unknown"),
-                position=Vector3(x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
-                confidence=float(obj.get("confidence", 1.0)),
-                bbox_min=(
-                    Vector3(x=float(bmin[0]), y=float(bmin[1]), z=float(bmin[2]))
-                    if bmin is not None
-                    else None
-                ),
-                bbox_max=(
-                    Vector3(x=float(bmax[0]), y=float(bmax[1]), z=float(bmax[2]))
-                    if bmax is not None
-                    else None
-                ),
-                color_name=obj.get("color_name"),
-                color_rgb=tuple(color_rgb) if color_rgb is not None else None,
-            )
-        )
+        boxes.append({
+            "label": str(obj.get("label") or "unknown"),
+            "score": float(obj.get("confidence", 1.0)),
+            "bmin": (
+                Vector3(x=float(bmin[0]), y=float(bmin[1]), z=float(bmin[2]))
+                if bmin is not None else center
+            ),
+            "bmax": (
+                Vector3(x=float(bmax[0]), y=float(bmax[1]), z=float(bmax[2]))
+                if bmax is not None else center
+            ),
+            "color_name": obj.get("color_name"),
+            "color_rgb": tuple(color_rgb) if color_rgb is not None else None,
+        })
+    _sync_boxes(scene, boxes)
     bounds = (data.get("room") or {}).get("scene_bounds")
     if isinstance(bounds, list) and len(bounds) == 2:
         mn, mx = bounds

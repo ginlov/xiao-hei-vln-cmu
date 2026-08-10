@@ -283,3 +283,16 @@ weights/
 dataset_generator/captures/
 dataset_generator/branchA_sample/
 dataset_generator/live_frames/
+
+
+# artifacts
+artifacts/*
+perception_benchmark/captures
+perception_benchmark/captures_nav
+perception_benchmark/debug
+perception_benchmark/debug_noaccum
+perception_benchmark/scores
+perception_benchmark/viewpoints
+perception_benchmark/debug_baseline
+perception_benchmark/videos
+perception_benchmark/sweeps

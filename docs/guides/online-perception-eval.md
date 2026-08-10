@@ -24,8 +24,7 @@ At test time the robot exposes **only** the 360 camera, the LiDAR clouds
 ```bash
 xhost +local:
 export XIAO_HEI_SCENE_DIR_HOST=$SCENES/arabic_room   # sim loads this scene
-export XIAO_HEI_RESPONDER=perception
-export XIAO_HEI_OBJECT_MAP=1                          # cross-frame fusion + 3D boxes
+export XIAO_HEI_RESPONDER=perception                      # cross-frame fusion + 3D boxes
 docker/run perception up -d
 ```
 
@@ -157,8 +156,8 @@ uv run --extra perception python -m xiao_hei_vln.perception.eval \
 | `counting_MAE`, `counting_exact_frac` | per-class count error (numerical-question proxy) |
 | `confusion` | label confusion of matched pairs |
 
-`iou@0.25` is only meaningful with 3D boxes, i.e. `XIAO_HEI_OBJECT_MAP=1`
-(the baseline emits a single point per object, so its IoU is 0).
+`iou@0.25` needs the 3D boxes that ObjectMap fusion produces; these are
+always populated now, so the metric is always meaningful.
 
 ## Tear down
 
@@ -171,7 +170,6 @@ docker/run down
 | var | default | effect |
 |---|---|---|
 | `XIAO_HEI_RESPONDER` | `dummy` | set `perception` for this pipeline |
-| `XIAO_HEI_OBJECT_MAP` | off | `1` → cross-frame fusion, converged 3D boxes, NMS, wall-sheet rejection |
 | `XIAO_HEI_SCENE_DIR_HOST` | — | extracted scene dir the sim loads |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | `0` disables frontier (for the deterministic path) |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | sidecar detection confidence cut |

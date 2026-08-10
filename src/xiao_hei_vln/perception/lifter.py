@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -44,11 +45,67 @@ from xiao_hei_vln.perception.geometry import (
 
 log = logging.getLogger(__name__)
 
+# Pluggable replacement for the built-in range split. Given the map-frame
+# points that survived mask + z-buffer, their camera-frame ranges, and the
+# inlier floor, return a boolean mask selecting the points to keep. Used to
+# A/B contamination-rejection strategies offline without growing this module.
+InlierFilter = Callable[[np.ndarray, np.ndarray, int], np.ndarray]
+
 DEFAULT_MIN_INLIERS: int = 10
 # A scan return is "front" (not occluded) if its range is within this margin of
 # the nearest range seen at its equirect pixel. Matches the z-buffer tolerance
 # from the offline lifter prototype the gate was ported from.
 ZBUF_TOL_M: float = 0.2
+# Range-clustering gap (m). The z-buffer only rejects returns occluded *along a
+# bearing*; it cannot reject a co-visible neighbouring surface the mask spilled
+# onto (e.g. ceiling around a ceiling-mounted lamp), because for those pixels
+# the neighbour IS the nearest return. When the spill outnumbers the object the
+# median tracks the contaminant. Splitting the inliers into range clusters and
+# keeping the nearest well-supported one recovers the object, since the camera
+# cannot see through it. 0.0 disables clustering.
+DEFAULT_RANGE_GAP_M: float = 0.0
+# Voxel-grid connected components: the adopted defence against mask spill.
+# Points are bucketed into cubes of this size and grouped by 26-connectivity;
+# the nearest group with real support wins. Chosen over a metric-radius
+# clustering (single-link / DBSCAN) because voxel adjacency cannot "chain"
+# through a thin bridge of points — a bridge has to occupy contiguous cubes —
+# and because it is O(n) with no pairwise distance matrix. 0.0 disables it.
+# 0.10 m was calibrated over 14 scenes: finer voxels fragment the object
+# itself (0.06 m costs 4 points of recall and drops mAP@1 below baseline),
+# coarser ones start re-merging the contaminant (0.12 m triples the worst-
+# case node). 0.0 disables it.
+# See docs/tasks/backlog.md B1 for the benchmark that selected this.
+DEFAULT_CLUSTER_VOXEL_M: float = 0.10
+_VOXEL_NEIGHBOURS = np.array([
+    (dx, dy, dz)
+    for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+    if (dx, dy, dz) != (0, 0, 0)
+])
+
+
+def _voxel_components(points: np.ndarray, voxel_m: float) -> np.ndarray:
+    """Label each point by its 26-connected voxel component.
+
+    Flood-fills occupied voxels rather than comparing points pairwise, so cost
+    is linear in the point count and independent of how dense the cloud is.
+    """
+    keys = np.floor(points / voxel_m).astype(np.int64)
+    uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
+    index = {tuple(k): i for i, k in enumerate(uniq)}
+    labels = np.full(len(uniq), -1, dtype=np.int64)
+    component = 0
+    for start in range(len(uniq)):
+        if labels[start] >= 0:
+            continue
+        stack, labels[start] = [start], component
+        while stack:
+            for neighbour in map(tuple, uniq[stack.pop()] + _VOXEL_NEIGHBOURS):
+                j = index.get(neighbour)
+                if j is not None and labels[j] < 0:
+                    labels[j] = component
+                    stack.append(j)
+        component += 1
+    return labels[inverse]
 
 
 @dataclass
@@ -75,6 +132,9 @@ class PointLifter:
         min_inliers: int = DEFAULT_MIN_INLIERS,
         max_depth_m: float | None = None,
         enable_zbuffer: bool = True,
+        range_gap_m: float = DEFAULT_RANGE_GAP_M,
+        cluster_voxel_m: float = DEFAULT_CLUSTER_VOXEL_M,
+        inlier_filter: InlierFilter | None = None,
     ) -> None:
         """
         Args:
@@ -97,10 +157,29 @@ class PointLifter:
                 lifted position is pulled onto the wall behind it. Kept as
                 a flag only so tests can exercise the raw (no-occlusion)
                 projection with ``False``.
+            range_gap_m: Split the surviving mask inliers into clusters
+                separated by more than this gap in range, and keep the
+                **nearest** cluster holding at least ``min_inliers`` points.
+                Rejects mask spill onto a co-visible neighbouring surface,
+                which the z-buffer cannot see (see ``DEFAULT_RANGE_GAP_M``).
+                ``0.0`` disables clustering and restores the plain
+                mask + z-buffer behaviour.
+            cluster_voxel_m: voxel size for connected-component clustering
+                of the surviving inliers; the nearest component with at
+                least ``min_inliers`` points is kept. Rejects mask spill
+                onto a co-visible neighbour, which neither the z-buffer nor
+                a range-only split can see when the neighbour recedes
+                continuously (a plane at a grazing angle). Takes precedence
+                over ``range_gap_m``. ``0.0`` disables it.
+            inlier_filter: optional strategy replacing both of the above
+                (applied instead, when given). See ``InlierFilter``.
         """
         self._min_inliers = int(min_inliers)
         self._max_depth_m = max_depth_m
         self._enable_zbuffer = bool(enable_zbuffer)
+        self._range_gap_m = float(range_gap_m)
+        self._cluster_voxel_m = float(cluster_voxel_m)
+        self._inlier_filter = inlier_filter
         self._R_sc, self._t_sc = sensor_to_camera_transform()
 
     def lift(
@@ -183,6 +262,39 @@ class PointLifter:
 
         in_mask = np.zeros_like(keep)
         in_mask[front] = mask[vi[front], ui[front]]
+
+        # 4c. range clustering: the surviving inliers may still straddle two
+        # surfaces — the object and whatever co-visible neighbour the mask
+        # spilled onto. Both are "nearest at their own pixel", so the z-buffer
+        # keeps both. Split on gaps in range and keep the nearest cluster with
+        # real support: the camera cannot see through the object, so the object
+        # is the nearest substantial return under its own mask.
+        if self._inlier_filter is not None and in_mask.any():
+            idx = np.flatnonzero(in_mask)
+            sel = self._inlier_filter(xyz_map[idx], depth[idx], self._min_inliers)
+            in_mask = np.zeros_like(in_mask)
+            in_mask[idx[np.asarray(sel, dtype=bool)]] = True
+        elif self._cluster_voxel_m > 0.0 and in_mask.any():
+            idx = np.flatnonzero(in_mask)
+            labels = _voxel_components(xyz_map[idx], self._cluster_voxel_m)
+            groups = [idx[labels == c] for c in np.unique(labels)]
+            groups.sort(key=lambda g: depth[g].min())      # nearest first
+            chosen = next((g for g in groups if len(g) >= self._min_inliers),
+                          max(groups, key=len))
+            in_mask = np.zeros_like(in_mask)
+            in_mask[chosen] = True
+        elif self._range_gap_m > 0.0 and in_mask.any():
+            idx = np.flatnonzero(in_mask)
+            order = idx[np.argsort(depth[idx])]
+            splits = np.flatnonzero(np.diff(depth[order]) > self._range_gap_m) + 1
+            clusters = np.split(order, splits)          # ordered near → far
+            chosen = next(
+                (c for c in clusters if len(c) >= self._min_inliers),
+                max(clusters, key=len),                 # else: best available
+            )
+            in_mask = np.zeros_like(in_mask)
+            in_mask[chosen] = True
+
         n_inliers = int(in_mask.sum())
         if n_inliers < self._min_inliers:
             return LiftResult(position=None, n_inliers=n_inliers)

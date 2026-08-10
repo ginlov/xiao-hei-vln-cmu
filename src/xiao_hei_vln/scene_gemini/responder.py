@@ -11,7 +11,7 @@ app-level frontier explorer (``app/main.py``):
    deferred (the Task-12 contract).
 2. **Scene graph building** — :meth:`ingest` delegates to a real
    :class:`xiao_hei_vln.perception.PerceptionResponder`, which runs the
-   perception sidecar's detect → lift → ``add_object`` cycle into the
+   perception sidecar's detect → lift → fuse cycle into the
    **shared** :class:`SceneRepresentation`. So by the time exploration
    finishes, the scene graph holds real objects (labels, 3D positions,
    colours, and — with ObjectMap fusion — 3D boxes).
@@ -110,7 +110,7 @@ class SceneGeminiResponder:
 
         Called by the app tick loop on every exploration tick. Delegates to
         the perception responder's own ``ingest`` (detect → lift →
-        add_object into the shared scene) and keeps the occupancy map +
+        fused into the shared scene) and keeps the occupancy map +
         trajectory ring fresh for the eventual Gemini bundle. Emits no
         answer, so a question that arrives mid-sweep stays deferred until
         exploration completes.

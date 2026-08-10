@@ -278,10 +278,28 @@ Algorithm:
 1. Transform `registered_scan` from the map frame to the sensor frame using the inverse of the robot's current pose (the sensor sits at the vehicle origin per the sim's static transforms).
 2. Apply the static sensor → camera extrinsic (`(0, 0, 0.1)` translation + a 90° axis-swap rotation).
 3. Project each camera-frame point into equirect pixel coords using the same formula the sidecar uses to *create* the mask.
-4. Keep points whose projected pixel falls inside the mask.
-5. Return the **median XYZ in the map frame** if `n_inliers >= min_inliers` (default 10), else `None`.
+4. Keep points whose projected pixel falls inside the mask, then drop the ones **occluded along their bearing** — a z-buffer gate keeping only the nearest surface ±`ZBUF_TOL_M` at each pixel.
+5. Optionally **cluster the survivors** and keep the nearest well-supported group (`cluster_voxel_m`, see below).
+6. Return the **median XYZ in the map frame** if `n_inliers >= min_inliers` (default 10), else `None`.
 
 The median is robust to mask-edge noise and to scan returns that snap through a doorway or window. `max_depth_m` is available for the case where a sparse return at a far wall biases the median; default is `None` (no cap).
+
+#### Mask spill and the clustering gate
+
+The z-buffer only rejects returns **occluded along a bearing**. It cannot reject a *co-visible neighbouring* surface the mask spilled onto — ceiling around a ceiling-mounted lamp, wall around a picture — because at those pixels the neighbour is itself the nearest return. Measured across all 15 scenes the gate fires on only 1.4% of detections and removes 0.05% of points, so it is close to inert against this failure.
+
+When the spill outnumbers the object the median follows the contaminant: a median is robust to ≤50% contamination *by construction*, not beyond. A reference case (`arabic_room`/`vp_000`, a `wall lamp`) had 30 of 52 inliers on the ceiling plane, lifting the object onto the ceiling and producing a 1.61 × 1.29 × 0.80 m box against a 0.19 × 0.10 × 0.45 m ground truth.
+
+`cluster_voxel_m` (default **0.10 m**, calibrated over 14 scenes) buckets the surviving inliers into voxels, groups them by 26-connectivity, and keeps the **nearest group** holding at least `min_inliers` points — the camera cannot see through the object, so under its own mask the object is the nearest substantial return.
+
+Voxel connectivity was chosen over metric-radius clustering (single-link, DBSCAN) and over a 1-D split on range gaps:
+
+- A **range-only split** cannot see a plane viewed at a grazing angle, whose range recedes continuously with no gap to cut on. It left a 2.33 m³ box in the reference scene.
+- **Single-link/DBSCAN** chain through a thin bridge of points; in the benchmark both produced a worst-case node of 2534 m³, worse than range-gap's 494 m³.
+- **Voxel adjacency cannot chain** the same way — a bridge must occupy contiguous cubes — and it is O(n) with no pairwise distance matrix.
+- **RANSAC plane removal** scored best on box size but was rejected: many real targets (table tops, sofa seats, pictures) *are* planes, and recall regressed on 13 of 14 scenes.
+
+See `docs/tasks/backlog.md` (B1) for the full comparison and `perception_benchmark/box_quality.py` for the metric used to decide.
 
 ### Client — HTTP wrapper around the sidecar
 
