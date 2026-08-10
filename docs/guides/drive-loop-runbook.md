@@ -158,6 +158,66 @@ Two lines that are not optional:
   tool-spawned shell has no key. This form pulls that one line and never prints
   the value.
 
+### The API key on the laptop
+
+The `eval` line above assumes the key is already in `~/.zshrc`. Getting it there
+is a different question from getting it onto the box (§3b), and the answer is
+different too, because **a personal laptop and a shared box are not the same
+risk**. On the box, four people have accounts. On your laptop, the threat is
+backups, sync, and anything you paste into a terminal that is being recorded.
+
+Three options, weakest at rest to strongest:
+
+**1. `~/.zshrc` — what the `eval` line above expects**
+
+```bash
+printf '\nexport ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' >> ~/.zshrc
+chmod 600 ~/.zshrc
+```
+
+Plaintext, and it goes into **every interactive shell you open**, so anything
+you run inherits it. Acceptable on a single-user machine; do not do this on the
+box. Note the literal command above puts the key in your shell history — prefix
+it with a space (with `HIST_IGNORE_SPACE` set) or edit the file instead.
+
+**2. A separate file, same shape as the box uses**
+
+```bash
+mkdir -p ~/.config/xiao-hei && chmod 700 ~/.config/xiao-hei
+( umask 077; printf 'export ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' > ~/.config/xiao-hei/env )
+chmod 600 ~/.config/xiao-hei/env
+```
+
+Then per session, or from `~/.zshrc`:
+
+```bash
+source ~/.config/xiao-hei/env
+```
+
+Still plaintext, but it is one file you can `rm`, it is outside every repo, and
+the same path works on both laptop and box. Swap the `eval` line for
+`source ~/.config/xiao-hei/env` if you use this.
+
+**3. macOS Keychain — no plaintext at rest**
+
+```bash
+security add-generic-password -a "$USER" -s anthropic-api-key -w    # prompts, hidden
+```
+
+Then in place of the `eval` line:
+
+```bash
+export ANTHROPIC_API_KEY="$(security find-generic-password -a "$USER" -s anthropic-api-key -w)"
+```
+
+The key lives encrypted in the login keychain; the first read after a login may
+prompt for permission. This is the only one of the three where the key is not
+sitting in a readable file. `security delete-generic-password -s
+anthropic-api-key` removes it.
+
+Whichever you pick, **use a different key for the box than for the laptop** — the
+point of two keys is being able to revoke one without losing the other.
+
 **Give every run a fresh `--out`.** Re-using a directory overwrites the files
 that collide and leaves the ones that do not, so the result is two runs mixed
 together with no marker saying which step came from which.
@@ -255,7 +315,9 @@ tmux new -s drive                          # so the run survives the ssh session
 
 ### The API key on the box
 
-Two ways, and the trade between them is persistence:
+For the laptop side, see "The API key on the laptop" under §3 — the options
+differ because the risks do. Here, two ways, and the trade between them is
+persistence:
 
 ```bash
 ./scripts/on_host.sh key         # once: ~/.config/xiao-hei/env, mode 0600
