@@ -56,10 +56,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
 from approach_loop import (COST_PER_CALL, CTR, DEFAULT_HOST,  # noqa: E402
-                           KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M, Ctx,
-                           Outcome, Robot,
-                           bind_constraints, explore_direction, explore_goal,
-                           ground, run_goto, yaw_of)
+                           KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M, REVISIT_M,
+                           Ctx, Outcome, Robot,
+                           bind_constraints, crosses, explore_direction,
+                           explore_goal, ground, run_goto, yaw_of)
 from decompose import decompose  # noqa: E402
 from instruction_plan import GOTO, PASS, Clause, keepouts, steps  # noqa: E402
 from vlm_approach import STANDOFF_M, _lift_xy  # noqa: E402
@@ -127,20 +127,6 @@ def lift_anchors(reply: dict, scan: np.ndarray, pose: dict) -> list[dict]:
     return out
 
 
-def crosses(a, b, c, d) -> bool:
-    """Do segments `ab` and `cd` properly intersect?
-
-    Straight orientation test. Both segments are short and the degenerate
-    collinear case is not interesting here: a track that runs exactly along the
-    line between two anchors has not gone between them either.
-    """
-    def side(p, q, r):
-        return np.sign((q[0] - p[0]) * (r[1] - p[1])
-                       - (q[1] - p[1]) * (r[0] - p[0]))
-    return (side(a, b, c) * side(a, b, d) < 0
-            and side(c, d, a) * side(c, d, b) < 0)
-
-
 def went_between(track: list, a: np.ndarray, b: np.ndarray) -> bool:
     """Did the driven path actually pass between the two anchors?
 
@@ -156,7 +142,7 @@ def went_between(track: list, a: np.ndarray, b: np.ndarray) -> bool:
     return any(crosses(p[i], p[i + 1], a, b) for i in range(len(p) - 1))
 
 
-def through_point(a: np.ndarray, b: np.ndarray, vehicle: np.ndarray,
+def through_point(a: np.ndarray, b: np.ndarray, entry: np.ndarray,
                   reach: float = THROUGH_M) -> np.ndarray:
     """A waypoint on the FAR side of the gap, so driving to it goes through.
 
@@ -165,6 +151,14 @@ def through_point(a: np.ndarray, b: np.ndarray, vehicle: np.ndarray,
     how `studio` ended up parked 1.4 m short of the gap with the leg calling
     itself done. A point beyond the gap has no such reading: the shortest legal
     way to it is through.
+
+    `entry` is where the leg *first saw* the gap, not where the vehicle stands
+    now, and the difference is the whole point. Recomputed live, "far" flips
+    the instant the vehicle is past the midpoint -- so a crossing that
+    `went_between` fails to register (the planner rounded the end of the
+    segment, or an anchor lifted half a metre out) turns the next step's aim
+    back the way it came, and the leg oscillates through the gap until it runs
+    out of steps. Frozen with the gap, forward stays forward.
     """
     u = b - a
     n = np.linalg.norm(u)
@@ -172,7 +166,7 @@ def through_point(a: np.ndarray, b: np.ndarray, vehicle: np.ndarray,
         return (a + b) / 2.0
     mid = (a + b) / 2.0
     perp = np.array([-u[1], u[0]]) / n
-    away = perp if float(np.dot(perp, mid - vehicle)) > 0 else -perp
+    away = perp if float(np.dot(perp, mid - entry)) > 0 else -perp
     return mid + away * reach
 
 
@@ -195,6 +189,7 @@ def same_thing(a: str, b: str) -> bool:
 
 def far_side_goal(cm, sides: tuple[np.ndarray, np.ndarray],
                   vehicle: np.ndarray, aim: np.ndarray, *,
+                  entry: np.ndarray | None = None,
                   corridor: float = 2.5):
     """The legal point beyond the gap that is nearest the aim.
 
@@ -210,10 +205,20 @@ def far_side_goal(cm, sides: tuple[np.ndarray, np.ndarray],
     where the vehicle may drive, and `local_planner` threads a gap far narrower
     than 1.5 m using its own path library. The waypoint belongs on the far side
     and the threading is the stack's job.
+
+    Two positions, and they are not the same one. `entry` says which half-plane
+    counts as "beyond" and is frozen when the gap binds, for the reason
+    `through_point`'s is: read from the live pose, "beyond" reverses the moment
+    the vehicle is past the line, and the leg starts publishing waypoints back
+    where it came from. `vehicle` is where it stands now, and only reaches
+    `settle`, which is asking a different question — where this waypoint would
+    actually put it, given where it is approaching from. It defaults to
+    `vehicle` so a caller with no bound gap behaves as before.
     """
     L = cm.legal_points()
     if not len(L):
         return None
+    entry = vehicle if entry is None else entry
     a, b = sides
     u = b - a
     n = float(np.linalg.norm(u))
@@ -222,7 +227,7 @@ def far_side_goal(cm, sides: tuple[np.ndarray, np.ndarray],
     u = u / n
     mid = (a + b) / 2.0
     perp = np.array([-u[1], u[0]])
-    s_veh = float(np.dot(perp, vehicle - mid))
+    s_veh = float(np.dot(perp, entry - mid))
     if abs(s_veh) < 1e-3:
         return None                      # already on the line; nothing is "far"
     beyond = ((L - mid) @ perp) * s_veh < 0
@@ -232,6 +237,32 @@ def far_side_goal(cm, sides: tuple[np.ndarray, np.ndarray],
         return None
     goal = cand[int(np.argmin(np.linalg.norm(cand - aim, axis=1)))]
     return goal, cm.settle(goal, vehicle)
+
+
+def far_side_stalled(far, here: np.ndarray,
+                     reached: list[np.ndarray]) -> str | None:
+    """Why this far-side waypoint is not progress toward the gap, or None.
+
+    `far_side_goal` answering at all used to be taken as progress, and it is
+    not. On `living_room_1` it answered every step with the same corner
+    2 m north-west of the gate; the leg drove there, was handed it again as a
+    0.20 m move, fell through to the unconstrained `best_waypoint_toward` --
+    which prefers a near-side point, by the argument in `far_side_goal` -- and
+    drove 1.5 m back. Then forward, then back. Four steps, never closer than
+    1.37 m to a gate 2.14 m wide.
+
+    Both readings mean the same thing: the converter has no *new* far-side
+    point to offer, so standing somewhere else is the only way to learn
+    anything, and if that has already been tried the gap is not drivable.
+    """
+    if far is None:
+        return "no legal point beyond the gap yet"
+    lands = np.asarray(far[1], float)
+    if float(np.linalg.norm(lands - here)) < MIN_VIEW_MOVE_M:
+        return "the best far-side waypoint is where it stands"
+    if any(float(np.linalg.norm(lands - p)) < REVISIT_M for p in reached):
+        return "the far-side waypoint is one already driven to"
+    return None
 
 
 def gate_point(anchors: list[dict], relation: str | None, origin: np.ndarray
@@ -286,7 +317,40 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
     # the waypoints we published.
     track: list = []
     bound_gap = None
+    # Where the vehicle stood when the gap resolved. Frozen alongside it, and
+    # for the same reason: it is what "the far side" means for the rest of the
+    # leg. See `through_point`.
+    entry: np.ndarray | None = None
+    # Where the vehicle has actually come to rest in this leg. A far-side
+    # waypoint that lands on one of these is the leg being handed the same
+    # answer twice; see the `why_not` block.
+    reached: list[np.ndarray] = []
     no_far = 0
+
+    def bank(why: str, mid, sides, where) -> None:
+        """Hand what this passage achieved to the legs that come after it.
+
+        A satisfied passage is not just a leg that ended: it is a scored
+        constraint now standing behind the robot, and the next leg used to
+        start with no knowledge of it whatever. Three things go forward. The
+        gap itself, so `explore_direction` can recognise a bearing that would
+        undo it. One departure, pointing back at the gap from where the robot
+        came out, so that the very first exploration step of the next leg —
+        the one measured driving 1.7 m back east through the dining-table gap
+        in three `home_building_1` runs of four — is discounted. And a sentence
+        for the prompt, because none of the geometry reaches the model.
+        """
+        ctx.done.append(f"drove the passage {phrase!r} — {why}")
+        if sides is None or entry is None:
+            return
+        ctx.crossed.append((np.asarray(sides[0], float),
+                            np.asarray(sides[1], float),
+                            np.asarray(entry, float)))
+        where = np.asarray(where, float)[:2]
+        back = np.asarray(mid, float) - where
+        n = float(np.linalg.norm(back))
+        if n > 1e-6:
+            ctx.spent.append((where.copy(), back / n))
     for _ in range(max_steps):
         if ctx.out_of_time():
             return Outcome(False, "out of time")
@@ -334,7 +398,7 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
         # defended for exactly this reason (`bind_target`); a passage needs the
         # same and had none.
         if gp is not None and gp[2] is not None and bound_gap is None:
-            bound_gap = gp
+            bound_gap, entry = gp, o[:2].copy()
             print(f"      gap bound: {gp[1]}")
         if bound_gap is not None:
             gp = bound_gap
@@ -348,7 +412,8 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             try:
                 cm = ConverterModel(terrain, keepout=keepout)
                 want = yaw_of(pose) - np.deg2rad(float(h))
-                u, reach, _ = explore_direction(cm, o[:2], want)
+                u, reach, _ = explore_direction(cm, o[:2], want, ctx.spent,
+                                                ctx.crossed)
                 best = cm.best_waypoint_toward(o[:2] + u * min(reach, 3.0),
                                                o[:2], min_move=MIN_VIEW_MOVE_M)
                 if best is not None:
@@ -358,6 +423,10 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             print(f"      gap not resolvable yet — looking from "
                   f"({goal[0]:+.2f}, {goal[1]:+.2f})")
             rec["action"] = {"kind": "explore", "goal": goal.tolist()}
+            step_v = goal - o[:2]
+            if float(np.linalg.norm(step_v)) > 1e-6:
+                ctx.spent.append((o[:2].copy(),
+                                  step_v / float(np.linalg.norm(step_v))))
             if not ctx.dry_run:
                 rec["drive"] = ctx.robot.drive_to(goal[0], goal[1],
                                                   min(20.0, ctx.left()))
@@ -366,8 +435,10 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
 
         mid, why, sides = gp
         dist = float(np.linalg.norm(mid - o[:2]))
-        # Aim past the gap, not at it. See `through_point`.
-        aim = mid if sides is None else through_point(sides[0], sides[1], o[:2])
+        # Aim past the gap, not at it, from where the gap was first seen rather
+        # than from here. See `through_point`.
+        here = o[:2] if entry is None else entry
+        aim = mid if sides is None else through_point(sides[0], sides[1], here)
         print(f"      gate at ({mid[0]:+.2f}, {mid[1]:+.2f}) — {why}, "
               f"{dist:.2f} m away; aiming through to "
               f"({aim[0]:+.2f}, {aim[1]:+.2f})")
@@ -382,11 +453,13 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             print(f"      alongside the landmark ({dist:.2f} m) — done")
             rec["passed"] = "alongside"
             ctx.record(rec)
+            bank(why, mid, sides, o[:2])
             return Outcome(True, f"passed ({why})", mid)
         if sides is not None and went_between(track, *sides):
             print(f"      the path already crosses between them — done")
             rec["passed"] = "crossed"
             ctx.record(rec)
+            bank(why, mid, sides, o[:2])
             return Outcome(True, f"passed ({why})", mid)
 
         goal = aim
@@ -394,8 +467,9 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             cm = ConverterModel(terrain, keepout=keepout)
             best = None
             if sides is not None:
-                far = far_side_goal(cm, sides, o[:2], aim)
-                if far is not None:
+                far = far_side_goal(cm, sides, o[:2], aim, entry=here)
+                why_not = far_side_stalled(far, o[:2], reached)
+                if why_not is None:
                     no_far = 0
                     g, lands = far
                     best = (g, lands, float(np.linalg.norm(lands - mid)))
@@ -403,7 +477,7 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
                           f" — the stack has to thread the gap to reach it")
                 else:
                     no_far += 1
-                    print(f"      no legal point beyond the gap yet — moving to "
+                    print(f"      {why_not} — moving to "
                           f"see more of the far side ({no_far})")
                     # Some of these gaps are not drivable at all, and the time
                     # spent proving it belongs to the destinations after it.
@@ -418,9 +492,9 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
                     # organisers' own reference trajectory threads the gap
                     # 0.12 m from its midpoint.
                     if no_far >= 2:
-                        print(f"      twice now, from two places — this gap is "
-                              f"not drivable by the stack; moving on")
-                        rec["stopped"] = "no legal point beyond the gap"
+                        print(f"      twice now — this gap is not drivable by "
+                              f"the stack; moving on")
+                        rec["stopped"] = why_not
                         ctx.record(rec)
                         return Outcome(False, "gap not drivable by the stack",
                                        mid)
@@ -469,14 +543,17 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
         now = xy_of(res.get("pose"))
         if now is not None:
             track.append(now.tolist())
+            reached.append(now.copy())
         gap = float(np.linalg.norm(mid - (o[:2] if now is None else now)))
         if sides is not None:
             if went_between(track, *sides):
                 print(f"      the driven path crosses between them — passed")
+                bank(why, mid, sides, o[:2] if now is None else now)
                 return Outcome(True, f"passed ({why})", mid)
             print(f"      drove, but the path has not crossed between them yet "
                   f"({gap:.2f} m from the gap)")
         elif gap <= GATE_REACHED_M:
+            bank(why, mid, sides, o[:2] if now is None else now)
             return Outcome(True, f"passed ({why})", mid)
         if (res.get("moved_m") or 0.0) < PROGRESS_M:
             stalled += 1

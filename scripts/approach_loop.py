@@ -296,8 +296,56 @@ def already_tried(origin: np.ndarray, u: np.ndarray,
                and float(np.dot(u, v)) > lim for p, v in spent)
 
 
+def side_of(a, b, p) -> float:
+    """Which side of the line `ab` the point `p` lies on, as -1, 0 or +1."""
+    a, b, p = (np.asarray(v, float) for v in (a, b, p))
+    return float(np.sign((b[0] - a[0]) * (p[1] - a[1])
+                         - (b[1] - a[1]) * (p[0] - a[0])))
+
+
+def crosses(a, b, c, d) -> bool:
+    """Do segments `ab` and `cd` properly intersect?
+
+    Straight orientation test. Both segments are short and the degenerate
+    collinear case is not interesting here: a track that runs exactly along the
+    line between two anchors has not gone between them either.
+
+    It lives here rather than in `execute_plan`, which is where it was written,
+    because the exploration memory below needs it too and `execute_plan`
+    imports this module.
+    """
+    return (side_of(a, b, c) * side_of(a, b, d) < 0
+            and side_of(c, d, a) * side_of(c, d, b) < 0)
+
+
+def recrosses(origin: np.ndarray, u: np.ndarray,
+              crossed: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+              reach: float = MAX_EXPLORE_M) -> bool:
+    """Would going this way take the robot back through a passage it has used?
+
+    A required passage is scored on the *trajectory*, in order (README §175),
+    so driving back out through one already satisfied does not merely waste
+    time: it writes a reversal into the thing being marked. On `home_building_1`
+    the leg after the dining-table passage did exactly that in three runs of
+    four, its first exploration step heading 1.7 m back east straight through
+    the gap the robot had just come out of.
+
+    The side test is what keeps this from banning the passage outright. A
+    crossing that lands on the far side from where the robot entered is the
+    passage being driven, not undone, and on a question whose next destination
+    genuinely lies back the way it came the robot must still be able to go.
+    """
+    tip = origin + u * reach
+    for a, b, entry in crossed:
+        if crosses(origin, tip, a, b) and side_of(a, b, tip) == side_of(a, b, entry):
+            return True
+    return False
+
+
 def explore_direction(cm: ConverterModel, origin: np.ndarray, want: float,
                       spent: list[tuple[np.ndarray, np.ndarray]] | None = None,
+                      crossed: list[tuple[np.ndarray, np.ndarray,
+                                          np.ndarray]] | None = None,
                       ) -> tuple[np.ndarray, float, float]:
     """A direction that is both what the model asked for and drivable.
 
@@ -329,12 +377,18 @@ def explore_direction(cm: ConverterModel, origin: np.ndarray, want: float,
     exactly one exit: the way back is then the only legal move, and it must
     stay reachable once everything else has been discounted equally.
 
+    `crossed` holds passages the robot has already driven through, and a
+    bearing that would take it back out through one is discounted the same way
+    and for a stronger reason: those are scored constraints, and re-crossing
+    writes a reversal into the trajectory being marked. See `recrosses`.
+
     When nothing clears the gate the old rule decides, so a vehicle hemmed in
     on all sides still moves rather than standing still.
 
     Returns `(unit direction, reach, Δ in degrees)`.
     """
     spent = spent or []
+    crossed = crossed or []
     best = (0.0, np.array([np.cos(want), np.sin(want)]), 0.0, 0.0)
     fallback = (0.0, np.array([np.cos(want), np.sin(want)]), 0.0, 0.0)
     for delta in range(-90, 91, 15):
@@ -343,6 +397,8 @@ def explore_direction(cm: ConverterModel, origin: np.ndarray, want: float,
         reach = cm.reach_along(origin, u)
         near = float(np.cos(np.deg2rad(delta)))
         if already_tried(origin, u, spent):
+            near *= SPENT_PENALTY
+        if recrosses(origin, u, crossed, max(reach, MIN_EXPLORE_M)):
             near *= SPENT_PENALTY
         if reach >= MIN_EXPLORE_M and near > best[0]:
             best = (near, u, reach, float(delta))
@@ -538,6 +594,16 @@ class Ctx:
     are facts about the whole trajectory. `bound` and `prev_crop` are the leg's
     and stay local to `run_goto` — carrying a binding into the next clause
     would aim the next leg at the previous leg's object.
+
+    `spent`, `crossed` and `done` moved to this side after a leg boundary was
+    found to erase the vehicle's momentum. `spent` used to be built fresh
+    inside `run_goto`, so the direction the robot had just arrived from carried
+    no penalty at all in the leg that followed — and that is the one direction
+    guaranteed to have open floor, which is exactly what `explore_direction`'s
+    reach gate rewards. On `home_building_1` the destination leg after the
+    dining-table passage turned round and drove back through the gap on its
+    first exploration step in three runs of four, one of them all the way back
+    to the pose the passage had started from.
     """
 
     robot: Robot
@@ -550,6 +616,15 @@ class Ctx:
     dry_run: bool = False
     visited: list[str] = field(default_factory=list)
     avoid: list[dict] = field(default_factory=list)
+    # Departures already made, as (from, unit direction), across every leg.
+    spent: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
+    # Passages already driven through, as (side a, side b, where it entered
+    # from). Only two-sided gaps go in: a one-landmark passage has no line and
+    # so no wrong way across it.
+    crossed: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = \
+        field(default_factory=list)
+    # Constraints already banked, in the model's language, for the prompt.
+    done: list[str] = field(default_factory=list)
     calls: int = 0
     step: int = 0
     deadline: float | None = None
@@ -577,7 +652,8 @@ class Ctx:
         self.log.flush()
 
     def mission_for(self, k: int) -> dict | None:
-        return None if not self.mission else {**self.mission, "k": k}
+        return None if not self.mission else {**self.mission, "k": k,
+                                              "done": list(self.done)}
 
 
 @dataclass
@@ -602,9 +678,10 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
     prev_crop, bound, arrived = None, None, False
     misses = stuck_explores = loops = 0
     stood: list[np.ndarray] = []
-    # Departures already made in this leg, as (from, unit direction). The model
-    # cannot remember which door it has been through; this can.
-    spent: list[tuple[np.ndarray, np.ndarray]] = []
+    # Departures already made, as (from, unit direction). The model cannot
+    # remember which door it has been through; this can. It lives on `ctx` and
+    # not here so that it survives the leg boundary — see the class docstring.
+    spent = ctx.spent
     # Readings the binding refused, so that two in a row agreeing with each
     # other can overrule it. Per-leg: the next clause is a different object.
     pending: list[np.ndarray] = []
@@ -780,7 +857,8 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                                                    min_move=MIN_VIEW_MOVE_M)
                     goal = way if best is None else best[0]
                 else:
-                    u, reach, delta = explore_direction(cm, o[:2], want, spent)
+                    u, reach, delta = explore_direction(cm, o[:2], want, spent,
+                                                        ctx.crossed)
                     if reach >= MIN_EXPLORE_M:
                         goal = o[:2] + u * min(reach, MAX_EXPLORE_M)
                         best = cm.best_waypoint_toward(goal, o[:2],
@@ -798,10 +876,15 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"({way[0]:+.2f}, {way[1]:+.2f}), "
                       f"{wd:.2f} m away{capped}")
             elif asked is not None:
-                repeat = u is not None and already_tried(o[:2], u, spent)
+                why = []
+                if u is not None and already_tried(o[:2], u, spent):
+                    why.append("already taken from here")
+                if u is not None and recrosses(o[:2], u, ctx.crossed,
+                                               max(reach or 0.0, MIN_EXPLORE_M)):
+                    why.append("back through a passage already driven")
                 print(f"      heading {h}° reaches {asked:.2f} m; best drivable "
                       f"is {delta:+.0f}° off it at {reach:.2f} m"
-                      f"{' (already taken from here)' if repeat else ''}")
+                      f"{' (' + '; '.join(why) + ')' if why else ''}")
             print(f"      NOT_VISIBLE — heading {h}°, "
                   f"driving to ({goal[0]:+.2f}, {goal[1]:+.2f})")
             rec["action"] = {"kind": "explore", "heading_deg": h,

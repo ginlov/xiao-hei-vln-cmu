@@ -366,7 +366,31 @@ The plan, in the order the robot drives it:
 The robot is on step {k}. Steps before it are done and it has stood in those
 places; steps after it have not been attempted, so do not answer for them --
 you are being asked about step {k} only.
-{keepouts}"""
+{done}{keepouts}"""
+
+# Only rendered once something has actually been banked, so a prompt with an
+# empty plan history is byte-for-byte what it was before -- which is what keeps
+# the 117 cached replies keyed to v5 valid.
+#
+# The rule matters most for a passage. The score is on the trajectory and on
+# the ORDER of the constraints in it (README §175), so a required passage
+# driven and then driven back out of is worse than one driven once: the path
+# now reads through, back, through. The robot had no way to know this. On
+# `home_building_1` the destination leg after "take the path between the dining
+# table and the picture" turned round on its first exploration call in three
+# runs of four and drove back out through the same gap, once all the way to
+# where the passage had started.
+DONE_BLOCK = """
+Already driven, in this order, and not to be repeated:
+
+{done}
+
+A constraint the robot has already satisfied is spent. When the current target
+is not in sight, the way onward is not back the way it came: prefer an opening
+the robot has not used, and treat the passage or doorway it arrived through as
+the last resort rather than the obvious choice. Send it back through one only
+if the request can only be satisfied on that side and you say so in "why".
+"""
 
 # Keep-outs are named here rather than left to the request phrase because they
 # hold for the whole run, not for the step: the executor lifts their anchors
@@ -397,12 +421,14 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
     something it can act on. On loft, without this, it proposed driving back to
     the origin it had just left.
 
-    `mission` is `{question, plan, k}`: the sentence the leg was cut out of,
-    the whole ordered plan, and which step is being asked about. It is context,
-    not a decision — the model is never asked which step to do next, because
-    the progress cursor is the executor's and stays monotonic. Reporting on the
-    current step is a judgement the model can make from what it sees; deciding
-    that a step is finished is one that it demonstrably cannot (`bind_target`).
+    `mission` is `{question, plan, k, done}`: the sentence the leg was cut out
+    of, the whole ordered plan, which step is being asked about, and what has
+    already been banked. It is context, not a decision — the model is never
+    asked which step to do next, because the progress cursor is the executor's
+    and stays monotonic. Reporting on the current step is a judgement the model
+    can make from what it sees; deciding that a step is finished is one that it
+    demonstrably cannot (`bind_target`). `done` is the executor telling it what
+    it decided, which is the opposite direction and safe.
     """
     if version not in PROMPTS:
         raise SystemExit(f"unknown prompt version {version!r}; "
@@ -412,11 +438,14 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
         base += APPROACH_BLOCK
     if mission:
         keep = mission.get("keepouts") or []
+        done = mission.get("done") or []
         base += MISSION_BLOCK.format(
             question=mission["question"], k=mission["k"],
             plan="\n".join(
                 f"  {'->' if i == mission['k'] else '  '} {i}. {line}"
                 for i, line in enumerate(mission["plan"], 1)),
+            done=("" if not done else DONE_BLOCK.format(
+                done="\n".join(f"  - {x}" for x in done))),
             keepouts=("" if not keep else KEEPOUT_BLOCK.format(
                 keepouts="\n".join(f"  - {x}" for x in keep))))
     if visited:
