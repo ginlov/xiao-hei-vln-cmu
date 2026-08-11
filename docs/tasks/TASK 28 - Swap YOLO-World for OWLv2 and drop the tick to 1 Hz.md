@@ -1,5 +1,30 @@
 # TASK 28 — Swap YOLO-World for OWLv2 (large) and drop the tick to 1 Hz
 
+> **Outcome: OWLv2 reverted; back to YOLO-World.** The on-GPU A/B on
+> `arabic_room` (397-frame `captures_nav`, same frozen captures, GT = 69
+> objects) did not justify the swap:
+>
+> | detector @ thresh | mAP@1m | P | R | F1@1m | cErr (m) | pred count |
+> |---|---|---|---|---|---|---|
+> | **YOLO-World @ 0.25** | 0.397 | **0.443** | 0.449 | **0.446** | **0.160** | **70** ≈ GT |
+> | OWLv2-large @ 0.1 | **0.649** | 0.191 | **0.768** | 0.306 | 0.198 | 277 (4× over) |
+>
+> OWLv2 wins ranking (mAP) and recall but **massively over-produces** at the
+> 0.1 floor — precision 0.19, F1 and counting both worse, and the predicted
+> node count (277) is ~4× the ground truth (69), which is what made the maps
+> "look worse". On top of that OWLv2-large ran **~4.6–6 s/frame** on the A10G,
+> which does not fit even the relaxed 1 Hz tick. The high mAP says the ranking
+> is good, so threshold tuning *might* have recovered precision — but not the
+> latency — so we reverted the detector and kept the two orthogonal wins.
+>
+> **Kept from this task (not reverted):** the **1 Hz tick** (a good change on
+> its own), the **SAM 2.1 Hiera Large** upgrade (detector-agnostic, closes the
+> old B5 SAM-Tiny gap), the `sam_score` (SAM predicted-IoU) plumbing, and the
+> `viz_app.py` / `sweep_gates.sh` / `dump_debug.py` benchmark tooling.
+> **Reverted:** the box detector (OWLv2 → YOLO-World), `transformers` →
+> `ultralytics`, the Dockerfile's OWLv2 bake, and the score-threshold floor
+> (0.1 → 0.25) across the request path and benchmark scripts.
+
 ## Why
 
 Two coupled changes to raise perception quality:
@@ -67,20 +92,25 @@ the frozen captures with `replay_score.py --score-threshold`.
 
 ## Status
 
-**Code + image definition complete; not yet measured on-GPU.** The swap is
-wired end-to-end and all unit tests pass (perception responder/client/sync +
-sidecar geometry/seam-merge: 47 + 51). `pipeline.py` needs the sidecar's
-torch/transformers to run, so it is compile-checked only here.
+**Measured on-GPU, then reverted — see the Outcome banner at the top.** OWLv2
+was swapped in, the image rebuilt, and the `arabic_room` A/B run: OWLv2's 4×
+over-production at the 0.1 floor (277 vs 69 GT) and ~5 s/frame latency lost to
+YOLO-World on precision, F1, counting, and tick fit despite a higher mAP. The
+detector was reverted to YOLO-World; the 1 Hz tick and SAM-Large upgrade were
+kept. Sidecar image rebuilt on the YOLO+SAM-Large definition; all unit tests
+pass (perception responder/client/sync + sidecar geometry/seam-merge:
+76 + 51 = 127).
 
 ## Next
 
-1. Build the sidecar image and bring it up on the A10G.
-2. `dump_detections.py` re-dump on `captures_nav` (OWLv2 + SAM-Large), then
-   `replay_score.py --no-frozen` A/B vs the YOLO-World baseline
-   (mAP / P / R / cErr) on `arabic_room`.
-3. Tune `--score-threshold` around 0.1 from the sweep; confirm the ~0.5–0.8 s
-   tick actually fits 1 Hz on the real GPU.
-4. Layer the B4/B5 gate sweep (`sweep_gates.sh`) on top.
+1. If OWLv2 is revisited, first **tune the score threshold** (the 0.649 mAP
+   says ranking is good) and **quantise / use a smaller OWLv2 variant** to get
+   under the tick budget before re-running the A/B.
+2. With YOLO-World restored, layer the B4/B5 gate sweep (`sweep_gates.sh`) —
+   now backed by real `sam_score` values from SAM-Large — on the frozen
+   `captures_nav` dumps.
+3. Re-baseline `arabic_room` with YOLO + SAM-Large (vs the old YOLO + SAM-Tiny)
+   to isolate the mask-quality gain the upgrade should bring.
 
 ## Related
 

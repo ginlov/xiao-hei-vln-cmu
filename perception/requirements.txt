@@ -15,6 +15,5 @@ opencv-python-headless==4.10.0.84
 pycocotools==2.0.8                # COCO-style RLE mask encoding
 
 # Models. Pinned conservatively; bump deliberately.
-transformers==4.46.3             # OWLv2 detector: google/owlv2-large-patch14-ensemble
+ultralytics==8.3.45              # YOLOv8x-World v2 lives in `ultralytics.YOLOWorld`
 sam2==1.1.0                       # Meta's segment-anything-2 PyPI release
-# torch + torchvision (NMS) come from the CUDA wheel index / base image.

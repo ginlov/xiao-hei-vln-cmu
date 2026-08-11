@@ -133,7 +133,7 @@ class HTTPPerceptionClient:
         image_bgr: np.ndarray,
         *,
         classes: tuple[str, ...] | None = None,
-        score_threshold: float = 0.1,   # OWLv2 scale (was 0.25 for YOLO-World)
+        score_threshold: float = 0.25,
         iou_threshold: float = 0.5,
     ) -> list[Detection]:
         """JPEG-encode and POST the image, parse the response, decode

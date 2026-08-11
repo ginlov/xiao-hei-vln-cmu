@@ -2,14 +2,14 @@
 
 FastAPI app wrapping :class:`perception.pipeline.PerceptionPipeline`.
 Models load on startup (blocking — uvicorn won't accept traffic until
-the lifespan event finishes), then ``/detect`` posts run OWLv2 +
+the lifespan event finishes), then ``/detect`` posts run YOLO-World +
 SAM 2.1 + mask reprojection over the wire.
 
 Endpoints
 ---------
 GET  /healthz         → { model_loaded, gpu_available, schema_version, notes }
-POST /reload_classes  → cache the open-vocab class list (used as OWLv2's
-                        text queries on each /detect)
+POST /reload_classes  → cache the open-vocab class list (and refresh the
+                        YOLO-World prompt embeddings)
 POST /detect          → multipart image + form fields → list of
                         DetectionRecord (label, score, bbox_xyxy, mask_rle)
 """
@@ -112,7 +112,7 @@ app = FastAPI(
     title="xiao-hei perception sidecar",
     version=SCHEMA_VERSION,
     description=(
-        "OWLv2 (large) + SAM 2.1 Hiera Large over an equirectangular "
+        "YOLOv8x-World v2 + SAM 2.1 Hiera Large over an equirectangular "
         "360°×120° camera. Detection runs on 4 perspective faces; masks "
         "are reprojected back into equirectangular pixel coordinates "
         "before they leave the sidecar."
@@ -155,7 +155,7 @@ async def detect(
             "list from the last /reload_classes call."
         ),
     ),
-    score_threshold: float = Form(0.1),   # OWLv2 scale (was 0.25 for YOLO-World)
+    score_threshold: float = Form(0.25),
     iou_threshold: float = Form(0.5),
 ) -> DetectResponse:
     if _pipeline is None:
