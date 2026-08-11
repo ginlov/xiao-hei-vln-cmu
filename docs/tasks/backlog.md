@@ -294,6 +294,75 @@ be re-dumped for a fair A/B.
 
 ---
 
+## B6 — Large flat objects fragment into many nodes
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/object_map.py`
+
+Large planar objects (carpet, floor, ceiling) shatter into many nodes instead
+of one, so no single node's box matches the object's true AABB.
+
+**Evidence** (arabic_room, Task-1 object-reference, 133 questions): carpet is
+the reference **target in 26/133 questions**, but the **2 real carpets are
+lifted as 25 separate nodes** (floor → 30, ceiling → 39). For GT carpet #32
+(center `1.94, -0.58`, a ~2 m slab) the nearest carpet fragment centroid is
+0.61 m away and its box is tiny vs. the GT AABB → IoU ≈ 0. This alone drives
+~20% of Task-1 misses, and is the same over-segmentation that pushes benchmark
+precision down (arabic_room pred 188 vs GT 81).
+
+**Approach:** merge same-label large planar fragments into one node before
+export (voxel-adjacent or plane-fit union), and add the horizontal (ceiling)
+analogue of `_is_wall_sheet`. Fixes the Task-1 carpet miss *and* the benchmark
+precision drop at once. Relates to B2 (box shape) and B3 (dedup).
+
+---
+
+## B7 — Small objects never reach the scene graph
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/lifter.py` (`min_inliers` gate),
+`perception/pipeline.py`
+
+Seven **queried** object classes are never lifted into the scene graph in
+`arabic_room`: **hookah, hookah wire, coffee pot, glass, tray, focus light,
+window**. Any question using them as target or anchor auto-fails.
+
+**Evidence:** these types are in the query vocab but absent from the 188-node
+graph; they account for ~30% of Task-1 misses (target/anchor not present).
+E.g. *"Find the vase closest to the hookah"* — no hookah node exists, so Gemini
+grounded on "Arabic jar … is a type of hookah" and picked the wrong vase.
+
+**Cause:** small/thin items score low for YOLO-World *and* fall below the
+lift's `min_inliers = 10` LiDAR gate (return density ∝ 1/r²), so even when
+detected they never commit a position.
+
+**Approach:** relax or skip `min_inliers` for known-small classes (lift from
+fewer points), and/or a per-class score floor. Measurable on the frozen
+captures via `replay_score.py` recall.
+
+---
+
+## B8 — Open-vocab label instability vs. the challenge vocabulary
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/object_map.py` /
+`src/xiao_hei_vln/perception/vocab.py` / responder grounding
+
+The right object is lifted to roughly the right place but under a **neighbouring
+label**, so grounding on the question's exact noun fails.
+
+**Evidence** (arabic_room, ~15% of Task-1 misses): recurring swaps
+`vase ↔ Arabic jar`, `glass ↔ potted plant`, `window ↔ picture`,
+`sofa ↔ pillow`. Note Gemini itself grounds correctly ~91% of the time *given*
+the graph — the score is gated by perception label fidelity, not reasoning.
+
+**Approach:** label normalization / alias sets applied at grounding time (or
+fed to Gemini as synonym groups), and/or resolve confusable pairs in the
+cross-label suppression of B3. Partly responder-side, so unlike B1–B7 it is not
+purely a perception-benchmark item.
+
+---
+
 ## Related gaps, not yet scheduled
 
 Recorded from the same investigation; no work planned yet.
