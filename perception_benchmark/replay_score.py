@@ -122,7 +122,16 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
         return None
 
     objs = load_objects(scene)
-    keep = objs if keep_arch else {i: e for i, e in objs.items() if scoreable(e.label)}
+    # Score every class that is in the query vocab. The vocab is the scene's GT
+    # labels minus the "unknown" placeholder (see dump_detections) — which
+    # includes wall/floor/ceiling/column because they are real scene objects, not
+    # because we merged a construction list in. keep_arch grades those too, so an
+    # arch prediction matches arch GT instead of counting as a false positive.
+    # --scoreable-only restores the old narrow GT (drops arch), for A/B only.
+    if keep_arch:
+        keep = {i: e for i, e in objs.items() if e.label.lower() != "unknown"}
+    else:
+        keep = {i: e for i, e in objs.items() if scoreable(e.label)}
     classes = tuple(sorted({e.label for e in keep.values()}))
 
     # Generous timeout: the sidecar's default 2s is too short for a cold
@@ -196,8 +205,9 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
     if verbose:
         cached = (f" | {n_frozen}/{len(vp_dirs)} frames from frozen masks"
                   if n_frozen else "")
+        gt_tag = "GT(all-vocab)" if keep_arch else "GT(scoreable)"
         print(f"\n[{scene}] viewpoints={len(vp_dirs)} detections={n_det} "
-              f"lifts={n_lift} | GT(scoreable)={report['n_gt']} "
+              f"lifts={n_lift} | {gt_tag}={report['n_gt']} "
               f"pred={report['n_pred']}{cached}")
         m, op = report["mAP"], report["operating_point"].get(f"dist@{primary}m", {})
         print(f"  mAP  d0.5={m['dist@0.5m']}  d1.0={m['dist@1.0m']}  d2.0={m['dist@2.0m']}  "
@@ -272,10 +282,14 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--score-threshold", type=float, default=0.1)  # OWLv2 scale
+    ap.add_argument("--score-threshold", type=float, default=0.25)
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
-    ap.add_argument("--keep-arch", action="store_true",
-                    help="score against ALL objects incl. wall/floor/ceiling (default drops them)")
+    # Default: score every class in the query vocab (incl. wall/floor/ceiling),
+    # matching what the detector is asked to find. --scoreable-only restores the
+    # old narrow GT that drops the architectural classes (A/B comparison only).
+    ap.add_argument("--scoreable-only", dest="keep_arch", action="store_false",
+                    help="score only scoreable objects (drop wall/floor/ceiling from GT)")
+    ap.set_defaults(keep_arch=True)
     ap.add_argument("--no-accumulate", dest="accumulate", action="store_false",
                     help="disable ScanAccumulator densification (lift each single sweep)")
     ap.set_defaults(accumulate=True)
