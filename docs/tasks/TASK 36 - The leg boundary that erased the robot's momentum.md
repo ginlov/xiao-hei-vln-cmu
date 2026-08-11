@@ -163,27 +163,55 @@ the fallback path it was written for: a far-side goal that survives
 
 ### Is the gap simply too narrow?
 
-Measured off the obstacle points, as the widest clearance anywhere on the line
-between the two anchors:
+Probably, but this took three wrong answers to get to and the last one is only
+"probably".
 
-| gap | span | widest clearance | corridor | |
-|---|---|---|---|---|
-| `living_room_1` sofa \| round table | 2.14 m | 0.32 m | ~0.63 m | failed |
-| `home_building_1` table \| picture | 2.76 m | 0.90 m | ~1.81 m | passed |
-| `home_building_1` table \| picture | 3.36 m | 0.85 m | ~1.70 m | passed |
-| `home_building_1` table \| picture | 2.03 m | 0.87 m | ~1.74 m | passed |
+The first two were bad statistics. *Clearance along the line between the
+anchors* measures the size of a pocket, not the width of a passage — a point
+can sit 0.32 m from every obstacle and still be enclosed. *Minimum clearance
+along a fixed-length slice across the line* is worse: make the slice long
+enough and it always hits something.
 
-The vehicle is ~0.60 m wide, so yes — this one is about one vehicle wide with
-no margin, against nearly three for the three that worked, and 0.32 m is far
-inside `obstacleDisThre` (0.75 m), so no waypoint can ever be placed in it.
-But that is not what this run died of. It died 1.37 m away, shuttling.
+The question is connectivity, so ask it that way. Merge every captured terrain
+scan into one map, threshold the clearance field at half the vehicle width,
+label the components, and count the places where the component holding the
+robot's real start pose touches the anchors' line *between* the anchors:
 
-Judging the corridor from the terrain on the first look — and skipping a gap
-that cannot take the vehicle, instead of spending four steps proving it — would
-have returned ~130 s to the destination after it. Not done: it introduces a new
-"I think this is impassable" judgement calibrated on four samples, and the four
-separate cleanly enough to be tempting and not enough to be trusted four days
-out.
+| gap | anchors apart | 0.50 m | 0.60 m | 0.70 m | 0.80 m | |
+|---|---|---|---|---|---|---|
+| `studio` couch \| table | 1.46 m | 37 | 19 | 1 | 0 | passed 3 of 6 |
+| `living_room_1` sofa \| coffee table | 2.13 m | 21 | 5 | 0 | 0 | failed |
+| `living_room_1` sofa \| side table | 1.87 m | 11 | 0 | 0 | 0 | failed |
+| `home_building_1` dining table \| picture | 2.76 m | 452 | 426 | 390 | 335 | passed |
+
+The third wrong answer was the width. `local_planner.launch` in the official
+image sets `vehicleWidth` to **0.5 m**. The "~0.6 m" that two comments in
+`execute_plan.py` carried has no source at all, and reading the 0.60 column
+instead of the 0.50 one is what first made `living_room_1` look shut rather
+than narrow. Both comments are corrected, and the runbook now carries the
+shipped numbers so the next reader does not have to trust a comment.
+
+Note also that the span is nearly useless: `studio` has the *narrowest* anchor
+spacing of the four and the second *widest* passage, because centre-to-centre
+distance between two lifted points is not a corridor.
+
+So `living_room_1` is about half of `studio` and `studio` is drivable — which
+means width alone cannot decide it. TASK 34 already found what does: `studio`
+routes round the west end when approached from the origin and threads the gap
+when approached from the vase, "which is exactly the approach the organisers'
+reference trajectory takes". `living_room_1` has only ever been tried from the
+north.
+
+**This kills the give-up-on-width rule**, which was the obvious way to hand the
+~130 s back to the destination after the passage. There is no safe threshold
+between 37 (drivable) and 21 (not, so far), and the variable that actually
+decided `studio` was the approach.
+
+What would settle it is not another statistic over lidar points.
+`waypoint_converter.launch` sets `checkTravArea` true against
+`mesh/<world>/traversable_area.ply`, shipped per scene — the converter's own
+authority on where the vehicle may go. Reading it directly is the next piece of
+work.
 
 ## Not fixed
 

@@ -76,12 +76,12 @@ BUDGET_S = 540.0
 # binding — only a point inside the gap and enough steps to find the anchors.
 PASS_STEPS = 4
 # How close to the gap point counts as having gone through it. `local_planner`
-# aims for `waypointXYRadius` (0.3 m) and the vehicle is ~0.6 m across, so a
-# metre either side of the midpoint is still inside a gap wide enough to drive.
+# aims for `waypointXYRadius` (0.3 m) and `vehicleWidth` is 0.5 m, so a metre
+# either side of the midpoint is still inside a gap wide enough to drive.
 GATE_REACHED_M = 1.0
 # How far beyond a two-sided gap to place the waypoint, so that the shortest
-# legal way to it is through the gap. Comfortably past the vehicle's own ~0.6 m
-# width plus `waypointXYRadius`, and short enough to stay inside a room.
+# legal way to it is through the gap. Comfortably past `vehicleWidth` plus
+# `waypointXYRadius`, and short enough to stay inside a room.
 THROUGH_M = 1.2
 # Held back for each leg still to come, so an early leg cannot spend the whole
 # budget. Two calls and their drives, measured at 33 s per call-and-drive on
