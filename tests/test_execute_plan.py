@@ -21,7 +21,7 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            bind_target, corroborated, explore_direction,
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
                            nearest_allowed_step, recrosses, revisited,
-                           lift_detour, nearer_reading, past, same_thing,
+                           nearer_reading, past, same_thing,
                            side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M,
                            USE_KEEPOUT)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
