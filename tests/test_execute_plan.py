@@ -25,6 +25,7 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
+from vlm_approach import has_relation  # noqa: E402
 from vlm_probe import build_prompt, parse  # noqa: E402
 from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
                               keepouts, parse_instruction, steps)
@@ -778,6 +779,62 @@ class TestWayRange:
         reply = {"way": {"box_2d": [0, 0, 10, 10], "image_index": 0}}
         assert al.lift_way(reply, np.zeros((0, 3)),
                            {"position": [1.0, 2.0, 0.0]}) is None
+
+
+class TestComparingPredicate:
+    """When is a sighting "the right kind of thing, not the one asked for"?
+
+    Both cases below are real replies. They are indistinguishable on
+    `has_relation`, which reads our sentence, and they separate cleanly on what
+    the model itself reported.
+    """
+
+    @staticmethod
+    def comparing(reply):
+        """The predicate `run_goto` computes; kept in step with it by the two
+        recorded cases below."""
+        return (bool(reply.get("relation"))
+                or len(reply.get("candidates") or []) >= 2)
+
+    # `home_building_1` leg 3, "the trash can closest to the refridgerator".
+    # The model is mid-comparison and cannot finish it: it never saw the
+    # refrigerator, and the bin it found was in another room.
+    WRONG_BIN = {"visible": True, "relation": "closest_to", "confidence": 0.35,
+                 "candidates": [{"name": "trash can"}], "anchors": []}
+
+    # `livingroom_2` q4, "the crystal ball decoration on the shelf near the TV".
+    # "near" makes the phrase relational to us; the model reports no comparison
+    # because there is only one, and says in its evidence that it can see the
+    # shelf beside the TV.
+    CRYSTAL_BALL = {"visible": True, "relation": None, "confidence": 0.82,
+                    "candidates": [], "anchors": [],
+                    "box_2d": [252, 30, 288, 78], "image_index": 3}
+
+    def test_an_unfinished_comparison_is_still_caught(self):
+        assert self.comparing(self.WRONG_BIN)
+
+    def test_a_single_unqualified_nomination_is_not(self):
+        assert not self.comparing(self.CRYSTAL_BALL)
+
+    def test_rival_candidates_count_even_with_no_relation_named(self):
+        """The model dropped the relation but still offered a choice — that is
+        a comparison it has not made."""
+        assert self.comparing({"visible": True, "relation": None,
+                               "candidates": [{"name": "a"}, {"name": "b"}]})
+
+    def test_the_two_cases_are_identical_to_has_relation(self):
+        """Which is why the old test could not tell them apart."""
+        assert has_relation("the trash can closest to the refridgerator")
+        assert has_relation("the crystal ball decoration on the shelf near the TV")
+
+    def test_a_nomination_is_verified_where_a_comparison_is_not(self):
+        """`verified` has to follow `comparing` too, or the leg approaches
+        something it can never declare arrival at."""
+        def verified(reply, relational=True):
+            return (not relational) or (not self.comparing(reply)) \
+                or False        # `chosen` is None in both recorded cases
+        assert not verified(self.WRONG_BIN)
+        assert verified(self.CRYSTAL_BALL)
 
 
 class TestGate:

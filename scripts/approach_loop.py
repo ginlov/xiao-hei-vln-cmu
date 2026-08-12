@@ -906,8 +906,26 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # behind the robot", and the loop discarded it because `visible` was
         # true. So an unverified sighting keeps exploring, along the heading the
         # model gives, instead of driving at the nomination.
-        adrift = (reply.get("visible") and relational and chosen is None
-                  and bound is None)
+        # ...but only while a comparison is actually outstanding. `relational`
+        # is our reading of the sentence; whether the model is *mid-comparison*
+        # is the model's, and it says so two ways: by naming a relation, or by
+        # offering rival candidates. Neither is true of a single unqualified
+        # nomination, and treating one as a failure deadlocked an entire leg.
+        #
+        # On `livingroom_2` q4 the phrase was "the crystal ball decoration on
+        # the shelf near the TV". "near" makes `has_relation` true; the model
+        # answered `relation: null, candidates: []` on ten consecutive calls —
+        # it had resolved the phrase by eye and said so in its evidence ("the
+        # same shelf that stands beside the TV unit") — so `chosen` was
+        # always None, `adrift` always true, and the leg explored away from a box
+        # it was handed every time, confidence climbing 0.40 to 0.82. The
+        # fallback below that would have used the model's own pick is gated on
+        # `bound is not None`, and `adrift` is what stops a binding ever being
+        # made: the two conditions cannot both be satisfied first.
+        comparing = (bool(reply.get("relation"))
+                     or len(reply.get("candidates") or []) >= 2)
+        adrift = (reply.get("visible") and relational and comparing
+                  and chosen is None and bound is None)
         if adrift:
             print(f"      seen, but the relation is unmeasurable and nothing is "
                   f"bound — this is the right kind of object, not the one the "
@@ -1027,7 +1045,14 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                   f"({len(reply.get('candidates') or [])} candidates, "
                   f"{len(reply.get('anchors') or [])} anchors) — using the "
                   f"model's own pick")
-        verified = (not relational) or chosen is not None
+        # Same distinction, and it has to be the same or the fix is half a fix:
+        # letting the leg approach a nomination it can never verify only trades
+        # exploring-away for driving-at-it-forever. A phrase our parser calls
+        # relational, answered with no relation and no rivals, is not an
+        # unverifiable comparison — it is an ordinary nomination, and `JUMP_M`,
+        # `same_object_as_previous` and `corroborated` defend it exactly as
+        # they defend a phrase with no relation in it at all.
+        verified = (not relational) or (not comparing) or chosen is not None
         w, h_deg = box_angular_size(box, i)
         blind, az, el, floor = in_blind_cone(ray_from_box(box, i))
         print(f"      image {i} ({NAMES[i]}), box {w:.1f}x{h_deg:.1f}°, "
