@@ -19,11 +19,12 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            REVISIT_M,
                            SPENT_CONE_DEG, SPENT_PENALTY, already_tried,
                            bind_target, corroborated, explore_direction,
-                           lift_way, WAY_MAX_M,
-                           recrosses, revisited, side_of)
+                           gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
+                           nearest_allowed_step, recrosses, revisited,
+                           same_thing, side_of)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
-                          same_thing, through_point, went_between, xy_of)
+                          through_point, went_between, xy_of)
 from vlm_probe import build_prompt, parse  # noqa: E402
 from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
                               keepouts, parse_instruction, steps)
@@ -31,6 +32,23 @@ from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
 
 def anchor(name, x, y):
     return {"name": name, "xy": np.array([float(x), float(y)])}
+
+
+def fake_cm(points=None, *, gates=(), keepout=()):
+    """A `ConverterModel` over a handful of legal points, without a terrain map.
+
+    The constructor wants a (N, 4) cloud and derives legality from obstacle
+    inflation; these tests are about the keep-out, so the legal set is set
+    directly and everything upstream of it is left out.
+    """
+    from waypoint_converter_model import ConverterModel
+    cm = ConverterModel.__new__(ConverterModel)
+    P = np.zeros((0, 2)) if points is None else np.asarray(points, float)
+    cm.legal = cm.allowed = P
+    cm.keepout = [(np.asarray(xy, float)[:2], float(r)) for xy, r in keepout]
+    cm.gates = [(np.asarray(a, float)[:2], np.asarray(b, float)[:2])
+                for a, b in gates]
+    return cm
 
 
 class TestGatePoint:
@@ -756,6 +774,104 @@ class TestWayRange:
         reply = {"way": {"box_2d": [0, 0, 10, 10], "image_index": 0}}
         assert al.lift_way(reply, np.zeros((0, 3)),
                            {"position": [1.0, 2.0, 0.0]}) is None
+
+
+class TestGate:
+    """A forbidden corridor, from `livingroom_2` q5.
+
+    "avoiding the path between the TV and the tea table". The robot drove
+    through the middle of it, 0.14 m from the midpoint, and every number here
+    is from that run.
+    """
+
+    TV = np.array([2.41, -2.90])        # as lifted, not ground truth
+    TEA = np.array([0.41, -2.31])
+    VEH = np.array([0.45, -1.31])       # where it stood at the violating step
+    WP = np.array([2.62, -6.23])        # what it published, straight through
+
+    def anchors(self, *names):
+        return [{"xy": xy, "name": nm} for nm, xy in names]
+
+    def test_it_pairs_the_two_anchors(self):
+        g = gates_from(self.anchors(("TV", self.TV), ("tea table", self.TEA)))
+        assert len(g) == 1
+        a, b = g[0]
+        assert np.linalg.norm(a - b) > np.linalg.norm(self.TV - self.TEA)
+
+    def test_both_ends_are_padded(self):
+        """A lift lands on the face the scanner saw, so the segment joining two
+        anchors is short of the furniture at both ends. Unpadded, a route that
+        'clears' this gate misses the tea table's centre by 0.03 m."""
+        (a, b), = gates_from(self.anchors(("TV", self.TV), ("tea table", self.TEA)))
+        grew = np.linalg.norm(a - b) - np.linalg.norm(self.TV - self.TEA)
+        assert grew == pytest.approx(2 * GATE_PAD_M, abs=1e-6)
+
+    def test_one_anchor_is_not_a_gate(self):
+        assert gates_from(self.anchors(("TV", self.TV))) == []
+
+    def test_the_same_object_twice_is_not_a_gate(self):
+        """Three of the five discs in that run were the same television."""
+        assert gates_from(self.anchors(("TV", self.TV),
+                                       ("tv (right view)", self.TV + 1.4))) == []
+
+    def test_the_violating_route_is_refused(self):
+        cm = fake_cm(gates=gates_from(
+            self.anchors(("TV", self.TV), ("tea table", self.TEA))))
+        assert cm.crosses_gate(self.VEH, self.WP)
+
+    def test_a_route_that_stays_on_one_side_is_allowed(self):
+        cm = fake_cm(gates=gates_from(
+            self.anchors(("TV", self.TV), ("tea table", self.TEA))))
+        assert not cm.crosses_gate(self.VEH, np.array([0.07, -1.54]))
+
+    def test_a_gate_removes_nothing_from_the_legal_set(self):
+        """It forbids crossing, not standing. Two discs wide enough to close a
+        2 m gap closed every route the leg had; this is why."""
+        pts = np.array([[0.0, 0.0], [1.0, -2.9], [2.0, -5.0]])
+        assert len(fake_cm(pts, gates=[(self.TEA, self.TV)]).legal_points()) \
+            == len(pts)
+
+
+class TestNearestAllowedStep:
+    """What to do when every waypoint toward the aim is forbidden.
+
+    The old answer was to publish the raw waypoint with the constraint dropped
+    in silence, which is how the violation happened.
+    """
+
+    GATE = [(np.array([-2.0, -1.0]), np.array([2.0, -1.0]))]
+
+    def test_it_takes_the_nearest_point_it_may_reach(self):
+        pts = np.array([[0.0, -3.0], [0.5, 0.5], [1.5, 0.4]])   # first is over
+        cm = fake_cm(pts, gates=self.GATE)
+        got = nearest_allowed_step(cm, np.array([0.0, 1.0]),
+                                   np.array([0.0, -4.0]))
+        assert got is not None and got[1] > -1.0, "it must not cross the gate"
+
+    def test_none_when_everything_is_forbidden(self):
+        cm = fake_cm(np.array([[0.0, -3.0], [1.0, -4.0]]), gates=self.GATE)
+        assert nearest_allowed_step(cm, np.array([0.0, 1.0]),
+                                    np.array([0.0, -4.0])) is None
+
+    def test_no_legal_points_at_all(self):
+        assert nearest_allowed_step(fake_cm(np.zeros((0, 2))),
+                                    np.zeros(2), np.zeros(2)) is None
+
+
+class TestKeepOutAnchorMerge:
+    """One television, lifted three times, became three keep-out discs."""
+
+    def lifted(self, name, xy):
+        return {"avoid": [{"name": name, "box_2d": [0, 0, 1, 1],
+                           "image_index": 0}]}, np.asarray(xy, float)
+
+    def test_the_same_name_is_the_same_anchor(self):
+        assert same_thing("TV", "tv")
+        assert same_thing("TV", "TV (same set seen at right edge)")
+        assert same_thing("tea table", "tea table (coffee table)")
+
+    def test_different_names_stay_apart(self):
+        assert not same_thing("TV", "tea table")
 
 
 class TestLoopBudget:

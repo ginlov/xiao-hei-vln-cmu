@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from pathlib import Path
@@ -59,7 +58,8 @@ from approach_loop import (COST_PER_CALL, CTR, DEFAULT_HOST,  # noqa: E402
                            KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M, REVISIT_M,
                            Ctx, Outcome, Robot,
                            bind_constraints, crosses, explore_direction,
-                           explore_goal, ground, run_goto, yaw_of)
+                           explore_goal, gates_from, ground, run_goto,
+                           same_thing, yaw_of)
 from decompose import decompose  # noqa: E402
 from instruction_plan import GOTO, PASS, Clause, keepouts, steps  # noqa: E402
 from vlm_approach import STANDOFF_M, _lift_xy  # noqa: E402
@@ -168,23 +168,6 @@ def through_point(a: np.ndarray, b: np.ndarray, entry: np.ndarray,
     perp = np.array([-u[1], u[0]]) / n
     away = perp if float(np.dot(perp, mid - entry)) > 0 else -perp
     return mid + away * reach
-
-
-def same_thing(a: str, b: str) -> bool:
-    """Are these two reported names the same object seen twice?
-
-    On `studio` the model returned `couch` and `couch (left view)` as the two
-    sides of a gap, 1.35 m apart — wide enough to clear the span guard, and a
-    "passage" straight through the middle of one sofa. The parenthetical is the
-    model's own note about which image it read, so it is stripped before the
-    comparison.
-    """
-    def norm(s: str) -> str:
-        s = re.sub(r"\(.*?\)", " ", (s or "").lower())
-        s = " ".join(s.replace("the ", " ").split())
-        return s
-    x, y = norm(a), norm(b)
-    return bool(x) and bool(y) and (x in y or y in x)
 
 
 def far_side_goal(cm, sides: tuple[np.ndarray, np.ndarray],
@@ -381,7 +364,11 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             ctx.visited.append(here_txt)
             rec["here"] = here_txt
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
-        keepout = [(a["xy"], KEEPOUT_M) for a in ctx.avoid]
+        # A corridor the instruction forbids is a gate, not two discs. Discs
+        # big enough to close it close the room as well — see `ConverterModel`.
+        gates = gates_from(ctx.avoid) if ctx.keepout_is_gate else []
+        keepout = ([] if gates else
+                   [(a["xy"], KEEPOUT_M) for a in ctx.avoid])
 
         found = lift_anchors(reply, scan, pose)
         gp = gate_point(found, clause.relation, o[:2])
@@ -410,7 +397,7 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             h = (reply.get("explore") or {}).get("heading_deg", 0)
             goal = explore_goal(pose, h)
             try:
-                cm = ConverterModel(terrain, keepout=keepout)
+                cm = ConverterModel(terrain, keepout=keepout, gates=gates)
                 want = yaw_of(pose) - np.deg2rad(float(h))
                 u, reach, _ = explore_direction(cm, o[:2], want, ctx.spent,
                                                 ctx.crossed)
@@ -464,7 +451,7 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
 
         goal = aim
         try:
-            cm = ConverterModel(terrain, keepout=keepout)
+            cm = ConverterModel(terrain, keepout=keepout, gates=gates)
             best = None
             if sides is not None:
                 far = far_side_goal(cm, sides, o[:2], aim, entry=here)
@@ -574,6 +561,10 @@ def execute(ctx: Ctx, question: str, plan: list[Clause], *,
     ctx.mission = {"question": question,
                    "plan": [str(c) for c in todo],
                    "keepouts": [str(c) for c in keep]}
+    # "avoid the path between X and Y" forbids a corridor; "avoid the area near
+    # the stool" forbids a place. The plan already knows which, and the shape of
+    # the keep-out follows from it — see `ConverterModel`.
+    ctx.keepout_is_gate = any(c.relation == "between" for c in keep)
     results: list[dict] = []
 
     for k, clause in enumerate(todo, 1):

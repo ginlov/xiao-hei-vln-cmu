@@ -34,6 +34,7 @@ import argparse
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -145,6 +146,11 @@ MAX_LOOPS = 3
 # whole extent the reference trajectory ever visits — which is what aimed the
 # leg east from its first move. Past this, keep the bearing and drop the range.
 WAY_MAX_M = 7.0
+# How far past each lifted anchor a forbidden gate reaches. The lift lands on
+# whichever face the scanner saw, so the segment joining two anchors is short
+# of the furniture it names at both ends; half a sofa plus half the vehicle is
+# what this has to cover. See `gates_from`.
+GATE_PAD_M = 0.6
 
 
 class Robot:
@@ -242,15 +248,80 @@ def bind_constraints(reply: dict, scan: np.ndarray, pose: dict,
         if xy is None:
             continue
         xy = np.asarray(xy, float)[:2]
-        near = next((a for a in avoid
+        name = it.get("name") or "?"
+        # By name first, and only then by distance. Distance alone made three
+        # discs out of one television on `livingroom_2`: the lifts came back
+        # 1.3 m and 2.2 m apart as the robot moved, `JUMP_M` called each a new
+        # object, and five 1.2 m discs closed every route the leg had. The
+        # model names them consistently — "TV", "tv", "tea table" — and that is
+        # the more reliable half of the answer.
+        near = next((a for a in avoid if same_thing(a["name"], name)), None) \
+            or next((a for a in avoid
                      if np.linalg.norm(a["xy"] - xy) < JUMP_M), None)
         if near is None:
-            avoid.append({"xy": xy, "name": it.get("name") or "?"})
-            print(f"      keep-out bound: {it.get('name')!r} at "
+            avoid.append({"xy": xy, "name": name})
+            print(f"      keep-out bound: {name!r} at "
                   f"({xy[0]:+.2f}, {xy[1]:+.2f}), radius {KEEPOUT_M} m")
         else:
             near["xy"] = xy          # same anchor, seen better
     return avoid
+
+
+def nearest_allowed_step(cm: ConverterModel, here: np.ndarray,
+                         aim: np.ndarray) -> np.ndarray | None:
+    """The legal waypoint nearest the aim whose *route from here* is allowed.
+
+    `best_waypoint_toward` scores where the vehicle would settle, and returns
+    nothing at all when every candidate is forbidden. That is the right answer
+    to the question it was asked and the wrong thing to act on: a leg with a
+    keep-out still has to move, and moving toward the aim by whatever the
+    constraint permits is what walks the vehicle round the forbidden corridor
+    over the next few calls.
+
+    Cheaper than `best_waypoint_toward` on purpose — no settle simulation, just
+    the published point — because this runs only when that has already failed.
+    """
+    L = cm.legal_points()
+    if not len(L):
+        return None
+    ok = np.array([not (cm.gates and cm.crosses_gate(here, p))
+                   and not (cm.keepout and cm._crosses_keepout(here, p))
+                   for p in L])
+    if not ok.any():
+        return None
+    C = L[ok]
+    return C[int(np.argmin(np.linalg.norm(C - np.asarray(aim, float)[:2],
+                                          axis=1)))]
+
+
+def gates_from(avoid: list[dict], pad: float = GATE_PAD_M
+               ) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The forbidden corridor between two keep-out anchors, as a segment.
+
+    "Avoid the path between the TV and the tea table" forbids a corridor, and a
+    corridor is what the two anchors bracket — not two discs centred on them.
+    The pair is the two furthest apart, as in `gate_point`, because a gap is
+    defined by its sides.
+
+    Both ends are pushed outward by `pad`. The anchors are lifted at the face
+    the scanner happened to see, so the segment joining them is shorter than
+    the furniture it names at both ends; without the pad, a route that "clears"
+    the gate can miss the tea table's centre by 0.03 m, which is to say drive
+    through it.
+    """
+    named = [a for a in avoid if a.get("xy") is not None]
+    pairs = [(a, b) for i, a in enumerate(named) for b in named[i + 1:]
+             if not same_thing(a["name"], b["name"])]
+    if not pairs:
+        return []
+    a, b = max(pairs, key=lambda p: float(
+        np.linalg.norm(p[0]["xy"] - p[1]["xy"])))
+    p, q = np.asarray(a["xy"], float), np.asarray(b["xy"], float)
+    n = float(np.linalg.norm(q - p))
+    if n < 0.5:
+        return []                       # one object reported twice, not a gap
+    u = (q - p) / n
+    return [(p - u * pad, q + u * pad)]
 
 
 def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
@@ -294,6 +365,26 @@ def already_tried(origin: np.ndarray, u: np.ndarray,
     lim = float(np.cos(np.deg2rad(SPENT_CONE_DEG)))
     return any(float(np.linalg.norm(origin - p)) < REVISIT_M
                and float(np.dot(u, v)) > lim for p, v in spent)
+
+
+def same_thing(a: str, b: str) -> bool:
+    """Are these two reported names the same object seen twice?
+
+    On `studio` the model returned `couch` and `couch (left view)` as the two
+    sides of a gap, 1.35 m apart — wide enough to clear the span guard, and a
+    "passage" straight through the middle of one sofa. The parenthetical is the
+    model's own note about which image it read, so it is stripped before the
+    comparison.
+
+    It lives here rather than in `execute_plan`, where it was written, because
+    `bind_constraints` needs it too and `execute_plan` imports this module.
+    """
+    def norm(s: str) -> str:
+        s = re.sub(r"\(.*?\)", " ", (s or "").lower())
+        s = " ".join(s.replace("the ", " ").split())
+        return s
+    x, y = norm(a), norm(b)
+    return bool(x) and bool(y) and (x in y or y in x)
 
 
 def side_of(a, b, p) -> float:
@@ -625,6 +716,10 @@ class Ctx:
         field(default_factory=list)
     # Constraints already banked, in the model's language, for the prompt.
     done: list[str] = field(default_factory=list)
+    # True when the instruction forbids a corridor rather than a place, so the
+    # keep-out anchors should be read as the two sides of a gate. Set by the
+    # executor from the plan; a single-object run has no keep-out at all.
+    keepout_is_gate: bool = False
     calls: int = 0
     step: int = 0
     deadline: float | None = None
@@ -782,7 +877,11 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             print(f'      here: "{here_txt[:96]}"')
 
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
-        keepout = [(a["xy"], KEEPOUT_M) for a in ctx.avoid]
+        # A corridor the instruction forbids is a gate, not two discs. Discs
+        # big enough to close it close the room as well — see `ConverterModel`.
+        gates = gates_from(ctx.avoid) if ctx.keepout_is_gate else []
+        keepout = ([] if gates else
+                   [(a["xy"], KEEPOUT_M) for a in ctx.avoid])
 
         # Resolved before the visibility branch, because whether the phrase's
         # relation could be *measured* now decides whether a sighting counts as
@@ -845,7 +944,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"to the heading")
                 way = None
             try:
-                cm = ConverterModel(terrain, keepout=keepout)
+                cm = ConverterModel(terrain, keepout=keepout, gates=gates)
                 want = yaw_of(pose) - np.deg2rad(float(h))
                 asked = cm.reach_along(
                     o[:2], np.array([np.cos(want), np.sin(want)]))
@@ -966,7 +1065,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         goal, will_move, cm = wp.xy, None, None
         aim = bound["xy"] if bound is not None else wp.xy
         try:
-            cm = ConverterModel(terrain, keepout=keepout)
+            cm = ConverterModel(terrain, keepout=keepout, gates=gates)
             # Aim at the target itself, not at a standoff from it: the standoff
             # is what the converter's inflation is *for*, and asking for a point
             # inside it gets the waypoint discarded rather than clamped. Once
@@ -992,6 +1091,29 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                 print(f"      publish ({goal[0]:+.2f}, {goal[1]:+.2f}) -> settles "
                       f"({lands[0]:+.2f}, {lands[1]:+.2f}), {reach:.2f} m from "
                       f"{what}, {will_move:.2f} m from here")
+            elif keepout or gates:
+                # The old fallback here was `goal = wp.xy` — publish the raw
+                # waypoint, keep-out and all. That is how `livingroom_2` q5 came
+                # to drive through the middle of the forbidden gap: five drifted
+                # discs left no answer, and the constraint was then dropped in
+                # silence rather than the drive being reconsidered. Refusing to
+                # answer is information; it means every route from here is
+                # forbidden, and the honest move is a step that is not.
+                goal = nearest_allowed_step(cm, o[:2], aim)
+                rec["constraint_bind"] = {
+                    "aim": aim.tolist(),
+                    "why": "no legal waypoint toward the aim clears the keep-out",
+                    "fallback": None if goal is None else goal.tolist()}
+                if goal is None:
+                    print(f"      every legal waypoint from here is forbidden, "
+                          f"and so is standing still — publishing the raw "
+                          f"waypoint and recording the violation")
+                    rec["constraint_violated"] = True
+                    goal = wp.xy
+                else:
+                    print(f"      no legal waypoint toward the aim clears the "
+                          f"keep-out; stepping to ({goal[0]:+.2f}, "
+                          f"{goal[1]:+.2f}) instead")
         except ValueError as e:
             # A terrain frame we cannot read is a reason to fly blind, not to
             # abort a run that would otherwise work.

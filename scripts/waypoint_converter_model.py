@@ -63,7 +63,8 @@ class ConverterModel:
     """One `/terrain_map` frame, and what the converter would do with it."""
 
     def __init__(self, terrain: np.ndarray, *,
-                 keepout: Sequence[tuple[np.ndarray, float]] = ()) -> None:
+                 keepout: Sequence[tuple[np.ndarray, float]] = (),
+                 gates: Sequence[tuple[np.ndarray, np.ndarray]] = ()) -> None:
         """`terrain` is (N, 4): x, y, z, intensity, where intensity is height
         above the local ground — see `robot_io.py` on reading that column.
 
@@ -73,6 +74,22 @@ class ConverterModel:
         applies to `allowed`, the set we are willing to choose from — and
         because every motion decision reads that one set, waypoint choice,
         exploration and the arrival test inherit the constraint at once.
+
+        `gates` is the other shape a keep-out comes in, and for "avoid the path
+        between X and Y" it is the right one. Two discs big enough to close a
+        2 m gap are big enough to close the room: on `livingroom_2` q5, five
+        1.2 m discs (three of them the same TV, lifted three times and kept
+        apart by `JUMP_M`) left `best_waypoint_toward` with no answer at all,
+        and the caller then published its raw waypoint with the constraint
+        silently dropped — which is how the vehicle came to drive through the
+        middle of the forbidden gap, 0.14 m from its midpoint. A gate is the
+        segment joining the two anchors: it closes the corridor between them
+        and nothing else. On the same frame it rejects 19 of 928 legal points
+        where the discs rejected every usable one.
+
+        A gate forbids *crossing*, not standing: it is a line, so it removes
+        nothing from `allowed`, and is enforced on the run from the vehicle to
+        wherever a waypoint would settle.
         """
         if terrain.ndim != 2 or terrain.shape[1] != 4:
             raise ValueError(f"terrain must be (N, 4); got {terrain.shape}")
@@ -96,6 +113,8 @@ class ConverterModel:
         self.kd_legal = cKDTree(self.legal) if len(self.legal) else None
 
         self.keepout = [(np.asarray(xy, float)[:2], float(r)) for xy, r in keepout]
+        self.gates = [(np.asarray(a, float)[:2], np.asarray(b, float)[:2])
+                      for a, b in gates]
         self.allowed = self.legal
         for xy, r in self.keepout:
             if len(self.allowed) == 0:
@@ -166,6 +185,18 @@ class ConverterModel:
             t = float((xy - o) @ u)
             if 0 < t < far and float(np.linalg.norm(xy - (o + t * u))) < r:
                 far = min(far, max(t - r, 0.0))
+        # A gate stops the ray for the same reason: exploration must not read
+        # straight through a corridor it is forbidden to drive down.
+        for g0, g1 in self.gates:
+            e = g1 - g0
+            den = float(u[0] * e[1] - u[1] * e[0])
+            if abs(den) < 1e-9:
+                continue                          # parallel: never crossed
+            w = g0 - o
+            t = float(w[0] * e[1] - w[1] * e[0]) / den      # along the ray
+            s = float(w[0] * u[1] - w[1] * u[0]) / den      # along the gate
+            if 0.0 < t < far and 0.0 <= s <= 1.0:
+                far = min(far, max(t - min_advance, 0.0))
         return far
 
     def best_waypoint_toward(self, target, vehicle, *, search: int = 400,
@@ -221,6 +252,8 @@ class ConverterModel:
             if self.keepout and (self.forbidden(s)[0]
                                  or self._crosses_keepout(veh, s)):
                 continue
+            if self.gates and self.crosses_gate(veh, s):
+                continue
             if min_move and float(np.linalg.norm(s - veh)) < min_move:
                 continue
             v = float(np.linalg.norm(s - tgt))
@@ -234,6 +267,25 @@ class ConverterModel:
         n = max(int(np.linalg.norm(b - a) / step), 1)
         return bool(self.forbidden(a + np.outer(np.linspace(0, 1, n + 1),
                                                 b - a)).any())
+
+    def crosses_gate(self, a, b) -> bool:
+        """Does the straight run from `a` to `b` pass through a forbidden gate?
+
+        Exact, not sampled: a gate is a segment and so is the run, so this is
+        the ordinary orientation test. Sampling would miss a gate crossed
+        between two samples, and a keep-out that is only usually enforced is
+        worse than none — it would let a violation through while costing every
+        detour it did make.
+        """
+        a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+
+        def side(p, q, r):
+            return np.sign((q[0] - p[0]) * (r[1] - p[1])
+                           - (q[1] - p[1]) * (r[0] - p[0]))
+
+        return any(side(a, b, g0) * side(a, b, g1) < 0
+                   and side(g0, g1, a) * side(g0, g1, b) < 0
+                   for g0, g1 in self.gates)
 
     def settle(self, waypoint, vehicle, *, step: float = 0.05,
                max_iter: int = 2000) -> np.ndarray:
