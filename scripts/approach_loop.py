@@ -1200,15 +1200,21 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                   f"{detour[1]:+.2f}), {float(np.linalg.norm(detour - o[:2])):.2f} m")
             rec["detour"] = {"xy": detour.tolist(), "name": nm}
             steer = detour
-        elif constrained:
+        if constrained:
             # Short hops, so that the straight line the constraint is checked on
             # is a fair model of the arc `local_planner` will actually drive.
-            v = aim - o[:2]
+            # The cap belongs to the constraint and not to which branch chose
+            # the aim: leaving the detour uncapped is what let a 2.42 m move
+            # end 1.49 m east of where it was planned and take the vehicle
+            # through the middle of the forbidden gap. Over the 121 recorded
+            # drives, capping at this length takes the worst sideways stray
+            # from 2.89 m to 0.95 m.
+            v = steer - o[:2]
             d = float(np.linalg.norm(v))
             if d > KEEPOUT_STEP_M:
                 steer = o[:2] + v / d * KEEPOUT_STEP_M
                 print(f"      keep-out in force — stepping {KEEPOUT_STEP_M} m "
-                      f"of the {d:.2f} m toward the target, not all of it")
+                      f"of the {d:.2f} m, not all of it")
         try:
             cm = ConverterModel(terrain, keepout=keepout, gates=gates)
             # Aim at the target itself, not at a standoff from it: the standoff

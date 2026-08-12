@@ -108,7 +108,7 @@ The true gate here is the ground-truth pair from `object_list.txt` — TV at
 (2.470, −2.895), coffee table at (0.363, −2.929) — not the lifted one, so the
 check is independent of the anchors the fix works from.
 
-586 tests pass, 31 new.
+592 tests pass, 37 new.
 
 ## The same cause, a second symptom
 
@@ -189,6 +189,67 @@ Two things this does not fix, and must not be read as fixing:
 
 `XIAO_HEI_GATES=0` disables the computed corridor, so the model-led detour can
 be driven alone and the two compared. On by default.
+
+## Driven again, and a fourth cause: the plan is not the path
+
+`runs/lr_2_0811_05`, with the detour live. Both legs arrived, and the soccer
+ball bound **0.043 m** from ground truth where the run before had bound it
+3.42 m out — `binding_nearer` fired at step 7, replacing a 9.93 m binding with
+a 3.88 m reading. The model answered `detour` on every constrained step and
+pointed the right way each time ("clear floor between the tea table and the
+sofa", "clear floor just inside the sliding-door").
+
+And the vehicle went through the forbidden gap again, once, at (+1.28, −2.91).
+
+Step 6 is the whole story:
+
+```
+published      (-0.02,-3.96)      planned move 2.50 m
+predicted      (-0.02,-3.70)      straight down x = 0, crossing nothing
+ACTUAL         (+1.37,-3.17)      1.49 m east, and through the middle of the gap
+```
+
+The constraint was checked against a path the robot did not take. Split by how
+the drive ended, the converter model is fine when it completes and useless when
+it stalls:
+
+| | n | median error | max |
+|---|---|---|---|
+| `why=arrived` | 4 | 0.15 m | 0.22 m |
+| `why=settled` | 3 | 1.27 m | 1.49 m |
+
+`settle()` walks the snap fixed-point along a straight line; `local_planner`
+curves round obstacles, and where the straight line does not fit, it goes
+somewhere we did not model.
+
+### Measured, not guessed
+
+Over the 121 recorded drives that carry a track, the sideways stray from the
+planned line:
+
+| | |
+|---|---|
+| as a fraction of the move | p50 0.18, p90 0.51, **p95 0.60**, max 1.64 |
+| move 0.3–1 m | median 0.16, max 0.51 |
+| move 1–2 m | median 0.30, max 0.95 |
+| move 3–9 m | median 0.49, **p90 2.10, max 2.89** |
+
+Long moves are where it breaks. So two changes, both from that table:
+
+- **`KEEPOUT_STEP_M` now caps the detour too.** It was applied only to the
+  branch without one, which is exactly the branch step 6 did not take. Capping
+  at 2.0 m takes the worst observed stray from 2.89 m to 0.95 m.
+- **`crosses_gate` became a clearance test**, with the margin scaled by the
+  length of the move — 0.60 of it, never under 0.5 m, straight off the p95.
+  `gate_clearance` uses an exact segment-to-segment distance.
+
+A margin can seal a route, and `livingroom_2`'s only legal way south is a strip
+the reference threads 0.8 m from the tea table. So it is a preference: when
+nothing clears the margin the filter retries at zero, which is worse and still
+not a violation of the constraint as written.
+
+Replayed on step 6: it now publishes a 0.30 m move with 1.62 m of clearance
+against a 0.50 m margin, where the p90 stray for a move that short is 0.15 m.
 
 ## Not fixed
 

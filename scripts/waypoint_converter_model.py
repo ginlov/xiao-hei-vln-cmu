@@ -46,6 +46,44 @@ SEARCH_DIS_THRE = 5.0
 VEHICLE_DIS_WEIGHT = 0.5
 ADJ_DIS_THRE = 5.0
 WAYPOINT_XY_RADIUS = 0.3
+# How near a planned run may come to a forbidden gate, as a fraction of its own
+# length plus a floor. Both measured over the 121 recorded drives that carry a
+# track: the sideways stray from the straight line we plan is 0.18 of the move
+# at the median, 0.51 at p90 and 0.60 at p95, and for moves under a metre the
+# worst seen was 0.51 m however short they were. So the margin is 0.60 of the
+# move, never less than 0.5 m.
+GATE_MARGIN_FRAC = 0.60
+GATE_MARGIN_MIN = 0.5
+
+
+def _seg_seg_dist(p1, p2, q1, q2) -> float:
+    """Shortest distance between two 2-D segments; 0 if they intersect.
+
+    Clamped parametric solve, with the parallel case falling through to the
+    endpoint distances — which is also the answer when either segment is a
+    point, so no special case is needed for a degenerate gate.
+    """
+    p1, p2, q1, q2 = (np.asarray(v, float)[:2] for v in (p1, p2, q1, q2))
+    u, v, w = p2 - p1, q2 - q1, p1 - q1
+    a, b, c = u @ u, u @ v, v @ v
+    d, e = u @ w, v @ w
+    den = a * c - b * b
+    if den > 1e-12:
+        s = float(np.clip((b * e - c * d) / den, 0.0, 1.0))
+        t = float(np.clip((a * e - b * d) / den, 0.0, 1.0))
+        # One clamp can invalidate the other, so re-solve each against the
+        # other's clamped value. Two passes are exact for segments.
+        s = float(np.clip((b * t - d) / a, 0.0, 1.0)) if a > 1e-12 else 0.0
+        t = float(np.clip((b * s + e) / c, 0.0, 1.0)) if c > 1e-12 else 0.0
+        return float(np.linalg.norm((p1 + s * u) - (q1 + t * v)))
+    best = float("inf")
+    for pt, (r1, r2) in ((p1, (q1, q2)), (p2, (q1, q2)),
+                         (q1, (p1, p2)), (q2, (p1, p2))):
+        seg = r2 - r1
+        L = float(seg @ seg)
+        t = 0.0 if L < 1e-12 else float(np.clip(((pt - r1) @ seg) / L, 0.0, 1.0))
+        best = min(best, float(np.linalg.norm(pt - (r1 + t * seg))))
+    return best
 
 
 def voxel_downsample(pts: np.ndarray, leaf: float = TERRAIN_VOXEL) -> np.ndarray:
@@ -248,10 +286,21 @@ class ConverterModel:
         # to where it *settles* is, below — but it is cheap and it culls the
         # doomed half, so the window covers plausible candidates instead.
         if self.gates or self.keepout:
-            keep = np.array([not (self.gates and self.crosses_gate(veh, p))
-                             and not (self.keepout
-                                      and self._crosses_keepout(veh, p))
-                             for p in legal])
+            def survives(margin):
+                return np.array(
+                    [not (self.gates and self.crosses_gate(veh, p, margin))
+                     and not (self.keepout and self._crosses_keepout(veh, p))
+                     for p in legal])
+            keep = survives(None)               # clearance, scaled by length
+            # A margin must never be able to seal the only way through. It is
+            # there because we cannot predict the driven path, and when nothing
+            # clears it the honest fallback is the run that at least does not
+            # cross — worse, but still not a violation of the constraint as
+            # written. `livingroom_2`'s only legal route south is a strip the
+            # reference trajectory threads 0.8 m from the tea table, which a
+            # 1.2 m margin would otherwise close.
+            if not keep.any():
+                keep = survives(0.0)
             if not keep.any():
                 return None
             legal = legal[keep]
@@ -290,24 +339,36 @@ class ConverterModel:
         return bool(self.forbidden(a + np.outer(np.linspace(0, 1, n + 1),
                                                 b - a)).any())
 
-    def crosses_gate(self, a, b) -> bool:
-        """Does the straight run from `a` to `b` pass through a forbidden gate?
+    def gate_clearance(self, a, b) -> float:
+        """How near the straight run from `a` to `b` comes to a forbidden gate.
 
-        Exact, not sampled: a gate is a segment and so is the run, so this is
-        the ordinary orientation test. Sampling would miss a gate crossed
-        between two samples, and a keep-out that is only usually enforced is
-        worse than none — it would let a violation through while costing every
-        detour it did make.
+        Zero when it crosses. `inf` when there are no gates.
         """
         a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+        return min((_seg_seg_dist(a, b, g0, g1) for g0, g1 in self.gates),
+                   default=float("inf"))
 
-        def side(p, q, r):
-            return np.sign((q[0] - p[0]) * (r[1] - p[1])
-                           - (q[1] - p[1]) * (r[0] - p[0]))
+    def crosses_gate(self, a, b, margin: float | None = None) -> bool:
+        """Is this run too near a forbidden gate to publish?
 
-        return any(side(a, b, g0) * side(a, b, g1) < 0
-                   and side(g0, g1, a) * side(g0, g1, b) < 0
-                   for g0, g1 in self.gates)
+        Not "does it cross": the vehicle does not drive the line we plan. It
+        drives whatever `local_planner` chooses, and measured over 121 recorded
+        drives that path strays sideways from the straight line by 0.18 of its
+        length at the median and 0.60 at the 95th percentile. On
+        `livingroom_2` a 2.42 m move planned straight down x = 0 ended 1.49 m
+        east and took the vehicle through the middle of the forbidden gap; the
+        crossing test had passed the plan, and the plan was not what was driven.
+
+        So the test is on clearance, and the margin scales with the length of
+        the move, because the deviation does. A short hop earns a small margin
+        and a long one cannot be checked at all — which is the other half of
+        the answer, and why the caller caps a step while a keep-out is in force.
+        """
+        a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+        if margin is None:
+            margin = max(GATE_MARGIN_MIN,
+                         GATE_MARGIN_FRAC * float(np.linalg.norm(b - a)))
+        return self.gate_clearance(a, b) <= margin
 
     def settle(self, waypoint, vehicle, *, step: float = 0.05,
                max_iter: int = 2000) -> np.ndarray:

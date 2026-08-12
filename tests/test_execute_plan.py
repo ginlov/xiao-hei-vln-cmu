@@ -26,6 +26,7 @@ from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
 from vlm_approach import has_relation  # noqa: E402
+from waypoint_converter_model import _seg_seg_dist  # noqa: E402
 from vlm_probe import build_prompt, parse  # noqa: E402
 from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
                               keepouts, parse_instruction, steps)
@@ -996,6 +997,58 @@ class TestSearchWindowWithAConstraint:
     def test_a_truly_sealed_frame_still_says_so(self):
         cm = fake_cm(self.room()[:600], gates=self.GATE)     # far side only
         assert cm.best_waypoint_toward(self.AIM, self.VEH, min_move=0.5) is None
+
+
+class TestGateClearance:
+    """The constraint is checked on a line the vehicle does not drive.
+
+    Measured over the 121 recorded drives that carry a track, the driven path
+    strays sideways from the straight line we plan by 0.18 of its length at the
+    median and 0.60 at p95. On `livingroom_2` a 2.42 m move planned down x = 0
+    ended 1.49 m east and went through the middle of the forbidden gap — the
+    crossing test passed the plan, and the plan was not what was driven.
+    """
+
+    GATE = [(np.array([-2.0, 0.0]), np.array([2.0, 0.0]))]
+
+    def test_segment_distance(self):
+        assert _seg_seg_dist([0, 0], [2, 0], [1, -1], [1, 1]) == 0.0
+        assert _seg_seg_dist([0, 0], [2, 0], [0, 1], [2, 1]) == pytest.approx(1.0)
+        assert _seg_seg_dist([0, 0], [1, 0], [3, 0], [4, 0]) == pytest.approx(2.0)
+        assert _seg_seg_dist([0, 2], [0, 2], [-1, 0], [1, 0]) == pytest.approx(2.0)
+
+    def test_a_run_that_stops_short_of_the_gate_is_still_refused(self):
+        """The whole point: not crossing is not the same as being safe."""
+        cm = fake_cm(gates=self.GATE)
+        assert cm.gate_clearance([0.0, 2.0], [0.0, 0.4]) == pytest.approx(0.4)
+        assert cm.crosses_gate([0.0, 2.0], [0.0, 0.4]), "0.4 m of clearance"
+
+    def test_the_margin_grows_with_the_move(self):
+        """Because the deviation does. A long run cannot be checked at all."""
+        cm = fake_cm(gates=self.GATE)
+        assert not cm.crosses_gate([0.0, 1.0], [0.0, 0.7]), "0.3 m move, 0.7 clear"
+        assert cm.crosses_gate([0.0, 5.0], [0.0, 0.7]), "4.3 m move, same clearance"
+
+    def test_an_explicit_margin_still_means_crossing(self):
+        cm = fake_cm(gates=self.GATE)
+        assert not cm.crosses_gate([0.0, 2.0], [0.0, 0.4], 0.0)
+        assert cm.crosses_gate([0.0, 2.0], [0.0, -2.0], 0.0)
+
+    def test_no_gates_is_always_clear(self):
+        assert fake_cm().gate_clearance([0, 0], [1, 1]) == float("inf")
+        assert not fake_cm().crosses_gate([0, 0], [1, 1])
+
+    def test_the_margin_cannot_seal_the_only_route(self):
+        """`livingroom_2`'s only legal way south is a strip the reference
+        threads 0.8 m from the tea table; a 1.2 m margin would close it. When
+        nothing clears the margin the fallback is the run that does not cross —
+        worse, and still not a violation of the constraint as written."""
+        near = np.array([[0.0, 0.9], [0.0, 0.8]])       # both inside any margin
+        cm = fake_cm(near, gates=self.GATE)
+        got = cm.best_waypoint_toward(np.array([0.0, 0.85]), np.array([0.0, 3.0]),
+                                      min_move=0.0)
+        assert got is not None, "it must still answer rather than deadlock"
+        assert got[0][1] > 0.0, "and never with something over the gate"
 
 
 class TestNearestAllowedStep:
