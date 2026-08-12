@@ -406,6 +406,25 @@ Throughout, the robot must NOT drive through:
 This holds on every step, including this one. Whenever you can see an object
 that one of these regions is anchored on, report it under "avoid" -- even if
 the request above never mentions it.
+
+AND SAY WHICH WAY ROUND. Naming the region is not the same as getting past it.
+The robot cannot see a map; it drives roughly straight at whatever point it is
+given, so a point on the far side of a forbidden region is reached by going
+through it. What it needs from you is the *near* thing to aim at instead: the
+opening, doorway, or stretch of clear floor it should cross next in order to
+end up on the other side without entering the region.
+
+Box that, in "detour", exactly as you would box a target -- the floor or gap
+you want it to drive to, not the furniture beside it, and not the destination.
+Prefer somewhere within a few metres: this is one step of the way round, and
+you will be asked again from there.
+
+Leave "detour" null when the way to the target does not pass near a forbidden
+region at all, or when you cannot see a way round from here. A guess is worse
+than nothing; null means the robot falls back to its own geometry.
+
+  "detour": {{"name": "clear floor left of the tea table", "image_index": n,
+              "box_2d": [...]}} or null
 """
 
 

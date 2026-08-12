@@ -108,7 +108,7 @@ The true gate here is the ground-truth pair from `object_list.txt` — TV at
 (2.470, −2.895), coffee table at (0.363, −2.929) — not the lifted one, so the
 check is independent of the anchors the fix works from.
 
-571 tests pass, 16 new.
+586 tests pass, 31 new.
 
 ## The same cause, a second symptom
 
@@ -143,6 +143,52 @@ the inner loop. Candidates a constraint will reject are dropped *before*
 ranking, by the cheap test on the published point, so the window covers four
 hundred plausible candidates rather than four hundred doomed ones. An
 unconstrained frame is untouched.
+
+## Driven, and a third symptom: the anchors themselves
+
+Re-run with all of the above (`runs/lr_2_0811_03`): the gate was built, from
+two anchors, from the right names — and the vehicle drove through the forbidden
+gap anyway, 0.12 m from its midpoint.
+
+Not the logic. The **tea table lifted to (+0.65, −4.92)**; it is at
+(+0.36, −2.93). Two metres out. The gate was therefore drawn from
+(+2.79, −2.33) to (+0.27, −5.38), a diagonal across the wrong part of the room,
+and the route did not cross *that* line while crossing the real one. The same
+run's sofa lift on `livingroom_1` was 1.23 m out, and the crystal ball's first
+lift was 11 m out. Small objects lift well (round table 0.02 m, soccer ball
+0.017 m); large low furniture facing the robot does not, because the scanner
+returns the one face it can see and we treat that face as the centre.
+
+So the geometry is only ever as good as a coordinate we cannot trust for
+exactly the objects keep-outs are anchored on.
+
+### Asking the model which way round instead
+
+The model does not need a coordinate to know which side to pass. It can see the
+TV and the tea table and say "the clear floor left of the tea table" — the same
+trick as v6's `way`, which turned "a heading that means through that door" into
+a box that could be lifted.
+
+`KEEPOUT_BLOCK` now asks for `detour`: the opening or stretch of floor to cross
+*next*, boxed, nullable. `lift_way` generalises to `lift_boxed`, so `detour`
+inherits the `WAY_MAX_M` cap that keeps a lift through a gap from landing in
+the room beyond. The approach branch steers at the detour when there is one,
+and `steer` is kept apart from `aim` so the arrival tests still measure against
+the target — a detour is deliberately not it, and `may_stop` is false while one
+is in force.
+
+Two things this does not fix, and must not be read as fixing:
+
+- **The model still cannot control the path.** It sees four images from one
+  pose. `local_planner` chooses the route. So the detour only helps if each
+  step is short enough that the straight line is a fair model of the arc:
+  `KEEPOUT_STEP_M` = 2.0 m caps a step while a keep-out is in force, against
+  the 4.83 m drive that produced the original violation.
+- **It is a second opinion, not a replacement.** The geometry is the only part
+  that sees the path at all.
+
+`XIAO_HEI_GATES=0` disables the computed corridor, so the model-led detour can
+be driven alone and the two compared. On by default.
 
 ## Not fixed
 

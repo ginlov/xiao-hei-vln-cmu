@@ -55,7 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
 from approach_loop import (COST_PER_CALL, CTR, DEFAULT_HOST,  # noqa: E402
-                           KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M, REVISIT_M,
+                           KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M,
+                           REVISIT_M, USE_GATES,
                            Ctx, Outcome, Robot,
                            bind_constraints, crosses, explore_direction,
                            explore_goal, gates_from, ground, run_goto,
@@ -366,8 +367,9 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
         # A corridor the instruction forbids is a gate, not two discs. Discs
         # big enough to close it close the room as well — see `ConverterModel`.
-        gates = gates_from(ctx.avoid) if ctx.keepout_is_gate else []
-        keepout = ([] if gates else
+        gates = (gates_from(ctx.avoid)
+                 if (ctx.keepout_is_gate and USE_GATES) else [])
+        keepout = ([] if gates or not USE_GATES else
                    [(a["xy"], KEEPOUT_M) for a in ctx.avoid])
 
         found = lift_anchors(reply, scan, pose)

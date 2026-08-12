@@ -161,6 +161,16 @@ WAY_MAX_M = 7.0
 # of the furniture it names at both ends; half a sofa plus half the vehicle is
 # what this has to cover. See `gates_from`.
 GATE_PAD_M = 0.6
+# How far a single step may go while a keep-out is in force. The constraint is
+# checked on the straight line from the vehicle to where the waypoint settles,
+# and that line is only a fair model of the driven path over a short hop —
+# `local_planner` curves. On `livingroom_2` one 4.83 m drive to a waypoint
+# comfortably outside the forbidden region went through the middle of it.
+KEEPOUT_STEP_M = 2.0
+# Whether the computed corridor is enforced at all. It is, unless this is set
+# to 0 — which exists so the model-led detour can be driven on its own and the
+# two compared, not because the geometry is optional.
+USE_GATES = os.environ.get("XIAO_HEI_GATES", "1") not in ("0", "false", "no")
 
 
 class Robot:
@@ -334,21 +344,23 @@ def gates_from(avoid: list[dict], pad: float = GATE_PAD_M
     return [(p - u * pad, q + u * pad)]
 
 
-def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
-    """The opening the model boxed, as a point on the floor plan.
+def lift_boxed(reply: dict, field: str, scan: np.ndarray,
+               pose: dict) -> np.ndarray | None:
+    """A place the model boxed, as a point on the floor plan.
 
-    Same lift as a target or a gate anchor, on the one field that says where to
-    go rather than what to look at. Returns `None` when nothing was boxed or
-    the scanner had no return through it.
+    Same lift as a target or a gate anchor, on the fields that say where to go
+    rather than what to look at -- `way` when the target is out of sight,
+    `detour` when a keep-out stands between the robot and it. Returns `None`
+    when nothing was boxed or the scanner had no return through it.
 
     The range is trusted only out to `WAY_MAX_M`. What the model knows is which
-    way the opening lies; the distance comes from a ray that went *through* the
+    way the place lies; the distance comes from a ray that went *through* the
     gap and stopped on whatever was behind it, so it is right near to hand and
     meaningless far away. Beyond the cap the bearing is kept and the point is
-    pulled back onto it, which makes the robot approach the opening and look
-    again rather than commit to a coordinate in another room.
+    pulled back onto it, which makes the robot approach and look again rather
+    than commit to a coordinate in another room.
     """
-    w = reply.get("way")
+    w = reply.get(field)
     if not isinstance(w, dict) or w.get("box_2d") is None \
             or w.get("image_index") is None:
         return None
@@ -362,6 +374,26 @@ def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
     if d <= 1e-6:
         return None
     return here + v / d * min(d, WAY_MAX_M)
+
+
+def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
+    """The opening onward, when the target is not in sight."""
+    return lift_boxed(reply, "way", scan, pose)
+
+
+def lift_detour(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
+    """Where to aim next to get past a keep-out.
+
+    The model cannot see the path the stack will take and cannot express "round
+    the west end of the tea table" as a heading, but it can see the floor and
+    point at the piece of it to cross next. That is the half of the problem the
+    geometry keeps getting wrong for a different reason: on `livingroom_2` the
+    tea table lifted 2.0 m from where it is, so the forbidden corridor was
+    drawn across the wrong part of the room and the vehicle drove through the
+    real one without ever crossing the computed one. Deciding *which side to
+    pass* needs no coordinate at all.
+    """
+    return lift_boxed(reply, "detour", scan, pose)
 
 
 def already_tried(origin: np.ndarray, u: np.ndarray,
@@ -929,9 +961,14 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
         # A corridor the instruction forbids is a gate, not two discs. Discs
         # big enough to close it close the room as well — see `ConverterModel`.
-        gates = gates_from(ctx.avoid) if ctx.keepout_is_gate else []
-        keepout = ([] if gates else
+        gates = (gates_from(ctx.avoid)
+                 if (ctx.keepout_is_gate and USE_GATES) else [])
+        keepout = ([] if gates or not USE_GATES else
                    [(a["xy"], KEEPOUT_M) for a in ctx.avoid])
+        # A keep-out is in force whether or not its geometry is being enforced:
+        # the step cap belongs to the constraint, not to how it is checked, and
+        # it is what keeps the straight line a fair model of the driven path.
+        constrained = bool(ctx.avoid)
 
         # Resolved before the visibility branch, because whether the phrase's
         # relation could be *measured* now decides whether a sighting counts as
@@ -1139,6 +1176,39 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # converter discarding the waypoint and re-minimising elsewhere.
         goal, will_move, cm = wp.xy, None, None
         aim = bound["xy"] if bound is not None else wp.xy
+        # With a keep-out in force, aim at what the model says to cross next
+        # rather than at the destination. It cannot see the path the stack will
+        # take, but it can see the floor, and "which side to pass" needs no
+        # coordinate — which is the half the geometry keeps getting wrong for a
+        # different reason: on `livingroom_2` the tea table lifted 2.0 m out and
+        # the forbidden corridor was drawn across the wrong part of the room.
+        #
+        # The destination is not forgotten; it is the next call's problem. A
+        # detour is one step of the way round, and the loop asks again from
+        # there.
+        detour = lift_detour(reply, scan, pose) if constrained else None
+        if detour is not None and float(np.linalg.norm(detour - o[:2])) \
+                < MIN_VIEW_MOVE_M:
+            detour = None                     # already there; nothing to drive
+        # `steer` is where this step drives; `aim` stays the target, because
+        # the arrival tests below measure against the thing we were asked for
+        # and a detour is deliberately not it.
+        steer = aim
+        if detour is not None:
+            nm = (reply.get("detour") or {}).get("name") or "the way round"
+            print(f"      detour: {nm!r} at ({detour[0]:+.2f}, "
+                  f"{detour[1]:+.2f}), {float(np.linalg.norm(detour - o[:2])):.2f} m")
+            rec["detour"] = {"xy": detour.tolist(), "name": nm}
+            steer = detour
+        elif constrained:
+            # Short hops, so that the straight line the constraint is checked on
+            # is a fair model of the arc `local_planner` will actually drive.
+            v = aim - o[:2]
+            d = float(np.linalg.norm(v))
+            if d > KEEPOUT_STEP_M:
+                steer = o[:2] + v / d * KEEPOUT_STEP_M
+                print(f"      keep-out in force — stepping {KEEPOUT_STEP_M} m "
+                      f"of the {d:.2f} m toward the target, not all of it")
         try:
             cm = ConverterModel(terrain, keepout=keepout, gates=gates)
             # Aim at the target itself, not at a standoff from it: the standoff
@@ -1149,12 +1219,12 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # A step exists to buy a better view, so it has to actually move
             # the vehicle; an approach may legitimately settle where it stands.
             best = cm.best_waypoint_toward(
-                aim, o[:2], min_move=0.0 if committed else MIN_VIEW_MOVE_M)
+                steer, o[:2], min_move=0.0 if committed else MIN_VIEW_MOVE_M)
             if best is not None:
                 goal, lands, reach = best
                 will_move = float(np.linalg.norm(lands - o[:2]))
                 rec["converter"] = {
-                    "aim": aim.tolist(), "goal": goal.tolist(),
+                    "aim": steer.tolist(), "goal": goal.tolist(),
                     "settles_at": lands.tolist(), "settle_to_aim_m": reach,
                     "will_move_m": will_move,
                     "asked_would_settle": cm.settle(wp.xy, o[:2]).tolist(),
@@ -1174,9 +1244,9 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                 # silence rather than the drive being reconsidered. Refusing to
                 # answer is information; it means every route from here is
                 # forbidden, and the honest move is a step that is not.
-                goal = nearest_allowed_step(cm, o[:2], aim)
+                goal = nearest_allowed_step(cm, o[:2], steer)
                 rec["constraint_bind"] = {
-                    "aim": aim.tolist(),
+                    "aim": steer.tolist(),
                     "why": "no legal waypoint toward the aim clears the keep-out",
                     "fallback": None if goal is None else goal.tolist()}
                 if goal is None:
@@ -1218,7 +1288,10 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # position to be as-close-as-possible to, so "gain" is measuring the
         # distance to a guess. The point of moving is to see better, and only
         # the post-drive progress test can end that.
-        may_stop = committed or bound is not None
+        # A step that is deliberately driving somewhere other than the target
+        # cannot report having got as close to it as the platform allows: the
+        # gain it made is against the detour, and the target was never aimed at.
+        may_stop = (committed or bound is not None) and detour is None
         if gain is not None and gain < PROGRESS_M and (here > NEAR_M or not may_stop):
             print(f"      not close enough to call this the floor "
                   f"({here:.2f} m{'' if may_stop else ', nothing bound yet'}) "
@@ -1244,7 +1317,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # On `hotel_room_2` that turned "the map has not seen the floor near the
         # lamp yet" into ARRIVED, 2.24 m short.
         if cm is not None and will_move is not None and will_move < MIN_VIEW_MOVE_M:
-            alt = cm.best_waypoint_toward(aim, o[:2], min_move=MIN_VIEW_MOVE_M)
+            alt = cm.best_waypoint_toward(steer, o[:2], min_move=MIN_VIEW_MOVE_M)
             if alt is None:
                 print(f"      nowhere legal to move that the platform would act "
                       f"on — boxed in {here:.2f} m from it")
