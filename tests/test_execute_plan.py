@@ -21,7 +21,7 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            bind_target, corroborated, explore_direction,
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
                            nearest_allowed_step, recrosses, revisited,
-                           same_thing, side_of)
+                           nearer_reading, same_thing, side_of)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
@@ -1023,6 +1023,58 @@ def bind(seen, origin, bound, pending, *, conf=0.6, switched=None,
     _, out = bind_target(wp, origin, reply, bound, {}, verified=True,
                          measured=measured, pending=pending)
     return out
+
+
+class TestNearerReading:
+    """`livingroom_2` q5 leg 2, which reported arrival 2.77 m from the ball.
+
+    Every number is from `runs/lr_2_0811_03`. The binding was made from 11.08 m
+    on the first sighting; the reading that landed 0.12 m from the true soccer
+    ball was made from 3.63 m and was refused for jumping 3.52 m.
+    """
+
+    BALL = np.array([2.866, -6.813])        # ground truth, object_list.txt
+    FAR_FROM = np.array([-0.07, 0.27])      # where the bad binding was measured
+    FAR_SAW = np.array([4.370, -9.888])     # ...and what it measured
+    NEAR_FROM = np.array([1.35, -3.41])     # where the good reading was taken
+    NEAR_SAW = np.array([2.759, -6.764])    # ...and what it saw
+
+    def test_the_recorded_failure_now_re_binds(self):
+        pending = []
+        b = bind(self.FAR_SAW, self.FAR_FROM, None, pending, conf=0.62,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) > 3.0, "the bad binding"
+        b = bind(self.NEAR_SAW, self.NEAR_FROM, b, pending, conf=0.78,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) < 0.2, \
+            "the reading 0.12 m from the ball must now win"
+
+    def test_it_is_the_ranges_that_decide_not_the_confidence(self):
+        """The model's confidence rose too, but that is its own opinion — this
+        turns on how far the vehicle stood, which it has no say in."""
+        pending = []
+        b = bind(self.FAR_SAW, self.FAR_FROM, None, pending, conf=0.9,
+                 measured=False)
+        b = bind(self.NEAR_SAW, self.NEAR_FROM, b, pending, conf=0.1,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) < 0.2
+
+    def test_a_reading_from_no_closer_is_still_refused(self):
+        """The gate has to keep doing its old job: `japanese_room` bound a
+        lantern 0.19 m from the truth and a later reading 4.18 m away."""
+        pending = []
+        b = bind([4.0, 0.0], [0.0, 0.0], None, pending, conf=0.6,
+                 measured=False)
+        b = bind([0.0, 4.2], [0.0, 0.0], b, pending, conf=0.6,
+                 measured=False)
+        assert np.allclose(b["xy"], [4.0, 0.0]), "same range, no free pass"
+
+    def test_the_ratio(self):
+        assert nearer_reading(3.63, 11.08), "the recorded case, ratio 0.33"
+        assert nearer_reading(5.0, 10.0), "exactly half qualifies"
+        assert not nearer_reading(5.1, 10.0)
+        assert not nearer_reading(None, 10.0), "a blind lift claims nothing"
+        assert not nearer_reading(1.0, None)
 
 
 class TestBindingArbitration:

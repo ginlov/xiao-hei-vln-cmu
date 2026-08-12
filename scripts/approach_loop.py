@@ -138,6 +138,16 @@ SPENT_PENALTY = 0.25
 # small hall usually offers, so a leg that is genuinely working its way round
 # is not cut off, while one oscillating between two of them is.
 MAX_LOOPS = 3
+# A lift's positional error is a bearing error times a range, so a reading
+# taken from half as far away carries about half the uncertainty. Below this
+# ratio the newer reading is the better measurement of the two and replaces the
+# binding however far it lands from it — `JUMP_M` is a fixed metre and cannot
+# tell a disagreement from the leverage of a long lift. On `livingroom_2` the
+# binding was made at 11.08 m and the reading that landed 0.12 m from the true
+# soccer ball was made at 3.64 m; the gate refused it for jumping 3.52 m, and
+# the leg finished 2.77 m short. Half is deliberately conservative: at 0.33 it
+# would have fired here with room to spare.
+NEARER_RATIO = 0.5
 # How far a boxed opening is allowed to be believed. The scanner sees *through*
 # a doorway and returns whatever stands behind it, which is what puts the lifted
 # point usefully past the threshold at close range and uselessly in the next
@@ -510,6 +520,18 @@ def revisited(here: np.ndarray, stood: list[np.ndarray]) -> bool:
     return any(float(np.linalg.norm(here - p)) < REVISIT_M for p in stood[:-1])
 
 
+def nearer_reading(now: float | None, was: float | None) -> bool:
+    """Was this reading taken from close enough to outrank the binding's?
+
+    Both ranges are the distance from the vehicle to the object when the lift
+    was made, so this compares two measurements and not two opinions. `None`
+    means a lift the size check refused or a bearing below the scanner, which
+    carries no range and so cannot claim to be the better one.
+    """
+    return (now is not None and was is not None and was > 0.0
+            and float(now) <= NEARER_RATIO * float(was))
+
+
 def corroborated(seen: np.ndarray, pending: list | None) -> bool:
     """Does this reading agree with the last one the binding also refused?
 
@@ -583,7 +605,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
         seen = origin + (d / n if n > 1e-6 else d) * wp.range_m
         if bound is None:
             print(f"      bound the target at ({seen[0]:+.2f}, {seen[1]:+.2f})")
-            bound = {"xy": seen, "conf": conf, "verified": measured}
+            bound = {"xy": seen, "conf": conf, "verified": measured,
+                     "range_m": wp.range_m}
             if pending is not None:
                 pending.clear()
         else:
@@ -593,7 +616,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 print(f"      binding refined {jump:.2f} m -> "
                       f"({seen[0]:+.2f}, {seen[1]:+.2f})")
                 bound = {"xy": seen, "conf": conf,
-                         "verified": measured or bound.get("verified", True)}
+                         "verified": measured or bound.get("verified", True),
+                         "range_m": wp.range_m}
                 # A reading the binding accepted ends any run of ones it did
                 # not, so two refusals separated by an agreement never add up.
                 if pending is not None:
@@ -607,7 +631,31 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 # jumping too far. Measurement outranks a guess at any distance.
                 print(f"      re-bound {jump:.2f} m away — this reading "
                       f"measured the phrase, the binding it replaces did not")
-                bound = {"xy": seen, "conf": conf, "verified": True}
+                bound = {"xy": seen, "conf": conf, "verified": True,
+                         "range_m": wp.range_m}
+                if pending is not None:
+                    pending.clear()
+            elif nearer_reading(wp.range_m, bound.get("range_m")):
+                # The gate is a fixed metre and a lift's error is not: it is a
+                # bearing error times a range. A binding made from 11 m and a
+                # reading made from 3.6 m disagreeing by 3.5 m is what that
+                # leverage looks like, not two different objects — and on
+                # `livingroom_2` the reading refused for it was 0.12 m from the
+                # true soccer ball while the binding it defended was 3.42 m
+                # away. The leg then drove to the binding and reported arrival.
+                #
+                # This does not widen the gate, which would let any bad reading
+                # in. It adds one way past it, and the qualification is a
+                # measurement the model has no say in: how far the vehicle was
+                # standing when each reading was taken.
+                was = float(bound["range_m"])
+                print(f"      re-bound {jump:.2f} m away — measured from "
+                      f"{wp.range_m:.2f} m where the binding was measured from "
+                      f"{was:.2f} m")
+                rec["binding_nearer"] = {"was_m": was, "now_m": wp.range_m,
+                                         "jump_m": jump}
+                bound = {"xy": seen, "conf": conf, "verified": measured,
+                         "range_m": wp.range_m}
                 if pending is not None:
                     pending.clear()
             elif switched and conf >= bound["conf"]:
@@ -620,7 +668,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 # increase is a coin toss dressed as a threshold.
                 print(f"      re-bound {jump:.2f} m away — the model reports a "
                       f"different object at no less confidence")
-                bound = {"xy": seen, "conf": conf, "verified": measured}
+                bound = {"xy": seen, "conf": conf, "verified": measured,
+                         "range_m": wp.range_m}
                 if pending is not None:
                     pending.clear()
             elif corroborated(seen, pending):
@@ -634,7 +683,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 print(f"      re-bound {jump:.2f} m away — two readings in a "
                       f"row landed within {JUMP_M} m of each other and this far "
                       f"from the binding")
-                bound = {"xy": seen, "conf": conf, "verified": measured}
+                bound = {"xy": seen, "conf": conf, "verified": measured,
+                         "range_m": wp.range_m}
                 rec["binding_corroborated"] = True
                 pending.clear()
             else:
