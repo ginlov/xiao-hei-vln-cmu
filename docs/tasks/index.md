@@ -51,6 +51,7 @@ Every row below links to a distinct document.
 | 35 | [Leaving the room the robot started in](TASK%2035%20-%20Leaving%20the%20room%20the%20robot%20started%20in.md) | Driven — `home_building_2` q1 2/2; multi-room search still unsolved |
 | 36 | [The leg boundary that erased the robot's momentum](TASK%2036%20-%20The%20leg%20boundary%20that%20erased%20the%20robot's%20momentum.md) | Fixed offline — 3/3 replayed reversals gone; not yet driven |
 | 37 | [The keep-out that caused the violation](TASK%2037%20-%20The%20keep-out%20that%20caused%20the%20violation.md) | Fixed offline — `livingroom_2` q5 replay no longer crosses the gate; not yet driven |
+| 38 | [What an earlier leg already saw](TASK%2038%20-%20What%20an%20earlier%20leg%20already%20saw.md) | Built — sightings carried across legs; not yet driven |
 | 21 | [Reject mask spill in the 3D lift](TASK%2021%20-%20Reject%20mask%20spill%20in%20the%203D%20lift.md) | Done |
 | 22 | [Same-label duplicate suppression in ObjectMap](TASK%2022%20-%20Same-label%20duplicate%20suppression%20in%20ObjectMap.md) | Done |
 | 23 | [Capture perception inputs from real navigation](TASK%2023%20-%20Capture%20perception%20inputs%20from%20real%20navigation.md) | Scripts done — sweep not yet run |

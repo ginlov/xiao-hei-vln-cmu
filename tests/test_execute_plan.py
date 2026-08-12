@@ -840,6 +840,92 @@ class TestComparingPredicate:
         assert verified(self.CRYSTAL_BALL)
 
 
+class TestSightings:
+    """Seeing a later step's object while working on an earlier one.
+
+    `runs/exec_hb1_q2b`, step 6, leg 1, while looking for a nightstand:
+
+        "middle of the kitchen floor: counter run with range hood and wall
+         cabinets ahead, second counter run with window and blue trash can to
+         the right, built-in oven/microwave column and stainless fridge
+         behind..."
+
+    Leg 3's target is "the trash can closest to the refridgerator". The
+    sentence was thrown away, and leg 3 bound a different bin on every run.
+    """
+
+    MISSION = {"question": "First, go to the nightstand with a clock on it, "
+                           "then take the path between the dining table and "
+                           "the picture, and stop at the trash can closest to "
+                           "the refridgerator.",
+               "plan": ["GOTO  the nightstand with a clock on it",
+                        "PASS  between the dining table + the picture",
+                        "GOTO  the trash can closest to the refridgerator"],
+               "k": 1}
+
+    @staticmethod
+    def ctx(**kw):
+        from approach_loop import Ctx
+        return Ctx(robot=None, out=Path("."), log=None, **kw)
+
+    def reply(self, step=3, what="blue trash can beside the stainless fridge",
+              **kw):
+        return {"sightings": [{"step": step, "what": what, **kw}]}
+
+    def test_a_later_step_is_filed(self):
+        c = self.ctx()
+        got = c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        assert len(got) == 1 and got[0]["step"] == 3
+        assert c.sightings[0]["xy"] is None, "no box, no coordinate"
+
+    def test_the_current_step_is_not_a_sighting(self):
+        """That is just the answer, and belongs in `box_2d`."""
+        c = self.ctx()
+        assert c.note_sightings(self.reply(step=1), 1, np.zeros((0, 3)), {}) == []
+        assert c.note_sightings(self.reply(step=2), 3, np.zeros((0, 3)), {}) == []
+
+    def test_the_same_thing_twice_is_filed_once(self):
+        c = self.ctx()
+        c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        c.note_sightings(self.reply(what="blue trash can (seen again)"),
+                         2, np.zeros((0, 3)), {})
+        assert len(c.sightings) == 1
+
+    def test_a_malformed_entry_is_dropped_not_raised(self):
+        c = self.ctx()
+        for bad in ({"sightings": [{"what": "x"}]},
+                    {"sightings": [{"step": "later", "what": "x"}]},
+                    {"sightings": [{"step": 3, "what": "  "}]},
+                    {"sightings": "the trash can"}):
+            assert c.note_sightings(bad, 1, np.zeros((0, 3)), {}) == []
+
+    def test_only_this_leg_sees_its_own_leads(self):
+        c = self.ctx(mission=self.MISSION)
+        c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        assert c.mission_for(3)["sightings"] == [
+            "blue trash can beside the stainless fridge"]
+        assert c.mission_for(2)["sightings"] == [], "a lead for 3 is noise on 2"
+
+    def test_the_prompt_asks_for_it_and_says_when_not_to(self):
+        got = " ".join(build_prompt("x", mission=self.MISSION).split())
+        assert '"sightings"' in got
+        assert "An empty list is the ordinary answer" in got
+        assert "not when you can see the room it is probably in" in got
+
+    def test_a_lead_is_fed_back_as_a_lead_not_as_a_place_to_avoid(self):
+        """`VISITED_BLOCK` says "do not send it back there"; these were the
+        same sentence on `home_building_1`, and the sign matters."""
+        got = build_prompt("x", mission={
+            **self.MISSION, "k": 3,
+            "sightings": ["blue trash can beside the stainless fridge"]})
+        assert "WORTH GOING BACK FOR" in got
+        assert "Treat this as a lead, not as an answer" in got
+
+    def test_no_sightings_renders_no_block(self):
+        got = build_prompt("x", mission={**self.MISSION, "k": 3})
+        assert "WORTH GOING BACK FOR" not in got
+
+
 class TestKeepOutIsOff:
     """The keep-out is not steered around, and the reason is arithmetic.
 

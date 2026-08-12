@@ -364,9 +364,48 @@ The plan, in the order the robot drives it:
 {plan}
 
 The robot is on step {k}. Steps before it are done and it has stood in those
-places; steps after it have not been attempted, so do not answer for them --
-you are being asked about step {k} only.
-{done}{keepouts}"""
+places. The fields above are about step {k} and nothing else: do not box a
+later step's object in "box_2d", and do not let a later step change what you
+report as visible.
+
+WITH ONE EXCEPTION, WHICH IS WORTH MORE THAN THE REST OF THIS BLOCK. If, while
+looking for step {k}, you happen to see an object a LATER step names, say so in
+"sightings". Nothing here is asked twice: the robot arrives at a later step
+having forgotten the room, and one sentence written now can save it a search
+that costs minutes.
+
+  "sightings": [
+      {{"step": n, "what": "blue trash can beside the stainless fridge, on the
+        counter run under the window", "image_index": n, "box_2d": [...]}}
+  ]
+
+`step` is which numbered step above it belongs to. `what` is written for a
+reader who cannot see this image and will arrive from somewhere else, so name
+the thing and what it stands next to. `box_2d` is optional and only worth
+giving when you are confident which object it is -- it is used to point the
+robot in a direction, never to decide it has arrived.
+
+An empty list is the ordinary answer. Report a sighting only when you can
+actually see the object, not when you can see the room it is probably in.
+{sightings}{done}{keepouts}"""
+
+# Fed back on the leg the sighting was for, and deliberately not merged into
+# `VISITED_BLOCK`, which says "do not go back there". A sighting is the
+# opposite instruction, and on `home_building_1` the two were the same sentence:
+# the model wrote "counter run with window and blue trash can to the right,
+# stainless fridge behind" on step 6 of leg 1, and leg 3 -- whose target is "the
+# trash can closest to the refridgerator" -- got it back under a heading telling
+# it not to return.
+SIGHTINGS_BLOCK = """
+SEEN EARLIER, AND WORTH GOING BACK FOR. The robot wrote these while working on
+an earlier step, when it happened to see what this step is looking for:
+
+{sightings}
+
+Treat this as a lead, not as an answer. It was written from somewhere else and
+the robot has moved since; confirm it against what you can see now. If it names
+a place you cannot see from here, that is where to head.
+"""
 
 # Only rendered once something has actually been banked, so a prompt with an
 # empty plan history is byte-for-byte what it was before -- which is what keeps
@@ -443,11 +482,14 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
     if mission:
         keep = mission.get("keepouts") or []
         done = mission.get("done") or []
+        seen = mission.get("sightings") or []
         base += MISSION_BLOCK.format(
             question=mission["question"], k=mission["k"],
             plan="\n".join(
                 f"  {'->' if i == mission['k'] else '  '} {i}. {line}"
                 for i, line in enumerate(mission["plan"], 1)),
+            sightings=("" if not seen else SIGHTINGS_BLOCK.format(
+                sightings="\n".join(f"  - {x}" for x in seen))),
             done=("" if not done else DONE_BLOCK.format(
                 done="\n".join(f"  - {x}" for x in done))),
             keepouts=("" if not keep else KEEPOUT_BLOCK.format(

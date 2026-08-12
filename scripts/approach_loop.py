@@ -851,6 +851,14 @@ class Ctx:
         field(default_factory=list)
     # Constraints already banked, in the model's language, for the prompt.
     done: list[str] = field(default_factory=list)
+    # Objects a later step names, spotted while working on an earlier one:
+    # `{step, what, xy}`, `xy` only when the box lifted. The robot arrives at
+    # each leg having forgotten the room, and on `home_building_1` it wrote
+    # "counter run with window and blue trash can to the right, stainless
+    # fridge behind" on step 6 of leg 1 — while leg 3's target is "the trash
+    # can closest to the refridgerator". That sentence was thrown away, and
+    # leg 3 then bound a different bin on every run.
+    sightings: list[dict] = field(default_factory=list)
     # True when the instruction forbids a corridor rather than a place, so the
     # keep-out anchors should be read as the two sides of a gate. Set by the
     # executor from the plan; a single-object run has no keep-out at all.
@@ -882,8 +890,57 @@ class Ctx:
         self.log.flush()
 
     def mission_for(self, k: int) -> dict | None:
-        return None if not self.mission else {**self.mission, "k": k,
-                                              "done": list(self.done)}
+        # Only this step's sightings. A lead for step 5 shown on step 2 is
+        # noise, and worse than noise: the prompt's one rule about later steps
+        # is not to chase them.
+        return None if not self.mission else {
+            **self.mission, "k": k, "done": list(self.done),
+            "sightings": [s["what"] for s in self.sightings
+                          if s.get("step") == k]}
+
+    def note_sightings(self, reply: dict, k: int, scan, pose) -> list[dict]:
+        """File what the model saw for a later step, and lift it if it can.
+
+        Kept apart from `visited`, which tells the model where *not* to go. A
+        sighting is the opposite instruction and merging them loses the sign.
+
+        Only later steps: a sighting of the current step is just the answer,
+        and belongs in `box_2d` where the rest of the loop can see it.
+        """
+        out: list[dict] = []
+        items = reply.get("sightings") or []
+        if not isinstance(items, list):
+            return out          # the model sometimes answers a field with prose
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            try:
+                n = int(it.get("step"))
+            except (TypeError, ValueError):
+                continue
+            what = (it.get("what") or "").strip()
+            if n <= k or not what:
+                continue
+            if any(s["step"] == n and same_thing(s["what"], what)
+                   for s in self.sightings):
+                continue                      # already have this one
+            xy = None
+            if it.get("box_2d") is not None and it.get("image_index") is not None:
+                try:
+                    got = _lift_xy(
+                        to_pixels(it["box_2d"], reply.get("coord_space"),
+                                  G.FACE_SIZE),
+                        int(it["image_index"]), scan_to_camera(scan, pose), pose)
+                    if got is not None:
+                        xy = np.asarray(got, float)[:2].tolist()
+                except (KeyError, TypeError, ValueError, IndexError):
+                    xy = None
+            rec = {"step": n, "what": what, "xy": xy}
+            self.sightings.append(rec)
+            out.append(rec)
+            where = "" if xy is None else f" -> ({xy[0]:+.2f}, {xy[1]:+.2f})"
+            print(f"      noted for step {n}: {what[:60]!r}{where}")
+        return out
 
 
 @dataclass
@@ -1022,6 +1079,9 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # Before the visibility branch: a keep-out anchor is most likely to be
         # reported on exactly the calls where the *target* is not visible,
         # because that is when the robot is looking around at the furniture.
+        noted = ctx.note_sightings(reply, k, scan, pose)
+        if noted:
+            rec["sightings"] = noted
         here_txt = (reply.get("here") or "").strip()
         if here_txt:
             ctx.visited.append(here_txt)
@@ -1112,6 +1172,24 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # so "through that door" and "along the wall past it" are only a few
             # degrees apart as headings and a room apart as destinations.
             way = lift_way(reply, scan, pose)
+            if way is None:
+                # Nothing boxed here, but an earlier leg may have seen this
+                # target and said where. A sighting is a *direction*, never a
+                # binding: it was lifted from somewhere else, at whatever range
+                # the room allowed, and today's measurements put a long lift
+                # metres out. It goes in the slot `way` fills — drive that way
+                # and look again — and the range cap applies for the same
+                # reason it applies there.
+                seen = next((s for s in ctx.sightings
+                             if s.get("step") == k and s.get("xy")), None)
+                if seen is not None:
+                    v = np.asarray(seen["xy"], float) - o[:2]
+                    d = float(np.linalg.norm(v))
+                    if d > MIN_VIEW_MOVE_M:
+                        way = o[:2] + v / d * min(d, WAY_MAX_M)
+                        print(f"      not in sight, but an earlier leg saw it: "
+                              f"{seen['what'][:52]!r} — heading that way")
+                        rec["from_sighting"] = seen
             if way is not None and float(np.linalg.norm(way - o[:2])) \
                     < MIN_VIEW_MOVE_M:
                 print(f"      way out boxed but already at it — falling back "

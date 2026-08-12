@@ -360,6 +360,9 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
             ctx.record(rec)
             return Outcome(False, "unparseable reply")
 
+        noted = ctx.note_sightings(reply, k, scan, pose)
+        if noted:
+            rec["sightings"] = noted
         here_txt = (reply.get("here") or "").strip()
         if here_txt:
             ctx.visited.append(here_txt)
