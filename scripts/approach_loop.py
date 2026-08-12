@@ -115,6 +115,15 @@ NEAR_M = 1.5
 # ring with room for a lift error and excludes what `livingroom_2` reported:
 # two shuffles inside half a metre, called arrival with the binding 9.79 m off.
 CIRCLE_ARRIVE_M = 2.5
+# How far a nominated object may be from the anchor its phrase says it is
+# beside before the nomination stops being evidence. Measured over the released
+# questions, where both nouns appear in `object_list.txt`: 1.20 m at the median,
+# 3.39 m at p95, 4.65 m at the worst honest case (`office_1`, "the bench
+# closest to the map wall decal"). Set well past that because the consequence
+# is a demotion and not a rejection — a false refusal here costs the whole leg,
+# while a false pass costs one more call. The dice ornament `livingroom_2` bound
+# and drove to sat 6.09 m from the nearest couch.
+RELATION_MAX_M = 6.0
 # The comparisons geometry can settle by measuring, rather than by asking.
 RELATIONS = ("closest_to", "farthest_from", "between")
 # `scripts/keepout_radius.py` bounds this two-sided: at least 0.86 m to swallow
@@ -480,6 +489,55 @@ def same_thing(a: str, b: str) -> bool:
         return s
     x, y = norm(a), norm(b)
     return bool(x) and bool(y) and (x in y or y in x)
+
+
+def relation_holds(reply: dict, seen: np.ndarray, scan: np.ndarray,
+                   pose: dict) -> tuple[bool, str]:
+    """Is the nominated object anywhere near the thing it is said to be near?
+
+    The relation is used to *choose* between candidates and never to check the
+    one candidate there usually is. On `livingroom_2` the phrase was "the
+    soccer ball near the couch" and the loop bound a 0.22 m dice ornament on a
+    bookshelf — 6.09 m from the nearest couch, 5.42 m from the ball — then
+    drove to it and reported arrival. The model's own `anchors` were in the
+    reply the whole time; nothing compared the answer against them.
+
+    Measured over the released questions, an object said to be near another is
+    1.20 m from it at the median, 3.39 m at p95, and 4.65 m at the worst
+    (`office_1`, "the bench closest to the map wall decal"). `RELATION_MAX_M`
+    sits well past that, because the consequence here is not a rejection.
+
+    Returns `(holds, why)`. `holds` is True whenever there is nothing to check:
+    no relation named, no anchor that lifted, or a relation whose sense is not
+    proximity. Absence of evidence does not fail a binding.
+    """
+    if reply.get("relation") not in ("closest_to", "near", "between"):
+        return True, ""
+    anchors = reply.get("anchors") or []
+    if not isinstance(anchors, list) or not anchors or not len(scan):
+        return True, ""
+    try:
+        scan_cam = scan_to_camera(scan, pose)
+    except (KeyError, TypeError, ValueError):
+        return True, ""     # a frame we cannot read is not a failed relation
+    space = reply.get("coord_space")
+    lifted = []
+    for it in anchors:
+        if not isinstance(it, dict) or it.get("box_2d") is None \
+                or it.get("image_index") is None:
+            continue
+        xy = _lift_xy(to_pixels(it["box_2d"], space, G.FACE_SIZE),
+                      int(it["image_index"]), scan_cam, pose)
+        if xy is not None:
+            lifted.append((np.asarray(xy, float)[:2], it.get("name") or "?"))
+    if not lifted:
+        return True, ""
+    d, name = min(((float(np.linalg.norm(np.asarray(seen, float)[:2] - xy)), nm)
+                   for xy, nm in lifted), key=lambda t: t[0])
+    if d <= RELATION_MAX_M:
+        return True, ""
+    return False, (f"{d:.2f} m from {name!r}, which the phrase says it is "
+                   f"beside")
 
 
 def side_of(a, b, p) -> float:
@@ -1300,6 +1358,22 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                            "blind": blind, "az": az, "el": el}
         print(f"      -> ({wp.xy[0]:+.2f}, {wp.xy[1]:+.2f}) "
               f"[{'DESTINATION' if wp.committed else 'step'}]  {wp.reason}")
+
+        # The phrase has to hold of the answer, not only decide between
+        # answers. This is where a nomination is checked against the anchor the
+        # model itself reported, and it is a demotion rather than a refusal:
+        # unverified drives at the thing and keeps looking, where a refusal
+        # would throw away the only reading there is.
+        if wp.committed and wp.range_m is not None:
+            d = wp.xy - o[:2]
+            n = float(np.linalg.norm(d))
+            where = o[:2] + (d / n if n > 1e-6 else d) * wp.range_m
+            ok, why_not = relation_holds(reply, where, scan, pose)
+            if not ok:
+                print(f"      the phrase does not hold of this: {why_not} — "
+                      f"a guess at the noun, not the phrase")
+                rec["relation_failed"] = {"seen": where.tolist(), "why": why_not}
+                verified = False
 
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
                                        verified=verified,

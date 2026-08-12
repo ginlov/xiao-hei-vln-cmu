@@ -22,6 +22,7 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
                            nearest_allowed_step, recrosses, revisited,
                            nearer_reading, past, same_thing,
+                           relation_holds, RELATION_MAX_M,
                            side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M,
                            USE_KEEPOUT)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
@@ -838,6 +839,59 @@ class TestComparingPredicate:
                 or False        # `chosen` is None in both recorded cases
         assert not verified(self.WRONG_BIN)
         assert verified(self.CRYSTAL_BALL)
+
+
+class TestRelationHolds:
+    """The phrase has to hold of the answer, not only choose between answers.
+
+    Distances are from `runs/lr_2_0811_05` and `_08`, measured between what was
+    nominated and the anchor the model itself lifted:
+
+        1.38 m   the real soccer ball, 0.06 m from ground truth
+        9.67 m   an 11 m lift, 3.38 m out — the shape that cost a whole leg
+        3.95 m   a dice ornament on a bookshelf, 5.42 m out
+
+    Over the released questions an object said to be near another is 1.20 m
+    from it at the median and 4.65 m at the widest honest case, so the third of
+    those cannot be separated by distance and is not claimed to be.
+    """
+
+    def anchor_reply(self, name="couch", box=(0, 0, 10, 10), rel="closest_to"):
+        return {"relation": rel, "coord_space": "pixels",
+                "anchors": [{"name": name, "image_index": 0, "box_2d": list(box)}]}
+
+    def test_nothing_to_check_never_fails(self):
+        """Absence of evidence does not fail a binding."""
+        z, p = np.zeros((0, 3)), {}
+        for reply in ({}, {"relation": None}, {"relation": "closest_to"},
+                      {"relation": "closest_to", "anchors": []},
+                      {"relation": "closest_to", "anchors": "the couch"},
+                      {"relation": "farthest_from", "anchors": [{"name": "x"}]}):
+            ok, why = relation_holds(reply, np.zeros(2), z, p)
+            assert ok, reply
+
+    def test_an_anchor_that_does_not_lift_is_not_evidence(self):
+        ok, _ = relation_holds(self.anchor_reply(), np.zeros(2),
+                               np.zeros((0, 3)), {})
+        assert ok, "no scan, no lift, no verdict"
+
+    def test_the_threshold_admits_every_measured_honest_case(self):
+        assert RELATION_MAX_M > 4.65, "office_1's bench and map wall decal"
+
+    def test_and_still_catches_the_binding_that_cost_a_leg(self):
+        assert 9.67 > RELATION_MAX_M
+
+    def test_it_does_not_claim_the_dice_ornament(self):
+        """3.95 m sits inside the honest range. Said out loud so the next
+        reader does not assume this check covers that failure — the size gate
+        is where that one lives: implied height 0.26 m against a soccer ball's
+        0.36 m, passed by a generic band of [0.15, 4.0]."""
+        assert 3.95 < RELATION_MAX_M
+
+    def test_farthest_from_is_not_a_proximity_claim(self):
+        ok, _ = relation_holds(self.anchor_reply(rel="farthest_from"),
+                               np.array([50.0, 50.0]), np.zeros((0, 3)), {})
+        assert ok
 
 
 class TestSightings:

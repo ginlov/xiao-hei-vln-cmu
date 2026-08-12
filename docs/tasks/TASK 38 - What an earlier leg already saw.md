@@ -67,7 +67,56 @@ desk row it was beside. The model volunteers this without being asked.
 `[]`. Against 29 s a step, and against a leg that has never once reached its
 destination on `home_building_1`, that is not a number worth optimising.
 
-604 tests pass, 8 new.
+610 tests pass, 14 new.
+
+## The phrase must hold of the answer, not only choose between answers
+
+`runs/lr_2_0811_08` reported arrival on "the soccer ball near the couch" having
+bound a **0.22 m dice ornament on a bookshelf**, 5.42 m from the ball. The
+arrival itself was correct: 1.42 m from its binding is the platform's floor by
+a shelf. The binding was the bug, and the loop had no way to know.
+
+The relation was in the reply the whole time. `resolve_relation` uses `anchors`
+to pick *between* candidates and never to check the one candidate there usually
+is. `relation_holds` now does: a nomination more than `RELATION_MAX_M` from the
+nearest anchor the model itself lifted is **demoted, not rejected** — it drives
+at the thing and keeps looking, where a refusal would throw away the only
+reading there is.
+
+Measured, nomination to the model's own lifted anchor:
+
+| | |
+|---|---|
+| the real ball, 0.06 m from ground truth | **1.38 m** |
+| an 11 m lift, 3.38 m out — the shape that cost `lr_2_0811_03` a whole leg | **9.67 m** |
+| the dice ornament, 5.42 m out | **3.95 m** |
+
+and over the released questions, an object said to be near another sits 1.20 m
+from it at the median, 3.39 m at p95, and 4.65 m at the widest honest case
+(`office_1`, "the bench closest to the map wall decal").
+
+So the threshold is 6.0 m and **the dice is not caught**. 3.95 m is inside the
+honest range; no distance threshold separates it from 4.65 m, and a false
+refusal costs a whole question. What it does catch is the 9.67 m binding — at
+the moment it is made, rather than after `binding_nearer` undoes it.
+
+### What would catch the dice
+
+Not this. The size gate, which is measuring correctly and deciding nothing:
+
+| | implied height | ground truth |
+|---|---|---|
+| the real ball | 0.34 m | 0.36 m |
+| the dice, step 5 | 0.26 m | 0.22 m |
+| the dice, step 7 | 0.15 m | |
+
+The lift is accurate to a few centimetres and the generic band `[0.15, 4.0]`
+admits all three. `USE_CLASS_PRIOR` is false, and `prior_for_phrase` would not
+help while it is true: on a relational phrase it matches the **anchor**, so
+"the soccer ball near the couch" returns the prior for *couch* (1.09 m), "the
+chair near the window" returns *window*. Fixing that to take the head noun
+before the relation word, and then using the prior as a demotion rather than a
+gate, is the next thing to try.
 
 ## Not measured yet
 
