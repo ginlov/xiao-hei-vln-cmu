@@ -21,7 +21,8 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            bind_target, corroborated, explore_direction,
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
                            nearest_allowed_step, recrosses, revisited,
-                           lift_detour, nearer_reading, same_thing, side_of)
+                           lift_detour, nearer_reading, past, same_thing,
+                           side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
@@ -997,6 +998,50 @@ class TestSearchWindowWithAConstraint:
     def test_a_truly_sealed_frame_still_says_so(self):
         cm = fake_cm(self.room()[:600], gates=self.GATE)     # far side only
         assert cm.best_waypoint_toward(self.AIM, self.VEH, min_move=0.5) is None
+
+
+class TestCircledBack:
+    """"Came back to where it stood" only means arrival if the target is there.
+
+    `runs/lr_2_0811_06` leg 2 shuffled twice inside half a metre and returned
+    `arrived, circled back (9.79 m)` — with the binding 9.79 m away and the
+    true soccer ball 6.37 m from where it stopped. Reported as arrival that is
+    a false positive in the log and in the score.
+    """
+
+    def test_the_recorded_false_positive_is_refused(self):
+        assert 9.79 > CIRCLE_ARRIVE_M
+
+    def test_a_real_ring_still_counts(self):
+        """The platform will not park inside 0.75 m of furniture, and measured
+        floors run 1.1-1.5 m to an object centre — that is what a ring is."""
+        assert 1.5 <= CIRCLE_ARRIVE_M
+        assert 0.95 < CIRCLE_ARRIVE_M, "`home_building_2`'s 0.95 m arrival"
+
+    def test_it_leaves_room_for_a_lift_error_but_not_a_room(self):
+        assert CIRCLE_ARRIVE_M < 3.0
+
+
+class TestPastTheDetour:
+    """A detour names floor to drive over, and floor is not where a waypoint
+    may go: `obstacleDisThre` is 0.75 m, and "the clear floor between the tea
+    table and the sofa" is by construction inside it on both sides. On
+    `livingroom_2` the nearest legal point to the detour was 0.96 m from it and
+    moved the vehicle 0.10 m.
+    """
+
+    def test_it_aims_beyond_along_the_same_bearing(self):
+        here, there = np.array([0.0, 0.0]), np.array([3.0, 4.0])
+        got = past(here, there)
+        assert np.allclose(got / np.linalg.norm(got), there / np.linalg.norm(there))
+        assert np.linalg.norm(got - there) == pytest.approx(DETOUR_BEYOND_M)
+
+    def test_it_clears_the_inflation_that_makes_the_floor_unusable(self):
+        assert DETOUR_BEYOND_M >= 0.75, "obstacleDisThre"
+
+    def test_a_detour_underfoot_degrades_rather_than_dividing_by_zero(self):
+        p = np.array([1.0, 1.0])
+        assert np.allclose(past(p, p.copy()), p)
 
 
 class TestGateClearance:

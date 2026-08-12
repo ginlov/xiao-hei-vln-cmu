@@ -108,7 +108,7 @@ The true gate here is the ground-truth pair from `object_list.txt` — TV at
 (2.470, −2.895), coffee table at (0.363, −2.929) — not the lifted one, so the
 check is independent of the anchors the fix works from.
 
-592 tests pass, 37 new.
+598 tests pass, 43 new.
 
 ## The same cause, a second symptom
 
@@ -250,6 +250,45 @@ not a violation of the constraint as written.
 
 Replayed on step 6: it now publishes a 0.30 m move with 1.62 m of clearance
 against a 0.50 m margin, where the p90 stray for a move that short is 0.15 m.
+
+## No violation, and two more things wrong
+
+`runs/lr_2_0811_06`: **zero crossings**. The clearance test and the step cap
+held. The leg then shuffled twice inside half a metre and returned
+`arrived, circled back (9.79 m)` — with the binding 9.79 m away and the true
+ball 6.37 m from where it stopped.
+
+**The false arrival is the worse of the two.** `revisited` + a binding was read
+as "the ring around the target has been walked, and this is the floor", which
+is only a description of the walk if the target is in the middle of it.
+`CIRCLE_ARRIVE_M` = 2.5 m now qualifies it: the platform will not park inside
+`obstacleDisThre` of furniture and measured floors run 1.1–1.5 m to an object
+centre, so a real ring fits and 9.79 m does not. Beyond it the leg reports
+`circling N m short of the binding`, which is what it was.
+
+**The shuffling is not a bug.** Replayed from that pose, every legal point more
+than 0.5 m south sits at x ≈ +0.7…+1.5 — which *is* the forbidden corridor —
+and the western strip the reference trajectory threads has **no legal points at
+all**, because it is under `obstacleDisThre` from furniture on both sides. The
+robot was correctly refusing the only way there was. Turning the margin off
+changes nothing: with `margin=0` the same frame gives the same answer.
+
+That is the `studio` finding again, on a keep-out instead of a passage: the
+corridor is drivable and unwaypointable, and no amount of scoring gets round
+`obstacleDisThre`.
+
+Two things do help, and are done:
+
+- **`past`** aims `DETOUR_BEYOND_M` = 1.0 m beyond the floor the model names,
+  because that floor is by construction inside the inflation — "the clear floor
+  between the tea table and the sofa" cannot hold a waypoint. Same answer
+  `through_point` gives for a passage. On the recorded step it takes the move
+  from 0.10 m to 0.30 m; it is not what was blocking this leg.
+- **A step that is not aimed at the target must move.** A committed approach
+  may settle where it stands — that is arrival — but a detour or a capped step
+  may not, and two calls went on 0.10 m moves because it was allowed to. The
+  `diverted` flag now governs both that and `may_stop`, so the two cannot
+  disagree about what a step was for.
 
 ## Not fixed
 

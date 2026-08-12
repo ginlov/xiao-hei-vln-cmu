@@ -108,6 +108,13 @@ JUMP_M = 1.0
 # centre — not a measured constant, and the first thing to re-derive if a scene
 # stops short for no visible reason.
 NEAR_M = 1.5
+# How near the binding must be for "came back to where it stood" to mean the
+# ring around the target has been walked, rather than the leg being stuck. The
+# platform will not park inside `obstacleDisThre` (0.75 m) of furniture and
+# measured floors run 1.1-1.5 m to an object centre, so 2.5 m covers a real
+# ring with room for a lift error and excludes what `livingroom_2` reported:
+# two shuffles inside half a metre, called arrival with the binding 9.79 m off.
+CIRCLE_ARRIVE_M = 2.5
 # The comparisons geometry can settle by measuring, rather than by asking.
 RELATIONS = ("closest_to", "farthest_from", "between")
 # `scripts/keepout_radius.py` bounds this two-sided: at least 0.86 m to swallow
@@ -167,6 +174,11 @@ GATE_PAD_M = 0.6
 # `local_planner` curves. On `livingroom_2` one 4.83 m drive to a waypoint
 # comfortably outside the forbidden region went through the middle of it.
 KEEPOUT_STEP_M = 2.0
+# How far past the floor the model names to put the waypoint. Enough to clear
+# `obstacleDisThre` (0.75 m) from the furniture on either side of it, so that a
+# legal point exists there at all; short enough that the step cap above still
+# governs how far the vehicle actually goes. See `past`.
+DETOUR_BEYOND_M = 1.0
 # Whether the computed corridor is enforced at all. It is, unless this is set
 # to 0 — which exists so the model-led detour can be driven on its own and the
 # two compared, not because the geometry is optional.
@@ -379,6 +391,29 @@ def lift_boxed(reply: dict, field: str, scan: np.ndarray,
 def lift_way(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
     """The opening onward, when the target is not in sight."""
     return lift_boxed(reply, "way", scan, pose)
+
+
+def past(here: np.ndarray, there: np.ndarray,
+         beyond: float = DETOUR_BEYOND_M) -> np.ndarray:
+    """`there`, pushed further along the same bearing.
+
+    A detour names floor the vehicle should *drive over*, and there is often no
+    waypoint to be had on it: `obstacleDisThre` (0.75 m) governs where a
+    waypoint may be placed, not where the vehicle may drive, and "the clear
+    floor between the tea table and the sofa" is by construction within 0.75 m
+    of two pieces of furniture. On `livingroom_2` the nearest legal point to
+    the detour was 0.96 m from it and moved the vehicle 0.10 m; the leg
+    shuffled twice and gave up.
+
+    Aiming past it is the same answer `through_point` gives for a passage: the
+    waypoint goes where one can go, and the shortest legal way to it crosses
+    the floor that was named.
+    """
+    v = np.asarray(there, float)[:2] - np.asarray(here, float)[:2]
+    n = float(np.linalg.norm(v))
+    if n < 1e-6:
+        return np.asarray(there, float)[:2]
+    return np.asarray(there, float)[:2] + v / n * beyond
 
 
 def lift_detour(reply: dict, scan: np.ndarray, pose: dict) -> np.ndarray | None:
@@ -910,14 +945,31 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # be gained by moving. Whether that counts as arriving still depends on
         # whether the target was ever bound.
         if revisited(o[:2], stood):
-            if bound is not None:
-                d = float(np.linalg.norm(bound["xy"] - o[:2]))
+            d = (float(np.linalg.norm(bound["xy"] - o[:2]))
+                 if bound is not None else None)
+            # ...and "the ring around the target" is only a description of the
+            # walk if the target is at the middle of it. On `livingroom_2` the
+            # leg shuffled twice inside half a metre and returned this with the
+            # binding 9.79 m away, which is not a ring and not a floor: it is a
+            # leg that never got there. Reported as arrival it is a false
+            # positive in the log and in the score, so the distance has to
+            # qualify it. `CIRCLE_ARRIVE_M` is the platform's own floor around
+            # furniture plus room for a lift error, which is what a genuine
+            # ring is made of.
+            if d is not None and d <= CIRCLE_ARRIVE_M:
                 print(f"      back where it already stood — the ring around the "
                       f"target has been walked; {d:.2f} m is the floor here")
                 rec["arrived"] = f"circled back ({d:.2f} m)"
                 ctx.record(rec)
                 return Outcome(True, f"arrived, circled back ({d:.2f} m)",
                                bound["xy"], prev_crop)
+            if d is not None:
+                print(f"      back where it already stood, but the binding is "
+                      f"{d:.2f} m away — that is stuck, not arrived")
+                rec["stopped"] = f"circling {d:.2f} m short of the binding"
+                ctx.record(rec)
+                return Outcome(False, f"circling {d:.2f} m short of the binding",
+                               None, prev_crop)
             # With nothing bound this used to end the leg, and that was wrong.
             # Backing out of a dead end and returning to the hall to try another
             # door is what searching a building *is*; the constant was written
@@ -1194,12 +1246,20 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # the arrival tests below measure against the thing we were asked for
         # and a detour is deliberately not it.
         steer = aim
+        # True when this step is not going at the target — a detour, or a
+        # capped fraction of the way. Arrival is still measured against `aim`,
+        # and a step that is not aimed at it may not settle where it stands:
+        # `livingroom_2` spent two calls on 0.10 m moves because a committed
+        # approach is allowed to, and those two were going round something.
+        diverted = False
         if detour is not None:
             nm = (reply.get("detour") or {}).get("name") or "the way round"
             print(f"      detour: {nm!r} at ({detour[0]:+.2f}, "
                   f"{detour[1]:+.2f}), {float(np.linalg.norm(detour - o[:2])):.2f} m")
-            rec["detour"] = {"xy": detour.tolist(), "name": nm}
-            steer = detour
+            beyond = past(o[:2], detour)
+            rec["detour"] = {"xy": detour.tolist(), "name": nm,
+                             "aimed_at": beyond.tolist()}
+            steer, diverted = beyond, True
         if constrained:
             # Short hops, so that the straight line the constraint is checked on
             # is a fair model of the arc `local_planner` will actually drive.
@@ -1212,7 +1272,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             v = steer - o[:2]
             d = float(np.linalg.norm(v))
             if d > KEEPOUT_STEP_M:
-                steer = o[:2] + v / d * KEEPOUT_STEP_M
+                steer, diverted = o[:2] + v / d * KEEPOUT_STEP_M, True
                 print(f"      keep-out in force — stepping {KEEPOUT_STEP_M} m "
                       f"of the {d:.2f} m, not all of it")
         try:
@@ -1225,7 +1285,14 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # A step exists to buy a better view, so it has to actually move
             # the vehicle; an approach may legitimately settle where it stands.
             best = cm.best_waypoint_toward(
-                steer, o[:2], min_move=0.0 if committed else MIN_VIEW_MOVE_M)
+                steer, o[:2],
+                # A committed approach may settle where it stands — that is
+                # arrival. A step taken *round* something may not: its purpose
+                # is to get somewhere else, and `livingroom_2` spent two calls
+                # on 0.10 m moves because 0.10 m was allowed. Each call costs
+                # the same, so a step that buys no parallax buys nothing.
+                min_move=(MIN_VIEW_MOVE_M if (diverted or not committed)
+                          else 0.0))
             if best is not None:
                 goal, lands, reach = best
                 will_move = float(np.linalg.norm(lands - o[:2]))
@@ -1296,8 +1363,10 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # the post-drive progress test can end that.
         # A step that is deliberately driving somewhere other than the target
         # cannot report having got as close to it as the platform allows: the
-        # gain it made is against the detour, and the target was never aimed at.
-        may_stop = (committed or bound is not None) and detour is None
+        # gain it made is against wherever it was steered, and the target was
+        # never aimed at. Same flag the min_move rule uses, so the two cannot
+        # disagree about what this step was for.
+        may_stop = (committed or bound is not None) and not diverted
         if gain is not None and gain < PROGRESS_M and (here > NEAR_M or not may_stop):
             print(f"      not close enough to call this the floor "
                   f"({here:.2f} m{'' if may_stop else ', nothing bound yet'}) "
