@@ -41,10 +41,14 @@ def fake_cm(points=None, *, gates=(), keepout=()):
     inflation; these tests are about the keep-out, so the legal set is set
     directly and everything upstream of it is left out.
     """
+    from scipy.spatial import cKDTree
     from waypoint_converter_model import ConverterModel
     cm = ConverterModel.__new__(ConverterModel)
     P = np.zeros((0, 2)) if points is None else np.asarray(points, float)
-    cm.legal = cm.allowed = P
+    # The real `legal` is (N, 3) — `snap` queries it in 3-D as the C++ does —
+    # while `legal_points()` is the planar view of it.
+    cm.legal = cm.allowed = np.column_stack([P, np.zeros(len(P))])
+    cm.kd_legal = cKDTree(cm.legal) if len(P) else None
     cm.keepout = [(np.asarray(xy, float)[:2], float(r)) for xy, r in keepout]
     cm.gates = [(np.asarray(a, float)[:2], np.asarray(b, float)[:2])
                 for a, b in gates]
@@ -830,6 +834,59 @@ class TestGate:
         pts = np.array([[0.0, 0.0], [1.0, -2.9], [2.0, -5.0]])
         assert len(fake_cm(pts, gates=[(self.TEA, self.TV)]).legal_points()) \
             == len(pts)
+
+
+class TestSearchWindowWithAConstraint:
+    """`search` ranks candidates by distance to the target and keeps the
+    nearest. That is a pure optimisation until a keep-out exists — and then the
+    candidates it keeps are exactly the ones the keep-out rejects, because the
+    target lies beyond the thing being avoided.
+
+    `livingroom_2` q5 reported `boxed in (no legal move)` from a frame with 721
+    legal moves available, and the leg before it fell through to publishing its
+    raw waypoint with the constraint dropped. One cause, two symptoms.
+    """
+
+    @staticmethod
+    def room():
+        """600 legal points beyond the gate, 300 on this side of it."""
+        r = np.random.RandomState
+        far = np.column_stack([r(0).uniform(-3, 3, 600),
+                               r(1).uniform(-8, -4, 600)])
+        near = np.column_stack([r(2).uniform(-3, 3, 300),
+                                r(3).uniform(1, 5, 300)])
+        return np.vstack([far, near])
+
+    GATE = [(np.array([-6.0, 0.0]), np.array([6.0, 0.0]))]
+    VEH = np.array([0.0, 2.0])
+    AIM = np.array([0.0, -7.0])          # beyond the gate
+
+    def test_every_nearest_candidate_is_refused_and_it_still_answers(self):
+        cm = fake_cm(self.room(), gates=self.GATE)
+        got = cm.best_waypoint_toward(self.AIM, self.VEH, search=400,
+                                      min_move=0.5)
+        assert got is not None, "721 legal moves existed and it said there were none"
+        assert got[0][1] > 0.0, "and the one it picks must not be over the gate"
+
+    def test_the_first_reachable_candidate_is_outside_the_window(self):
+        """The premise: without the pre-filter, rank 600 of 900 is unreachable
+        by a 400-wide window, so this is not a test that would pass anyway."""
+        P = self.room()
+        d = np.linalg.norm(P - self.AIM, axis=1)
+        first = int(np.argsort(d)[np.searchsorted(
+            np.sort(d), d[P[:, 1] > 0].min())])
+        assert int((d < d[first]).sum()) > 400
+
+    def test_an_unconstrained_frame_is_unchanged(self):
+        """The window still does its job when there is nothing to avoid."""
+        cm = fake_cm(self.room())
+        got = cm.best_waypoint_toward(self.AIM, self.VEH, search=400,
+                                      min_move=0.5)
+        assert got is not None and got[0][1] < 0.0
+
+    def test_a_truly_sealed_frame_still_says_so(self):
+        cm = fake_cm(self.room()[:600], gates=self.GATE)     # far side only
+        assert cm.best_waypoint_toward(self.AIM, self.VEH, min_move=0.5) is None
 
 
 class TestNearestAllowedStep:

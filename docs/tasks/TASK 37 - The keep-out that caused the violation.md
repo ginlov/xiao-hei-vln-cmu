@@ -108,7 +108,41 @@ The true gate here is the ground-truth pair from `object_list.txt` — TV at
 (2.470, −2.895), coffee table at (0.363, −2.929) — not the lifted one, so the
 check is independent of the anchors the fix works from.
 
-567 tests pass, 12 new.
+571 tests pass, 16 new.
+
+## The same cause, a second symptom
+
+Driven on `livingroom_2` q5 with the above in place, the trajectory stayed out
+of the forbidden gap — and the leg stopped anyway, `boxed in (no legal move)`,
+1.3 m north of it. Replayed on that frame: **721 legal points were both outside
+the gate and more than half a metre away.** The constraint was not what stopped
+it.
+
+`best_waypoint_toward` ranks candidates by distance to the target and scans the
+nearest `search` = 400. That is a pure optimisation until a keep-out exists,
+and then it is a bug: when the target lies beyond the thing being avoided, the
+candidates nearest the target are exactly the ones the keep-out rejects. All
+400 are refused, the loop ends with nothing, and the caller reads "no legal
+move" from a frame full of them.
+
+Reproduced without a simulator — 900 legal points, 600 beyond a gate and 300 on
+this side, target beyond it:
+
+```
+first reachable candidate ranks 600 of 900 by distance to the target
+  search=400   -> None          <- reports boxed in
+  search=1200  -> (-1.44,+1.02)
+```
+
+This is also the other half of the original violation: the five drifted discs
+did not need to remove every legal point, only the four hundred nearest the
+soccer ball, and `None` then fell through to publishing raw.
+
+The fix is not a wider window, which would put a thousand settle simulations in
+the inner loop. Candidates a constraint will reject are dropped *before*
+ranking, by the cheap test on the published point, so the window covers four
+hundred plausible candidates rather than four hundred doomed ones. An
+unconstrained frame is untouched.
 
 ## Not fixed
 

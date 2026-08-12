@@ -233,6 +233,28 @@ class ConverterModel:
             return None
         tgt = np.asarray(target, float)[:2]
         veh = np.asarray(vehicle, float)[:2]
+        # Drop the candidates a constraint will reject *before* ranking, not
+        # inside the loop. `search` keeps only the nearest candidates to the
+        # target, which is a pure optimisation until a keep-out is added — and
+        # then it is a bug, because the candidates a keep-out rejects are
+        # exactly the nearest ones when the target lies beyond it. Every one of
+        # the first 400 is refused, the loop ends with nothing, and the caller
+        # reads "no legal move" from a frame with hundreds of them. That is how
+        # `livingroom_2` q5 reported `boxed in` with 721 legal moves available,
+        # and how the same leg on the run before it fell through to publishing
+        # its raw waypoint with the keep-out dropped.
+        #
+        # The test on the published point is not the one that decides — the run
+        # to where it *settles* is, below — but it is cheap and it culls the
+        # doomed half, so the window covers plausible candidates instead.
+        if self.gates or self.keepout:
+            keep = np.array([not (self.gates and self.crosses_gate(veh, p))
+                             and not (self.keepout
+                                      and self._crosses_keepout(veh, p))
+                             for p in legal])
+            if not keep.any():
+                return None
+            legal = legal[keep]
         # Walk candidates nearest-the-target first and prune with an exact
         # bound: settling stops within waypointXYRadius of the goal, so no goal
         # can settle nearer the target than `|goal - target| - waypointXYRadius`.
