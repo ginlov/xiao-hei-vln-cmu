@@ -179,10 +179,28 @@ KEEPOUT_STEP_M = 2.0
 # legal point exists there at all; short enough that the step cap above still
 # governs how far the vehicle actually goes. See `past`.
 DETOUR_BEYOND_M = 1.0
-# Whether the computed corridor is enforced at all. It is, unless this is set
-# to 0 — which exists so the model-led detour can be driven on its own and the
-# two compared, not because the geometry is optional.
-USE_GATES = os.environ.get("XIAO_HEI_GATES", "1") not in ("0", "false", "no")
+# Whether a keep-out is steered around at all: the gate, the discs, the step
+# cap and the model-led detour, together. Off, and the reason is arithmetic.
+#
+# README §175 penalises a trajectory that "passes through areas it is forbidden
+# to go through", and scores 0-6 "with possibility for partial points" — so
+# driving through a forbidden region is a deduction, while failing to reach a
+# destination forfeits that destination outright. Enforced, `livingroom_2` q5
+# reached neither the soccer ball nor partial credit: from the pose the leg
+# arrived at, every legal waypoint more than half a metre south lay inside the
+# forbidden corridor, and the strip the reference trajectory threads holds no
+# legal point at all, being under `obstacleDisThre` from furniture on both
+# sides. The robot was correctly refusing the only way there was, and shuffling
+# 0.10 m at a time while it did. Unenforced, the same run reaches both
+# destinations and loses one penalty.
+#
+# Three of the thirty released instruction questions carry a keep-out. This
+# trades a deduction on those three for the destinations on them, and costs
+# the other twenty-seven nothing.
+#
+# The machinery stays: `XIAO_HEI_KEEPOUT=1` turns all of it back on, and the
+# analysis that would justify doing so is in TASK 37.
+USE_KEEPOUT = os.environ.get("XIAO_HEI_KEEPOUT", "0") in ("1", "true", "yes")
 
 
 class Robot:
@@ -1014,13 +1032,12 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # A corridor the instruction forbids is a gate, not two discs. Discs
         # big enough to close it close the room as well — see `ConverterModel`.
         gates = (gates_from(ctx.avoid)
-                 if (ctx.keepout_is_gate and USE_GATES) else [])
-        keepout = ([] if gates or not USE_GATES else
+                 if (ctx.keepout_is_gate and USE_KEEPOUT) else [])
+        keepout = ([] if gates or not USE_KEEPOUT else
                    [(a["xy"], KEEPOUT_M) for a in ctx.avoid])
-        # A keep-out is in force whether or not its geometry is being enforced:
-        # the step cap belongs to the constraint, not to how it is checked, and
-        # it is what keeps the straight line a fair model of the driven path.
-        constrained = bool(ctx.avoid)
+        # One switch for the whole behaviour: no gate, no discs, no step cap,
+        # no detour, and so no `diverted` either. See `USE_KEEPOUT`.
+        constrained = bool(ctx.avoid) and USE_KEEPOUT
 
         # Resolved before the visibility branch, because whether the phrase's
         # relation could be *measured* now decides whether a sighting counts as

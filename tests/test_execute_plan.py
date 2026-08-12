@@ -22,7 +22,8 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
                            nearest_allowed_step, recrosses, revisited,
                            lift_detour, nearer_reading, past, same_thing,
-                           side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M)
+                           side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M,
+                           USE_KEEPOUT)
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
@@ -839,56 +840,40 @@ class TestComparingPredicate:
         assert verified(self.CRYSTAL_BALL)
 
 
-class TestDetour:
-    """What the model is asked for when a keep-out stands in the way.
+class TestKeepOutIsOff:
+    """The keep-out is not steered around, and the reason is arithmetic.
 
-    It cannot see the path the stack will drive and cannot say "round the west
-    end of the tea table" as a heading. It can see the floor and point at the
-    piece to cross next, and that needs no coordinate — which is the half the
-    geometry got wrong on `livingroom_2`, where the tea table lifted 2.0 m out
-    and the forbidden corridor was drawn across the wrong part of the room.
+    README §175 penalises a trajectory that "passes through areas it is
+    forbidden to go through" and scores 0-6 with partial points, so driving
+    through is a deduction while failing to reach a destination forfeits it.
+    Enforced, `livingroom_2` q5 reached neither the ball nor partial credit;
+    unenforced it reaches both destinations and loses one penalty. Three of the
+    thirty released instruction questions carry a keep-out.
     """
 
-    MISSION = {"question": "stop at the soccer ball near the couch, avoiding "
-                           "the path between the TV and the tea table.",
-               "plan": ["GOTO  the soccer ball near the couch"],
-               "keepouts": ["AVOID  between the TV + the tea table"], "k": 1}
+    def test_it_is_off_unless_asked_for(self):
+        assert USE_KEEPOUT is False
 
-    def test_the_ask_appears_only_with_a_keep_out(self):
-        assert "detour" not in build_prompt("x")
-        assert "detour" in build_prompt("x", mission=self.MISSION)
+    def test_the_machinery_is_still_here(self):
+        """Kept behind the switch, not deleted — TASK 37 has the analysis that
+        would justify turning it back on."""
+        import approach_loop as al
+        for name in ("gates_from", "past", "lift_detour", "nearest_allowed_step"):
+            assert hasattr(al, name), name
+        assert hasattr(fake_cm(), "crosses_gate")
 
-    def test_it_asks_for_a_box_not_a_heading(self):
-        """A heading cannot say "round the west end of the tea table"; the
-        whole point is that this is a place, lifted like any other."""
-        got = build_prompt("x", mission=self.MISSION)
-        decl = got.split('"detour":')[-1][:200]
-        assert "box_2d" in decl and "image_index" in decl
+    def test_the_model_is_still_asked_to_name_the_region(self):
+        """Two lines, and what any later enforcement would be built from."""
+        got = build_prompt("x", mission={
+            "question": "q", "plan": ["GOTO x"], "k": 1,
+            "keepouts": ["AVOID  between the TV + the tea table"]})
+        assert 'report it under "avoid"' in got
 
-    def test_it_says_to_box_the_floor_not_the_destination(self):
-        got = " ".join(build_prompt("x", mission=self.MISSION).split())
-        assert "not the furniture beside it, and not the destination" in got
-
-    def test_null_is_allowed(self):
-        """Otherwise the model invents a detour where none is needed."""
-        got = " ".join(build_prompt("x", mission=self.MISSION).split())
-        assert "Leave \"detour\" null" in got
-
-    def test_a_missing_or_malformed_field_lifts_to_nothing(self):
-        assert lift_detour({}, np.zeros((0, 3)), {}) is None
-        assert lift_detour({"detour": None}, np.zeros((0, 3)), {}) is None
-        assert lift_detour({"detour": "left of the table"},
-                           np.zeros((0, 3)), {}) is None
-        assert lift_detour({"detour": {"box_2d": [0, 0, 1, 1]}},
-                           np.zeros((0, 3)), {}) is None
-
-    def test_way_and_detour_are_the_same_lift_on_different_fields(self):
-        """One implementation, so the range cap applies to both."""
-        import inspect
-        from approach_loop import lift_boxed, lift_way
-        assert "lift_boxed" in inspect.getsource(lift_way)
-        assert "lift_boxed" in inspect.getsource(lift_detour)
-        assert "WAY_MAX_M" in inspect.getsource(lift_boxed)
+    def test_but_not_for_a_detour_it_will_not_be_steered_by(self):
+        got = build_prompt("x", mission={
+            "question": "q", "plan": ["GOTO x"], "k": 1,
+            "keepouts": ["AVOID  between the TV + the tea table"]})
+        assert '"detour"' not in got
 
 
 class TestGate:

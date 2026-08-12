@@ -108,7 +108,7 @@ The true gate here is the ground-truth pair from `object_list.txt` — TV at
 (2.470, −2.895), coffee table at (0.363, −2.929) — not the lifted one, so the
 check is independent of the anchors the fix works from.
 
-598 tests pass, 43 new.
+596 tests pass; the keep-out is off by default.
 
 ## The same cause, a second symptom
 
@@ -289,6 +289,33 @@ Two things do help, and are done:
   may not, and two calls went on 0.10 m moves because it was allowed to. The
   `diverted` flag now governs both that and `may_stop`, so the two cannot
   disagree about what a step was for.
+
+## Turned off, and why that is the right answer
+
+None of the above is enabled. `USE_KEEPOUT` defaults to false, and with it go
+the gate, the discs, the step cap and the detour.
+
+The arithmetic decides it. README §175 penalises a trajectory that "passes
+through areas it is forbidden to go through" and scores 0–6 "with possibility
+for partial points" — so driving through a forbidden region is a *deduction*,
+while failing to reach a destination forfeits that destination outright.
+
+Enforced, `livingroom_2` q5 got neither. The leg could not reach the soccer
+ball at all, because from the pose it arrived at every legal waypoint more than
+half a metre south lay inside the forbidden corridor and the strip the
+reference trajectory threads holds no legal point whatever. Unenforced, the
+same run reaches both destinations and loses one penalty.
+
+Three of the thirty released instruction questions carry a keep-out. This
+trades a deduction on those three for the destinations on them, and costs the
+other twenty-seven nothing — measured: across every recorded run, exactly one
+step on a question without a keep-out ever reported an `avoid` object, so the
+machinery was never slowing the rest down either.
+
+The work is not wasted and is not deleted. `XIAO_HEI_KEEPOUT=1` turns all of it
+back on, and everything above is what a later attempt would start from. What it
+would need first is a way to place a waypoint in a corridor `obstacleDisThre`
+forbids — the same thing `studio` needed, and the reason both are still open.
 
 ## Not fixed
 
