@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
-                           REVISIT_M,
+                           PROGRESS_M, REVISIT_M, closing,
                            SPENT_CONE_DEG, SPENT_PENALTY, already_tried,
                            bind_target, corroborated, explore_direction,
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
@@ -1145,6 +1145,62 @@ class TestCircledBack:
 
     def test_it_leaves_room_for_a_lift_error_but_not_a_room(self):
         assert CIRCLE_ARRIVE_M < 3.0
+
+
+class TestClosingIsNotCircling:
+    """`runs/cr_0811_01` lost both legs to the circling test, each on the step
+    where it stood nearer its target than it ever had.
+
+    Leg 1 died on step 3 for passing 0.47 m from the pose it started at, with
+    the potted plant 2.51 m away (bound to 0.38 m of ground truth) and standable
+    floor 0.86 m from it. Leg 2 died on step 7 at 2.83 m from a painting bound
+    to 0.02 m, with standable floor 0.45 m away down a 1.31 m corridor. Nothing
+    was blocking either one.
+    """
+
+    def test_the_first_leg_survives_where_it_died(self):
+        # bound on step 2 from 3.42 m out; step 3 stood 2.51 m from it
+        assert closing(2.51, 3.42)
+
+    def test_the_second_leg_survives_where_it_died(self):
+        # rebound on step 6 from 3.13 m out; step 7 stood 2.83 m from it
+        assert closing(2.83, 3.13)
+
+    def test_the_second_leg_would_die_without_the_per_binding_reset(self):
+        """Why the record is kept per binding and not per leg: 2.83 m from the
+        painting is further than 1.60 m from a reading already discarded."""
+        assert not closing(2.83, 1.60)
+
+    def test_the_record_restarts_at_a_measurement_and_not_at_infinity(self):
+        """`lr_2_0811_06` rebound 5.5 m out on the step before the revisit and
+        then reported `arrived, circled back (9.79 m)`. Seeded from the distance
+        the binding was made at (9.31 m) that step buys nothing and the refusal
+        stands; seeded from infinity it would be excused."""
+        assert not closing(9.79, 9.31)
+        assert closing(9.79, float("inf")), "what infinity would have allowed"
+
+    def test_walking_a_ring_still_reads_as_circling(self):
+        """`exec_studio7` leg 3 came back 2.65 m from a binding it had already
+        been 2.31 m from — the return bought nothing, so the refusal stands."""
+        assert not closing(2.65, 2.31)
+
+    def test_a_genuine_arrival_on_the_ring_still_fires(self):
+        """`hm2_v6_2` step 4: 1.53 m out having been 1.32 m out. Not closing,
+        inside `CIRCLE_ARRIVE_M`, so it still reports arrival."""
+        assert not closing(1.53, 1.32)
+        assert 1.53 <= CIRCLE_ARRIVE_M
+
+    def test_nothing_bound_is_never_closing(self):
+        """With no binding there is no distance to improve on, so the
+        search-a-building branch keeps its behaviour unchanged."""
+        assert not closing(None, float("inf"))
+        assert not closing(None, 3.0)
+
+    def test_a_gain_must_clear_the_noise_floor(self):
+        """Sized on `PROGRESS_M`, which is already what the loop calls a move
+        rather than a clamp — so a leg cannot hold itself alive by twitching."""
+        assert not closing(3.0 - PROGRESS_M / 2, 3.0)
+        assert closing(3.0 - PROGRESS_M * 1.1, 3.0)
 
 
 class TestPastTheDetour:

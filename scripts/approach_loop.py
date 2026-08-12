@@ -663,6 +663,22 @@ def revisited(here: np.ndarray, stood: list[np.ndarray]) -> bool:
     return any(float(np.linalg.norm(here - p)) < REVISIT_M for p in stood[:-1])
 
 
+def closing(gap: float | None, closest: float) -> bool:
+    """Is this the nearest the leg has ever been to the target it is holding?
+
+    Passing near a spot already stood in is not a cycle if the vehicle is
+    nearer the thing it is driving at than it has ever been — that is a curve,
+    which is what an approach round furniture looks like from above. Circling
+    is the case where the return buys nothing, and this separates them without
+    needing to know the shape of the route.
+
+    `closest` is kept per binding and not per leg: it measures progress toward
+    one point, so when the binding moves the record is about a different point
+    and comparing across the change is a category error.
+    """
+    return gap is not None and gap < closest - PROGRESS_M
+
+
 def nearer_reading(now: float | None, was: float | None) -> bool:
     """Was this reading taken from close enough to outrank the binding's?
 
@@ -1023,6 +1039,9 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
     prev_crop, bound, arrived = None, None, False
     misses = stuck_explores = loops = 0
     stood: list[np.ndarray] = []
+    # Nearest the vehicle has been to the binding it currently holds. Reset
+    # whenever the binding moves; see `closing`.
+    closest = float("inf")
     # Departures already made, as (from, unit direction). The model cannot
     # remember which door it has been through; this can. It lives on `ctx` and
     # not here so that it survives the leg boundary — see the class docstring.
@@ -1077,9 +1096,19 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # and means the same thing at any distance: there is nothing further to
         # be gained by moving. Whether that counts as arriving still depends on
         # whether the target was ever bound.
-        if revisited(o[:2], stood):
-            d = (float(np.linalg.norm(bound["xy"] - o[:2]))
-                 if bound is not None else None)
+        #
+        # ...unless the return bought something. `chinese_room` lost both of its
+        # legs here, each killed on the step where it stood nearer its target
+        # than it ever had: leg 1 on step 3, for passing 0.47 m from the pose it
+        # had started at, with the potted plant 2.51 m away, bound to within
+        # 0.38 m of the truth, and standable floor 0.86 m from it. An approach
+        # round furniture is a curve, and a curve crosses its own outbound
+        # ground; what distinguishes it from a cycle is not the shape but
+        # whether the vehicle is getting closer. See `closing`.
+        gap = (float(np.linalg.norm(bound["xy"] - o[:2]))
+               if bound is not None else None)
+        if revisited(o[:2], stood) and not closing(gap, closest):
+            d = gap
             # ...and "the ring around the target" is only a description of the
             # walk if the target is at the middle of it. On `livingroom_2` the
             # leg shuffled twice inside half a metre and returned this with the
@@ -1133,6 +1162,8 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                 return Outcome(False, "circling with nothing bound", None,
                                prev_crop)
         stood.append(o[:2].copy())
+        if gap is not None:
+            closest = min(closest, gap)
 
         # Before the visibility branch: a keep-out anchor is most likely to be
         # reported on exactly the calls where the *target* is not visible,
@@ -1375,10 +1406,29 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                 rec["relation_failed"] = {"seen": where.tolist(), "why": why_not}
                 verified = False
 
+        was_bound = None if bound is None else bound["xy"].copy()
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
                                        verified=verified,
                                        measured=chosen is not None,
                                        pending=pending)
+        # A new binding is a new destination, and the record of how near the
+        # vehicle got to the old one says nothing about it. Leg 2 of
+        # `chinese_room` rebound twice while approaching and would have been
+        # failed for standing 2.83 m from the painting having once been 1.60 m
+        # from a reading it had already discarded.
+        #
+        # The record restarts at the distance the binding was made from, and not
+        # at infinity: "how near was I when I decided this was the thing" is a
+        # measurement, where infinity would let any next step count as progress.
+        # On `lr_2_0811_06` the binding jumped 5.5 m out on the step before the
+        # revisit, and infinity would have excused the 9.79 m that run reported
+        # as an arrival.
+        moved_binding = (bound is not None and (was_bound is None or float(
+            np.linalg.norm(bound["xy"] - was_bound)) > 1e-6))
+        if bound is None:
+            closest = float("inf")
+        elif moved_binding:
+            closest = float(np.linalg.norm(bound["xy"] - o[:2]))
 
         # Already inside the standoff: driving further would push into the
         # object, and the stack would only snap the waypoint back out again.
