@@ -495,6 +495,319 @@ def _object_points(run, scene, vps, idx):
     return pts
 
 
+# ===========================================================================
+# End-to-end error review — reads the offline e2e eval artifacts
+# (gt / preds / explored_scenes) and buckets each object-reference question by
+# the PERCEPTION failure that caused it, so each root cause (backlog B6/B7/B8)
+# is reviewable with the question and the scene graph side by side.
+# ===========================================================================
+EVAL_DIR = Path(os.environ.get("PERCEPTION_EVAL_DIR",
+                               "artifacts/scene_vla3d_eval"))
+_LARGE_FLAT = {"carpet", "floor", "ceiling", "wall", "exterior walls"}
+_PRESENT_TH = 0.6      # a GT object counts as "in our graph" when a node of the
+                       # same label sits within this many metres of its centre
+
+
+def _obj_box(center, size):
+    c = list(map(float, center)); s = list(map(float, size))
+    return {"center": c,
+            "bmin": [c[i] - s[i] / 2 for i in range(3)],
+            "bmax": [c[i] + s[i] / 2 for i in range(3)]}
+
+
+def _parse_object_list(rows):
+    """'id x y z sx sy sz heading \"label\"' -> {id: box}."""
+    out = {}
+    for r in rows:
+        p = r.split(); oid = int(p[0]); nums = list(map(float, p[1:8]))
+        b = _obj_box(nums[0:3], nums[3:6])
+        b["label"] = " ".join(p[8:]).strip('"'); b["id"] = oid
+        out[oid] = b
+    return out
+
+
+def _dist(a, b):
+    return float(np.linalg.norm(np.array(a, float) - np.array(b, float)))
+
+
+def _iou3d(a, b):
+    def ov(c1, s1, c2, s2):
+        return max(0.0, min(c1 + s1 / 2, c2 + s2 / 2) - max(c1 - s1 / 2, c2 - s2 / 2))
+    sa = [a["bmax"][i] - a["bmin"][i] for i in range(3)]
+    sb = [b["bmax"][i] - b["bmin"][i] for i in range(3)]
+    inter = 1.0
+    for i in range(3):
+        inter *= ov(a["center"][i], sa[i], b["center"][i], sb[i])
+    u = sa[0] * sa[1] * sa[2] + sb[0] * sb[1] * sb[2] - inter
+    return inter / u if u > 0 else 0.0
+
+
+@st.cache_data
+def load_eval(scene: str):
+    """Classify every object-reference question by its perception root cause.
+
+    Returns None when the e2e eval hasn't been run for this scene. The scene
+    graph and the VLA-3D GT object list are in the same map frame, so a GT
+    object is matched to our graph geometrically (nearest same-label node).
+    """
+    g = EVAL_DIR / "gt" / f"{scene}_ref.jsonl"
+    p = EVAL_DIR / "preds" / f"{scene}_ref.jsonl"
+    s = EVAL_DIR / "explored_scenes" / scene / "scene.json"
+    if not (g.is_file() and p.is_file() and s.is_file()):
+        return None
+    nodes = [{"id": o["object_id"], "label": o["label"], "center": o["position"],
+              "bmin": o["bbox_min"], "bmax": o["bbox_max"],
+              "score": o.get("confidence", 1.0)}
+             for o in json.load(open(s)).get("objects", [])]
+
+    def nearest(center, label=None):
+        pool = [nd for nd in nodes if label is None or nd["label"] == label]
+        if not pool:
+            return None, 1e9
+        nd = min(pool, key=lambda n: _dist(center, n["center"]))
+        return nd, _dist(center, nd["center"])
+
+    preds = {}
+    for line in p.open():
+        pr = json.loads(line); preds[pr["question"]] = pr.get("prediction")
+
+    qs = []
+    for gt in (json.loads(l) for l in g.open()):
+        pred = preds.get(gt["question"])
+        if pred is None:
+            continue
+        ol = _parse_object_list(gt["object_list"])
+        tid = gt.get("target", gt.get("answer", {}).get("object_id"))
+        if tid not in ol:
+            continue
+        tbox = ol[tid]; tl = tbox["label"]
+        pc = [pred["center"]["x"], pred["center"]["y"], pred["center"]["z"]]
+        ps = [pred["size"]["x"], pred["size"]["y"], pred["size"]["z"]]
+        pbox = _obj_box(pc, ps)
+        pbox["label"] = pred.get("label"); pbox["id"] = pred.get("object_id")
+        iou = _iou3d(pbox, tbox); cdist = _dist(pc, tbox["center"])
+        _, d_same = nearest(tbox["center"], tl)
+        any_nd, d_any = nearest(tbox["center"])
+        present_same, present_any = d_same <= _PRESENT_TH, d_any <= _PRESENT_TH
+        anchors = []
+        for aid in (gt.get("anchors") or []):
+            if aid in ol:
+                ab = ol[aid]; _, ad = nearest(ab["center"], ab["label"])
+                anchors.append({**ab, "present": ad <= _PRESENT_TH})
+        anch_absent = any(not a["present"] for a in anchors)
+        picked_right = cdist <= _PRESENT_TH
+
+        if iou >= 0.25:
+            bucket = "hit"
+        elif tl in _LARGE_FLAT:
+            bucket = "B6"                       # large flat target fragments
+        elif not present_any:
+            bucket = "B7"                       # target absent from graph
+        elif not present_same:
+            bucket = "B8"                       # a node there, wrong label
+        elif anch_absent:
+            bucket = "B7"                       # the spatial anchor is missing
+        elif picked_right:
+            bucket = "localization"             # right object, loose box
+        else:
+            bucket = "grounding"                # everything present, wrong pick
+
+        qs.append({
+            "question": gt["question"],
+            "statement": gt.get("original_statement", ""),
+            "relation": gt.get("relation", ""),
+            "target": tbox, "anchors": anchors, "pred": pbox,
+            "rationale": pred.get("rationale", ""),
+            "iou": iou, "cdist": cdist,
+            "present_same": present_same, "present_any": present_any,
+            "d_same": d_same, "near_any": (any_nd["label"] if any_nd else None),
+            "bucket": bucket,
+        })
+    return {"nodes": nodes, "questions": qs}
+
+
+_BUCKET_INFO = {
+    "B6": ("B6 · Large-object fragmentation",
+           "The target is a large flat object (carpet/floor/ceiling/wall) shattered "
+           "into many nodes, so no single node's box matches its true extent "
+           "(IoU≈0). Look for a cloud of same-label (purple) fragments where one "
+           "object should be. — backlog B6."),
+    "B7": ("B7 · Small-object recall gap",
+           "The target or its spatial anchor is a small object our perception never "
+           "lifted (hookah / glass / coffee pot / tray / window / focus light). "
+           "Gemini cannot ground on something absent — note the missing (orange) "
+           "anchor or the lack of any purple node at the gold target. — backlog B7."),
+    "B8": ("B8 · Label mismatch",
+           "A node sits at the right place but under a neighbouring label "
+           "(vase↔Arabic jar, glass↔potted plant, window↔picture…), so grounding on "
+           "the question's exact noun fails. The gold target has a gray node on it "
+           "but no purple (same-label) one. — backlog B8."),
+    "grounding": ("Grounding — wrong object chosen",
+                  "Target and anchors are all present under the right labels, but "
+                  "Gemini picked a different object (crimson ✕ far from gold). A "
+                  "reasoning miss, not a perception one."),
+    "localization": ("Localization — right object, loose box",
+                     "Gemini picked the correct object (centre within 0.6 m) but the "
+                     "lifted box is offset/undersized, so 3D IoU < 0.25."),
+}
+
+
+def _question_figure(ev, q):
+    """Scene graph + this question's GT answer, anchors and Gemini's pick."""
+    nodes = ev["nodes"]; tl = q["target"]["label"]
+    same = [n for n in nodes if n["label"] == tl]
+    other = [n for n in nodes if n["label"] != tl]
+    t = []
+    if other:
+        t.append(go.Scatter3d(
+            x=[n["center"][0] for n in other], y=[n["center"][1] for n in other],
+            z=[n["center"][2] for n in other], mode="markers",
+            marker=dict(size=2.5, color="lightgray", opacity=0.55),
+            text=[f'#{n["id"]} {n["label"]}' for n in other],
+            hoverinfo="text", name="our scene nodes"))
+    if same:
+        t.append(go.Scatter3d(
+            x=[n["center"][0] for n in same], y=[n["center"][1] for n in same],
+            z=[n["center"][2] for n in same], mode="markers",
+            marker=dict(size=5, color="mediumpurple"),
+            text=[f'#{n["id"]} {n["label"]}' for n in same], hoverinfo="text",
+            name=f"our '{tl}' nodes ({len(same)})"))
+    t += _highlight_traces({**q["target"]}, "gold")
+    for a in q["anchors"]:
+        col = "deepskyblue" if a["present"] else "orange"
+        t.append(_boxes_trace([a], col, "anchor", 3))
+        t.append(go.Scatter3d(
+            x=[a["center"][0]], y=[a["center"][1]], z=[a["center"][2]],
+            mode="markers+text", marker=dict(size=6, color=col),
+            text=[f'anchor: {a["label"]}' + ("" if a["present"] else " (MISSING)")],
+            textposition="bottom center", textfont=dict(color=col, size=11),
+            hoverinfo="text", name="anchor"))
+    t.append(_boxes_trace([q["pred"]], "crimson", "prediction", 4))
+    t.append(go.Scatter3d(
+        x=[q["pred"]["center"][0]], y=[q["pred"]["center"][1]],
+        z=[q["pred"]["center"][2]], mode="markers+text",
+        marker=dict(size=8, color="crimson", symbol="x"),
+        text=[f'Gemini picked: {q["pred"]["label"]}'],
+        textposition="top center", textfont=dict(color="crimson", size=11),
+        hoverinfo="text", name="prediction (Gemini)"))
+    fig = go.Figure(t)
+    fig.update_layout(height=560, margin=dict(l=0, r=0, t=0, b=0),
+                      scene=dict(aspectmode="data", xaxis_title="x",
+                                 yaxis_title="y", zaxis_title="z"),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.0))
+    return fig
+
+
+def _frames_for_target(viz, center, min_score=0.0, radius=1.2, k=8):
+    """Viewpoints most worth looking at for an object at ``center``.
+
+    Ranked by how many of the frame's detections *lifted* near the target
+    (so the object was actually seen there), then by how close the robot was
+    — the fallback for a true miss (B7), where no detection lands but the
+    nearest frames still show the object the detector skipped. ``min_score``
+    mirrors the sidebar slider so raising the floor drops the noisy near-hits.
+    """
+    rows = []
+    for v in viz["viewpoints"]:
+        near = [d for d in v["detections"]
+                if d.get("position") and d.get("score", 1.0) >= min_score
+                and _dist(d["position"], center) <= radius]
+        rows.append((len(near), -_dist(v["pose"], center), v["id"], near))
+    rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    return rows[:k]
+
+
+def _render_error_tab(ev, bucket, viz=None, run_dir=None, scene_name=None,
+                      min_score=0.0):
+    title, desc = _BUCKET_INFO[bucket]
+    st.subheader(title)
+    st.caption(desc)
+    if ev is None:
+        st.info(f"No end-to-end eval artifacts for this scene under `{EVAL_DIR}`.\n\n"
+                "Produce them with:\n\n"
+                "`scripts/run_e2e_offline_eval.sh --skip-explore <scene>`")
+        return
+    qs = [q for q in ev["questions"] if q["bucket"] == bucket]
+    total = len(ev["questions"])
+    st.markdown(f"**{len(qs)} / {total} questions** "
+                f"({100 * len(qs) / max(total, 1):.0f}% of Task-1).")
+    if not qs:
+        st.info("No questions fell into this bucket for this scene.")
+        return
+    labels = [f'{i + 1}. {q["question"]}  ·  IoU {q["iou"]:.2f}'
+              for i, q in enumerate(qs)]
+    j = st.selectbox("Question", range(len(qs)),
+                     format_func=lambda i: labels[i], key=f"errpick_{bucket}")
+    q = qs[j]
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown(f"**Q:** {q['question']}")
+        if q["statement"]:
+            st.caption(f'referring expression: "{q["statement"]}"'
+                       + (f'  ·  relation: {q["relation"]}' if q["relation"] else ""))
+        if q["present_same"]:
+            tstat = "✅ present in our graph"
+        elif q["present_any"]:
+            tstat = (f"⚠️ nearest node is **{q['near_any']}** "
+                     f"(nearest '{q['target']['label']}' is {q['d_same']:.2f} m away)")
+        else:
+            tstat = f"❌ absent (nearest '{q['target']['label']}' {q['d_same']:.1f} m away)"
+        st.markdown(f"**GT target:** `{q['target']['label']}` (id {q['target']['id']}) "
+                    f"at {[round(x, 2) for x in q['target']['center']]} — {tstat}")
+        if q["anchors"]:
+            st.markdown("**Anchor(s):** " + ", ".join(
+                f"`{a['label']}` " + ("✅" if a["present"] else "❌ missing")
+                for a in q["anchors"]))
+        st.markdown(f"**Gemini picked:** `{q['pred']['label']}` (id {q['pred']['id']}) "
+                    f"at {[round(x, 2) for x in q['pred']['center']]}")
+        st.markdown(f"**IoU** {q['iou']:.2f}  ·  **centre dist to GT** {q['cdist']:.2f} m")
+        if q["rationale"]:
+            st.caption(f"_Gemini's rationale:_ {q['rationale']}")
+    with right:
+        st.caption("**gold** = GT answer (where it should be) · "
+                   "**crimson ✕** = Gemini's pick · "
+                   "**purple** = our nodes of the target's label · "
+                   "**blue/orange** = anchor (orange = missing from our graph) · "
+                   "**gray** = every other node in our scene graph")
+    st.plotly_chart(_question_figure(ev, q), use_container_width=True,
+                    key=f"errfig_{bucket}_{j}")
+
+    # ---- 2D detector frames near the target object ----
+    if viz is not None and run_dir is not None:
+        st.markdown("**2D detector frames near this object** — is the target "
+                    "visible in the image, and did it get a mask? Frames are "
+                    "ranked by detections lifted near the target, then by how "
+                    "close the robot was (the fallback for a true miss).")
+        cands = _frames_for_target(viz, q["target"]["center"], min_score)
+        if not cands:
+            st.caption("_No viewpoints found for this scene._")
+        else:
+            def _opt(i):
+                n, negd, vid, _ = cands[i]
+                return f"{vid}  ·  {n} det near target  ·  robot {-negd:.1f} m away"
+            p2 = st.selectbox("Viewpoint", range(len(cands)), format_func=_opt,
+                              key=f"err2d_{bucket}_{j}")
+            n, negd, vid, near = cands[p2]
+            png = Path(run_dir) / scene_name / f"{vid}.png"
+            if png.exists():
+                st.image(str(png), use_container_width=True,
+                         caption=f"{vid} — coloured masks + white labels = detections · "
+                                 "lime ◇ = GT object visible from here")
+            else:
+                st.caption(f"_No baked overlay `{png}` — re-run dump_debug.py._")
+            if near:
+                st.caption("Detections lifted near the target here: " + " · ".join(
+                    f"**{d['label']}** (y{d['score']:.2f}"
+                    + (f" s{d['sam']:.2f}" if "sam" in d else "")
+                    + (" ✓lift" if d.get("lifted") else " ✗drop") + ")"
+                    for d in near[:8]))
+            else:
+                st.caption("_No detection landed near the target from this frame. "
+                           "If you can see the object in the image, the detector "
+                           "missed it (B7); if a mask covers it under another name, "
+                           "that is a label miss (B8)._")
+
+
 # ---- sidebar ----
 st.sidebar.title("Perception debug")
 runs = available_runs()
@@ -525,6 +838,15 @@ classes = st.sidebar.multiselect(
          "detection table to these labels. Empty = every class. The "
          "accumulated point cloud is NOT filtered — lifted points carry no "
          "label once they are merged into the cloud.")
+
+min_score = st.sidebar.slider(
+    "Min YOLO score (2D + tables)", 0.0, 1.0, 0.0, 0.05,
+    help="Hide detections below this YOLO confidence in the 2D overlay, the "
+         "faces, the detection table and the error tabs' 2D frames — instant, "
+         "no re-run (the frozen dumps carry every score down to the dump floor "
+         "of 0.25). The 3D scene graph is baked at dump time, so to rebuild it "
+         "at a higher floor run `dump_debug.py --score-threshold 0.4 --out "
+         "debug_yolo_t04` (now filters the frozen dumps on CPU, no sidecar).")
 
 idx = _viewpoint_nav(run, scene, vps, tuple(classes))
 
@@ -561,8 +883,17 @@ if not HAS_PLOTLY_EVENTS:
     click3d = False
 st.sidebar.caption(f"params: {data['params']}")
 
-tab_graph, tab_2d, tab_cmp = st.tabs(
-    ["Scene graph", "2D detector", f"Compare runs ({len(runs)})"])
+# The five root-cause tabs read the e2e eval artifacts (independent of the
+# viewpoint slider) so each backlog item is reviewable with its questions.
+ev_data = load_eval(scene)
+def _bucket_n(b):
+    return sum(1 for q in ev_data["questions"] if q["bucket"] == b) if ev_data else 0
+(tab_graph, tab_2d, tab_cmp,
+ tab_b6, tab_b7, tab_b8, tab_ground, tab_loc) = st.tabs([
+    "Scene graph", "2D detector", f"Compare runs ({len(runs)})",
+    f"B6 fragments ({_bucket_n('B6')})", f"B7 small-obj ({_bucket_n('B7')})",
+    f"B8 label ({_bucket_n('B8')})", f"Grounding ({_bucket_n('grounding')})",
+    f"Localization ({_bucket_n('localization')})"])
 
 with tab_graph:
     vp = vps[idx]
@@ -613,7 +944,8 @@ with tab_graph:
     # re-compositing, else the raw frame. So masks/filter carry onto the faces.
     equirect_src = None
     if recomp and can_recomp:
-        shown = [d for d in dets2d if not classes or d[0] in classes]
+        shown = [d for d in dets2d
+                 if (not classes or d[0] in classes) and d[1] >= min_score]
         overlay, anchors = _composite_overlay(rgb2d, shown)
         equirect_src = overlay
         fig2d = go.Figure(go.Image(z=overlay))
@@ -952,9 +1284,11 @@ with tab_graph:
 
     # ---- phase 3 table ----
     st.subheader("Phase 3 · detection / lift table")
-    det_rows = _keep(vp["detections"], classes)
-    if classes:
-        st.caption(f"_{len(det_rows)} of {len(vp['detections'])} detections._")
+    det_rows = [r for r in _keep(vp["detections"], classes)
+                if r["score"] >= min_score]
+    if classes or min_score > 0:
+        st.caption(f"_{len(det_rows)} of {len(vp['detections'])} detections"
+                   + (f" · score ≥ {min_score:.2f}" if min_score > 0 else "") + "._")
     rows = sorted(det_rows, key=lambda r: (-r["lifted"], -r["score"]))
     st.dataframe(rows, use_container_width=True, height=360)
 
@@ -1222,3 +1556,15 @@ with tab_cmp:
                          xaxis_title="viewpoint", yaxis_title="nodes",
                          legend=dict(orientation="h", yanchor="bottom", y=1.0))
     st.plotly_chart(growth, use_container_width=True, key="cmp_growth")
+
+# ===========================================================================
+# ROOT-CAUSE TABS — one per failure mode of the end-to-end Task-1 eval.
+# Each lists the object-reference questions that failed for that reason and,
+# for the selected one, shows the question next to the scene graph so the
+# exact problem (missing / fragmented / mislabelled node) is visible.
+# ===========================================================================
+for _tab, _bucket in [(tab_b6, "B6"), (tab_b7, "B7"), (tab_b8, "B8"),
+                      (tab_ground, "grounding"), (tab_loc, "localization")]:
+    with _tab:
+        _render_error_tab(ev_data, _bucket, viz=data, run_dir=RUN_DIR,
+                          scene_name=scene, min_score=min_score)
