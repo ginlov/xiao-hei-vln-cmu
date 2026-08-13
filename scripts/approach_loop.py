@@ -54,8 +54,9 @@ from vlm_approach import (STANDOFF_M, _lift_xy, box_angular_size,  # noqa: E402
 from vlm_locate import rot_from_quat, scan_to_camera  # noqa: E402
 from waypoint_converter_model import (WAYPOINT_XY_RADIUS,  # noqa: E402
                                       ConverterModel)
-from vlm_probe import (DEFAULT_PROMPT_VER, NAMES, ask_claude,  # noqa: E402
-                       ask_gemini, build_prompt, parse, to_pixels)
+from vlm_probe import (DEFAULT_GEMINI_MODEL, DEFAULT_PROMPT_VER,  # noqa: E402
+                       NAMES, ask_claude, ask_gemini, build_prompt, parse,
+                       settle_coord_space, to_pixels)
 from faces import faces_of  # noqa: E402
 
 BRIDGE = Path(__file__).resolve().parent / "robot_io.py"
@@ -880,7 +881,13 @@ def ground(faces: list[bytes], phrase: str, backend: str, model: str,
     text = fn(build_prompt(phrase, approach=True, version=version,
                            visited=visited, mission=mission),
               faces, model, previous=prev)
-    return parse(text), text
+    reply = parse(text)
+    # Before anything reads a box: the reply's own `coord_space` is not always
+    # true, and one wrong word here moves every waypoint. See
+    # `settle_coord_space`.
+    if reply is not None:
+        reply = settle_coord_space(reply, backend, G.FACE_SIZE)
+    return reply, text
 
 
 @dataclass
@@ -1363,6 +1370,28 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             box, i, rel_why = chosen
             rec["relation"] = rel_why
             print(f"      relation resolved: {rel_why}")
+            # A winner chosen over some of the candidates is not the winner.
+            # On `japanese_room` step 2 the one candidate the lift refused was
+            # the answer — the model had placed it within 0.2° of the truth —
+            # and the comparison over the other three named a ceiling lantern
+            # 3.98 m away with a rationale that reads as authoritative.
+            # Demoted, not discarded: the survivors are still the best measured
+            # evidence, so the leg drives at one while it keeps looking, and
+            # only the licence to overrule a later binding is withdrawn.
+            if not chosen.complete:
+                rec["relation_partial"] = [
+                    {"az": a, "el": e, "what": n} for a, e, n in chosen.missed]
+                print(f"      ...over {len(chosen.missed)} fewer candidate(s) "
+                      f"than the model reported — treating the winner as "
+                      f"unverified")
+                # And the bearing is worth keeping: a candidate the scanner
+                # could not reach is usually behind the robot, which is a
+                # direction to turn rather than a thing to forget.
+                for a, e, n in chosen.missed:
+                    ctx.visited.append(
+                        f"(a possible {n[:60]!r} was seen at bearing "
+                        f"{a:+.0f}° but could not be measured from here — "
+                        f"turning to face it would settle the comparison)")
         elif reply.get("relation"):
             print(f"      relation {reply['relation']!r} not measurable "
                   f"({len(reply.get('candidates') or [])} candidates, "
@@ -1409,7 +1438,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         was_bound = None if bound is None else bound["xy"].copy()
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
                                        verified=verified,
-                                       measured=chosen is not None,
+                                       # `measured` is the licence to overrule
+                                       # an earlier binding "at any distance",
+                                       # and a comparison missing a candidate
+                                       # has not earned it: the candidate it
+                                       # could not lift is exactly the one that
+                                       # might have won. Still bound, so the leg
+                                       # drives at the best evidence it has —
+                                       # demoted, not discarded.
+                                       measured=(chosen is not None
+                                                 and chosen.complete),
                                        pending=pending)
         # A new binding is a new destination, and the record of how near the
         # vehicle got to the old one says nothing about it. Leg 2 of
@@ -1727,7 +1765,7 @@ def main() -> int:
     args = ap.parse_args()
 
     model = args.model or ("claude-opus-5" if args.backend == "claude"
-                           else "gemini-2.5-flash")
+                           else DEFAULT_GEMINI_MODEL)
     out = Path(args.out or f"runs/{time.strftime('%m%d_%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
     log = (out / "steps.jsonl").open("w")
