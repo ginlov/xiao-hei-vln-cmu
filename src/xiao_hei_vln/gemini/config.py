@@ -22,11 +22,18 @@ class GeminiConfig:
     # Default to a fast multimodal model; "flash" generations are fast
     # enough to keep the responder near the 2 Hz tick budget even with
     # network round-trip.
-    model: str = "gemini-2.5-flash"
+    #
+    # Pinned to a version and not to `gemini-flash-latest`: the alias moves
+    # under you, and a benchmark whose model changed between the two halves
+    # measured nothing. `gemini-2.5-flash` was the default until it started
+    # answering 404 "no longer available to new users" — it is still listed by
+    # `models.list`, so the catalogue is not evidence that a model can be
+    # called. Check by calling it.
+    model: str = "gemini-3.6-flash"
 
     # --- sampling --------------------------------------------------------
     temperature: float = 0.2
-    # gemini-2.5-flash is a *thinking* model: reasoning tokens count against
+    # The 3.x flash models are *thinking* models: reasoning tokens count against
     # ``max_output_tokens``. With a small cap, thinking eats the whole budget
     # and the JSON answer gets truncated ("Unterminated string" at parse).
     # Give the answer real headroom.

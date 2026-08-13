@@ -90,7 +90,7 @@ def test_session_json_written(logger: VLMLogger) -> None:
     assert data["responder"] == "scene_gemini"
     assert data["tick_hz"] == 2.0
     assert "config" in data
-    assert data["config"]["model"] == "gemini-2.5-flash"
+    assert data["config"]["model"] == "gemini-3.6-flash"
     assert "start_time" in data
 
 

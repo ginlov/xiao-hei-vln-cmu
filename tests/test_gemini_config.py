@@ -7,11 +7,34 @@ import pytest
 from xiao_hei_vln.gemini.config import GeminiConfig
 
 
+class TestTheDefaultModelIsPinned:
+    """A moving default makes every A/B meaningless.
+
+    `gemini-flash-latest` moved from 3.5 to 3.6 while this was being written,
+    and a benchmark whose model changed between its two halves measured
+    nothing. The previous default, `gemini-2.5-flash`, is still listed by
+    `models.list` and answers 404 "no longer available to new users" — so the
+    catalogue is not evidence a model can be called, and a bump here has to be
+    a decision someone made after calling it.
+    """
+
+    def test_it_is_a_version_and_not_an_alias(self) -> None:
+        assert not GeminiConfig(api_key="x").model.endswith("-latest")
+
+    def test_the_two_defaults_agree(self) -> None:
+        """`scripts/` and `src/` are separate entry points onto one API."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from vlm_probe import DEFAULT_GEMINI_MODEL
+        assert GeminiConfig(api_key="x").model == DEFAULT_GEMINI_MODEL
+
+
 class TestDefaults:
     def test_required_api_key(self) -> None:
         c = GeminiConfig(api_key="abc")
         assert c.api_key == "abc"
-        assert c.model == "gemini-2.5-flash"
+        assert c.model == "gemini-3.6-flash"
         assert c.temperature == 0.2
         assert c.max_output_tokens == 2048
         assert c.thinking_budget == 0
@@ -55,5 +78,5 @@ class TestFromEnv:
         monkeypatch.delenv("XIAO_HEI_GEMINI_MAX_EXPLORE_TICKS", raising=False)
         c = GeminiConfig.from_env()
         assert c.api_key == "sk-fake"
-        assert c.model == "gemini-2.5-flash"
+        assert c.model == "gemini-3.6-flash"
         assert c.max_explore_ticks == 120
