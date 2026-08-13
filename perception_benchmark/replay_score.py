@@ -181,6 +181,10 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
             dets = client.detect(img, score_threshold=score_threshold)
         else:
             n_frozen += 1
+        # Raise the YOLO score floor on frozen dets offline (they were dumped
+        # at a lower floor) without re-running the sidecar. No-op on the live
+        # path, which already applied score_threshold at detection time.
+        dets = [d for d in dets if d.score >= score_threshold]
         # sam_thresh (B5): drop low-quality masks before lifting.
         if sam_thresh > 0:
             dets = [d for d in dets if d.sam_score >= sam_thresh]

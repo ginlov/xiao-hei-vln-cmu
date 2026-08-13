@@ -114,6 +114,10 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
         if dets is None:
             dets = client.detect(img, score_threshold=score_threshold)
+        # Raise the YOLO score floor on frozen dets offline (they were dumped
+        # at a lower floor) without re-running the sidecar. No-op on the live
+        # path, which already applied score_threshold at detection time.
+        dets = [d for d in dets if d.score >= score_threshold]
         if sam_thresh > 0:                            # B5 mask-quality gate
             dets = [d for d in dets if d.sam_score >= sam_thresh]
         recs, flags, pts, node_ids = [], [], [], []
