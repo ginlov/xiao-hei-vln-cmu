@@ -8,11 +8,15 @@ object by metres. This accumulator densifies the cloud the lifter sees.
 
 Because ``/registered_scan`` is already in the **map frame**, sweeps taken
 from different robot poses concatenate directly. We keep a rolling window
-of **keyframes** — a sweep is stored only once the robot has moved or
-turned enough to add genuinely new coverage, so standing still doesn't
-stack near-identical clouds. The merged cloud is voxel-downsampled to cap
-the point count (projection cost) and to collapse the overlap between
-sweeps of the same surface.
+of the last ``max_keyframes`` sweeps — every tick contributes one, so the
+window spans a fixed number of *ticks*, not a fixed amount of travel. The
+merged cloud is voxel-downsampled to cap the point count (projection cost)
+and to collapse the overlap between sweeps of the same surface.
+
+Note the consequence of a tick-keyed window: a robot that stops moving
+refills the buffer with copies of one sweep, so ``max_keyframes`` ticks of
+standing still discard the accumulated coverage. At the 2 Hz live tick that
+is 5 s. See TASK 24 for the measurement.
 
 The lifter still transforms the cloud with the *current* pose and applies
 the mask + z-buffer, so points from earlier viewpoints that no longer sit
@@ -23,7 +27,6 @@ exactly where a small object needs more support.
 
 from __future__ import annotations
 
-import math
 from collections import deque
 
 import numpy as np
@@ -31,21 +34,7 @@ import numpy as np
 from xiao_hei_vln.messages.common import Quaternion, Vector3
 
 DEFAULT_MAX_KEYFRAMES: int = 10
-DEFAULT_MIN_MOVE_M: float = 0.25
-DEFAULT_MIN_ROT_DEG: float = 15.0
 DEFAULT_VOXEL_M: float = 0.05
-
-
-def _yaw(q: Quaternion) -> float:
-    """Planar yaw (rad) from an XYZW quaternion."""
-    siny = 2.0 * (q.w * q.z + q.x * q.y)
-    cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-    return math.atan2(siny, cosy)
-
-
-def _wrap(angle: float) -> float:
-    """Wrap an angle to [-pi, pi]."""
-    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def voxel_downsample(points: np.ndarray, voxel_m: float) -> np.ndarray:
@@ -62,27 +51,21 @@ def voxel_downsample(points: np.ndarray, voxel_m: float) -> np.ndarray:
 
 
 class ScanAccumulator:
-    """Rolling keyframe buffer of map-frame LiDAR sweeps.
+    """Rolling buffer of the last ``max_keyframes`` map-frame LiDAR sweeps.
 
-    Call :meth:`update` once per tick with the current registered scan and
-    pose; it returns the densified, voxel-downsampled cloud to lift against.
+    Call :meth:`update` once per tick with the current registered scan; it
+    returns the densified, voxel-downsampled cloud to lift against.
     """
 
     def __init__(
         self,
         *,
         max_keyframes: int = DEFAULT_MAX_KEYFRAMES,
-        min_move_m: float = DEFAULT_MIN_MOVE_M,
-        min_rot_deg: float = DEFAULT_MIN_ROT_DEG,
         voxel_m: float = DEFAULT_VOXEL_M,
     ) -> None:
         self._max_keyframes = int(max_keyframes)
-        self._min_move_m = float(min_move_m)
-        self._min_rot_rad = math.radians(float(min_rot_deg))
         self._voxel_m = float(voxel_m)
         self._keyframes: deque[np.ndarray] = deque(maxlen=self._max_keyframes)
-        self._last_pos: tuple[float, float, float] | None = None
-        self._last_yaw: float = 0.0
         self._cache: np.ndarray = np.empty((0, 3), dtype=np.float64)
 
     @property
@@ -92,43 +75,31 @@ class ScanAccumulator:
     def reset(self) -> None:
         """Drop all accumulated sweeps (e.g. on a new scene/session)."""
         self._keyframes.clear()
-        self._last_pos = None
         self._cache = np.empty((0, 3), dtype=np.float64)
-
-    def _should_keyframe(self, pose_position: Vector3, yaw: float) -> bool:
-        if self._last_pos is None:
-            return True
-        dx = pose_position.x - self._last_pos[0]
-        dy = pose_position.y - self._last_pos[1]
-        moved = math.hypot(dx, dy)
-        turned = abs(_wrap(yaw - self._last_yaw))
-        return moved >= self._min_move_m or turned >= self._min_rot_rad
 
     def update(
         self,
         scan_points_map: np.ndarray,
-        pose_position: Vector3,
-        pose_orientation: Quaternion,
+        pose_position: Vector3 | None = None,      # noqa: ARG002 — see below
+        pose_orientation: Quaternion | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """Ingest the current sweep; return the densified map-frame cloud.
 
-        A new keyframe (and a recompute of the merged cloud) is committed
-        only when the robot has moved ``>= min_move_m`` or turned
-        ``>= min_rot_deg`` since the last keyframe; otherwise the previously
-        merged cloud is returned unchanged (cheap on stationary ticks).
+        Every call commits a keyframe and rebuilds the merged cloud, so the
+        cost is paid on every tick — including ones where the robot has not
+        moved and the sweep is a near-duplicate.
+
+        The pose arguments are accepted but unused: the buffer is keyed on
+        ticks, not on where the robot was. They are kept in the signature
+        because ``/registered_scan`` is only concatenable *because* it is
+        already map-frame, and because keying eviction on travel instead
+        would need exactly this data back.
         """
         if scan_points_map.ndim != 2 or scan_points_map.shape[1] < 3:
             raise ValueError(
                 f"scan_points_map must be (N, >=3); got {scan_points_map.shape}",
             )
         pts = scan_points_map[:, :3].astype(np.float64, copy=False)
-        yaw = _yaw(pose_orientation)
-        if self._should_keyframe(pose_position, yaw):
-            self._keyframes.append(pts)
-            self._last_pos = (pose_position.x, pose_position.y, pose_position.z)
-            self._last_yaw = yaw
-            merged = (
-                np.vstack(self._keyframes) if self._keyframes else pts
-            )
-            self._cache = voxel_downsample(merged, self._voxel_m)
+        self._keyframes.append(pts)
+        self._cache = voxel_downsample(np.vstack(self._keyframes), self._voxel_m)
         return self._cache

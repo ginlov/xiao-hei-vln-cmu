@@ -63,6 +63,7 @@ def project_to_equirect(pts_map, pos, ori):
 def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
                scan_keyframes=DEFAULT_MAX_KEYFRAMES, scan_voxel_m=DEFAULT_VOXEL_M,
                use_frozen=True, image_lag_s=0.0,
+               range_cap_m=None, sam_thresh=0.0,
                range_gap_m=DEFAULT_RANGE_GAP_M,
                cluster_voxel_m=DEFAULT_CLUSTER_VOXEL_M, out_root=None,
                max_pts=4000, request_timeout_s=60.0):
@@ -89,7 +90,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         client.wait_until_ready()
         client.set_classes(classes)
     lifter = PointLifter(min_inliers=min_inliers, range_gap_m=range_gap_m,
-                         cluster_voxel_m=cluster_voxel_m)
+                         cluster_voxel_m=cluster_voxel_m, max_depth_m=range_cap_m)
     omap = ObjectMap()
     # 0 keyframes means no accumulation: a zero-length window is meaningless to
     # the deque, and lifting the raw sweep is the sensible reading.
@@ -113,6 +114,12 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
         if dets is None:
             dets = client.detect(img, score_threshold=score_threshold)
+        # Raise the YOLO score floor on frozen dets offline (they were dumped
+        # at a lower floor) without re-running the sidecar. No-op on the live
+        # path, which already applied score_threshold at detection time.
+        dets = [d for d in dets if d.score >= score_threshold]
+        if sam_thresh > 0:                            # B5 mask-quality gate
+            dets = [d for d in dets if d.sam_score >= sam_thresh]
         recs, flags, pts, node_ids = [], [], [], []
         # This-viewpoint node id -> the cumulative ids its detections fused
         # into. The two maps number independently, so a per-viewpoint box can
@@ -127,6 +134,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
             res = lifter.lift(d.mask, cloud, pos, ori_lift)
             ok = res.position is not None
             rec = {"label": d.label, "score": round(float(d.score), 3),
+                   "sam": round(float(d.sam_score), 3),
                    "n_inliers": int(res.n_inliers), "lifted": ok,
                    "position": [round(float(v), 3) for v in
                                 (res.position.x, res.position.y, res.position.z)] if ok else None}
@@ -246,6 +254,10 @@ def main() -> int:
                     default=float(os.environ.get("XIAO_HEI_IMAGE_LAG_S", 0.0)),
                     help="seconds the image trails the pose (TASK 27); the "
                          "lift pose is de-rotated by lag x yaw_rate")
+    ap.add_argument("--range-cap", type=float, default=None,
+                    help="B4: drop scan returns farther than this (m) before lifting")
+    ap.add_argument("--sam-thresh", type=float, default=0.0,
+                    help="B5: drop detections with SAM mask-quality below this (0-1)")
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
     if args.all:
@@ -260,6 +272,7 @@ def main() -> int:
                    min_inliers=args.min_inliers, accumulate=args.accumulate,
                    scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
                    use_frozen=args.use_frozen, image_lag_s=args.image_lag,
+                   range_cap_m=args.range_cap, sam_thresh=args.sam_thresh,
                    range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
                    out_root=args.out,
                    request_timeout_s=args.timeout)

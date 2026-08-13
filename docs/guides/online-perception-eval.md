@@ -174,8 +174,7 @@ docker/run down
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `100` | `0` disables frontier (for the deterministic path) |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | sidecar detection confidence cut |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR returns a mask needs before a 3D point is committed |
-| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | multi-frame LiDAR accumulation window |
-| `XIAO_HEI_SCAN_MIN_MOVE_M` / `MIN_ROT_DEG` | `0.25` / `15` | keyframe trigger (move or turn) |
+| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | multi-frame LiDAR accumulation window, in ticks (one sweep per tick) |
 | `XIAO_HEI_SCAN_VOXEL_M` | `0.05` | accumulated-cloud downsample resolution |
 
 The 3D lift always applies the z-buffer occlusion gate (a camera can't see

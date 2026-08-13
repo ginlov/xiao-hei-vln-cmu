@@ -39,7 +39,13 @@ def dump_scene(scene, *, base_url, score_threshold, keep_arch, request_timeout_s
         print(f"[{scene}] no captures — skip"); return
     objs = load_objects(scene)
     keep = objs if keep_arch else {i: e for i, e in objs.items() if scoreable(e.label)}
-    classes = tuple(sorted({e.label for e in keep.values()}))
+    # Keep the architectural classes (wall/floor/ceiling/column) in the *query*:
+    # YOLO-World scores are computed jointly over the prompt set, and dropping the
+    # wall context collapses in-wall objects like doors (a door queried without
+    # "wall" present scores ~0.15 instead of ~0.65). The "unknown" GT placeholder
+    # is not a real label, so it is the one thing we never prompt with.
+    classes = tuple(sorted({e.label for e in keep.values()
+                            if e.label.lower() != "unknown"}))
 
     client = HTTPPerceptionClient(base_url=base_url, request_timeout_s=request_timeout_s)
     client.wait_until_ready()
@@ -54,14 +60,17 @@ def dump_scene(scene, *, base_url, score_threshold, keep_arch, request_timeout_s
             masks = np.stack([d.mask for d in dets]).astype(bool)
             labels = np.array([d.label for d in dets], dtype=object)
             scores = np.array([d.score for d in dets], dtype=np.float32)
+            sam_scores = np.array([d.sam_score for d in dets], dtype=np.float32)
             bboxes = np.array([d.bbox_xyxy for d in dets], dtype=np.float32)
         else:
             masks = np.zeros((0, img.shape[0], img.shape[1]), dtype=bool)
             labels = np.array([], dtype=object)
             scores = np.zeros((0,), dtype=np.float32)
+            sam_scores = np.zeros((0,), dtype=np.float32)
             bboxes = np.zeros((0, 4), dtype=np.float32)
         np.savez_compressed(Path(vp_dir) / "detections.npz",
-                            masks=masks, labels=labels, scores=scores, bboxes=bboxes,
+                            masks=masks, labels=labels, scores=scores,
+                            sam_scores=sam_scores, bboxes=bboxes,
                             score_threshold=score_threshold, classes=np.array(classes, dtype=object))
         total += len(dets)
         sz = (Path(vp_dir) / "detections.npz").stat().st_size / 1024
@@ -75,8 +84,14 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", "http://localhost:8001"))
     ap.add_argument("--score-threshold", type=float, default=0.25)
-    ap.add_argument("--keep-arch", action="store_true",
-                    help="detect ALL object classes incl. wall/floor/ceiling (default: scoreable only)")
+    # Default: query ALL classes (incl. wall/floor/ceiling) so the open-vocab
+    # prompt keeps the context that in-wall objects like doors depend on. Pass
+    # --scoreable-only to restore the old scoreable-only query (which collapses
+    # door recall — see dump_scene).
+    ap.add_argument("--scoreable-only", dest="keep_arch", action="store_false",
+                    help="query only scoreable classes (drops wall/floor/ceiling "
+                         "context; collapses door detection)")
+    ap.set_defaults(keep_arch=True)
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
     if args.all:

@@ -45,6 +45,10 @@ logging.basicConfig(
 class Detection(BaseModel):
     label: str
     score: float = Field(ge=0.0, le=1.0)
+    sam_score: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="SAM's predicted mask IoU (mask quality); 1.0 when a "
+                    "detector predates this field.")
     bbox_xyxy: list[float] = Field(min_length=4, max_length=4)
     mask_rle: str = Field(
         description=(
@@ -108,7 +112,7 @@ app = FastAPI(
     title="xiao-hei perception sidecar",
     version=SCHEMA_VERSION,
     description=(
-        "YOLOv8x-World v2 + SAM 2.1 Hiera Tiny over an equirectangular "
+        "YOLOv8x-World v2 + SAM 2.1 Hiera Large over an equirectangular "
         "360°×120° camera. Detection runs on 4 perspective faces; masks "
         "are reprojected back into equirectangular pixel coordinates "
         "before they leave the sidecar."
@@ -186,6 +190,7 @@ async def detect(
             Detection(
                 label=d.label,
                 score=d.score,
+                sam_score=d.sam_score,
                 bbox_xyxy=list(d.bbox_xyxy),
                 mask_rle=d.mask_rle,
             )

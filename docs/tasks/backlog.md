@@ -212,6 +212,157 @@ Either is measurable on the frozen captures with
 
 ---
 
+## B4 — Reject objects beyond a range cap
+
+**Status:** proposed — not yet measured
+**Files:** `src/xiao_hei_vln/perception/lifter.py` (a hook already exists),
+`src/xiao_hei_vln/perception/responder.py`
+
+Detections far from the robot are lifted from very few LiDAR returns, because
+point density on a surface falls ~`1/r²`. Beyond ~4.5 m a whole object is
+carried by a handful of points, so its position is noisy and it is prone to the
+mask-spill failure of B1 (the few real points are easily outnumbered by spill
+onto a far wall). Rejecting objects past a range cap — default **~4.5 m**,
+adjustable — should trade a little recall on genuinely distant objects for
+cleaner, better-localised nodes.
+
+**Evidence** (`debug_k2` / `arabic_room` / `vp_017`): `potted plant` node #25,
+robot at `(-2.74, 1.07, 0.76)`, object at `(2.31, 4.04, 0.69)` — **5.86 m**
+away, lifted from only **19 inliers** (min_inliers is 10, so it barely
+cleared), `n_obs = 1`. A thin, one-shot, far detection is exactly the profile
+this would drop. For context the offline tooling already treats **8 m** as the
+edge of usable coverage (`verify_projection --max-range`, the overlay's
+GT-observability filter).
+
+**Two ways to do it (decide when picked up):**
+
+1. **Pre-filter the cloud** — drop scan returns farther than the cap from the
+   robot *before* lifting. A hook already exists: `PointLifter.max_depth_m`
+   (currently `None`, unused) caps camera-frame return distance for exactly
+   this reason ("a sparse return through a doorway snaps onto a far wall and
+   biases the median"). Wiring it to ~4.5 m and exposing it (env +
+   `replay_score`/`dump_debug` flags) is most of the work. Bonus: it also
+   starves far mask-spill of points, so it complements B1. Risk: it uses the
+   return's own range, so a near object seen past a far surface is unaffected —
+   which is correct.
+2. **Post-lift gate** — lift as now, then drop nodes whose lifted position is
+   farther than the cap from the robot pose that saw them. Simpler and purely
+   additive, but the lift already ran on the contaminated cloud (the median may
+   already be wrong), and it spends compute on detections it then discards.
+
+Prefer (1): it removes the bad points rather than the symptom, and reuses an
+existing, documented mechanism. Whichever is chosen, **measure the recall cost
+first** — count GT objects legitimately beyond 4.5 m per scene before setting
+the default, since those become guaranteed misses. Measurable on the frozen
+captures with `replay_score.py` (recall / cErr / counting MAE) and
+`box_quality.py` (tail volume).
+
+---
+
+## B5 — SAM mask quality
+
+**Status:** proposed — not yet measured
+**Files:** `perception/pipeline.py` (sidecar)
+
+The masks are not always clean, and a bad mask feeds the lift directly: a mask
+that under-covers starves the inlier count, one that over-spills pulls in a
+neighbouring surface (the B1 failure mode). The sidecar currently runs the
+**smallest** SAM 2.1 checkpoint — `sam2.1_hiera_tiny.pt`
+(`SAM_WEIGHTS`/`SAM_CONFIG` at `pipeline.py:251`).
+
+**Two solutions on the table:**
+
+1. **Upgrade the SAM model** — swap the tiny Hiera checkpoint for
+   small / base-plus / large. Just a weights + config change, but heavier per
+   call (SAM already runs once per YOLO box per face); measure the latency hit
+   against the tick budget, and the mask-quality gain, before committing.
+2. **Gate on SAM's confidence** — SAM2's `predict()` already returns a
+   mask-quality score (predicted IoU) that we currently discard
+   (`masks, _, _ = self._sam.predict(...)`, `pipeline.py:383`). Capture it,
+   thread it through `_FaceDetection` → `Detection`, and drop or demote
+   low-confidence masks. Nearly free, and it gives a per-mask signal the
+   pipeline has never had — complementary to the YOLO box score, which says
+   nothing about mask fit.
+
+The two are independent and could combine (better model *and* a confidence
+gate). Prefer starting with (2): it is cheap, measurable, and tells us how much
+of the problem is low-confidence masks in the first place — which also informs
+whether (1) is worth its cost. Both are measurable on the frozen captures via
+`box_quality.py` (extent tail) and `replay_score.py` (recall / precision),
+though note detection masks would change, so the frozen `detections.npz` must
+be re-dumped for a fair A/B.
+
+---
+
+## B6 — Large flat objects fragment into many nodes
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/object_map.py`
+
+Large planar objects (carpet, floor, ceiling) shatter into many nodes instead
+of one, so no single node's box matches the object's true AABB.
+
+**Evidence** (arabic_room, Task-1 object-reference, 133 questions): carpet is
+the reference **target in 26/133 questions**, but the **2 real carpets are
+lifted as 25 separate nodes** (floor → 30, ceiling → 39). For GT carpet #32
+(center `1.94, -0.58`, a ~2 m slab) the nearest carpet fragment centroid is
+0.61 m away and its box is tiny vs. the GT AABB → IoU ≈ 0. This alone drives
+~20% of Task-1 misses, and is the same over-segmentation that pushes benchmark
+precision down (arabic_room pred 188 vs GT 81).
+
+**Approach:** merge same-label large planar fragments into one node before
+export (voxel-adjacent or plane-fit union), and add the horizontal (ceiling)
+analogue of `_is_wall_sheet`. Fixes the Task-1 carpet miss *and* the benchmark
+precision drop at once. Relates to B2 (box shape) and B3 (dedup).
+
+---
+
+## B7 — Small objects never reach the scene graph
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/lifter.py` (`min_inliers` gate),
+`perception/pipeline.py`
+
+Seven **queried** object classes are never lifted into the scene graph in
+`arabic_room`: **hookah, hookah wire, coffee pot, glass, tray, focus light,
+window**. Any question using them as target or anchor auto-fails.
+
+**Evidence:** these types are in the query vocab but absent from the 188-node
+graph; they account for ~30% of Task-1 misses (target/anchor not present).
+E.g. *"Find the vase closest to the hookah"* — no hookah node exists, so Gemini
+grounded on "Arabic jar … is a type of hookah" and picked the wrong vase.
+
+**Cause:** small/thin items score low for YOLO-World *and* fall below the
+lift's `min_inliers = 10` LiDAR gate (return density ∝ 1/r²), so even when
+detected they never commit a position.
+
+**Approach:** relax or skip `min_inliers` for known-small classes (lift from
+fewer points), and/or a per-class score floor. Measurable on the frozen
+captures via `replay_score.py` recall.
+
+---
+
+## B8 — Open-vocab label instability vs. the challenge vocabulary
+
+**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Files:** `src/xiao_hei_vln/perception/object_map.py` /
+`src/xiao_hei_vln/perception/vocab.py` / responder grounding
+
+The right object is lifted to roughly the right place but under a **neighbouring
+label**, so grounding on the question's exact noun fails.
+
+**Evidence** (arabic_room, ~15% of Task-1 misses): recurring swaps
+`vase ↔ Arabic jar`, `glass ↔ potted plant`, `window ↔ picture`,
+`sofa ↔ pillow`. Note Gemini itself grounds correctly ~91% of the time *given*
+the graph — the score is gated by perception label fidelity, not reasoning.
+
+**Approach:** label normalization / alias sets applied at grounding time (or
+fed to Gemini as synonym groups), and/or resolve confusable pairs in the
+cross-label suppression of B3. Partly responder-side, so unlike B1–B7 it is not
+purely a perception-benchmark item.
+
+---
+
 ## Related gaps, not yet scheduled
 
 Recorded from the same investigation; no work planned yet.

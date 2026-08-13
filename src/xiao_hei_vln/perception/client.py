@@ -48,6 +48,7 @@ class Detection:
     score: float
     bbox_xyxy: tuple[float, float, float, float]
     mask: np.ndarray
+    sam_score: float = 1.0        # SAM mask-quality (predicted IoU); 1.0 if absent
 
 
 class HTTPPerceptionClient:
@@ -197,6 +198,7 @@ def _parse_detection(payload: dict) -> Detection:
         score=float(payload["score"]),
         bbox_xyxy=bbox,        # type: ignore[arg-type]
         mask=_decode_mask_rle(payload["mask_rle"], EQUIRECT_H, EQUIRECT_W),
+        sam_score=float(payload.get("sam_score", 1.0)),
     )
 
 

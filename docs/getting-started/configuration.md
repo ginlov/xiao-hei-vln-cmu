@@ -8,7 +8,7 @@ are required — docker-compose sets them for you, but they can be overridden.
 | Variable | Default | Description |
 |---|---|---|
 | `XIAO_HEI_RESPONDER` | `dummy` | Which responder to use: `dummy`, `perception`, or `scene_gemini` (the submission stack) |
-| `XIAO_HEI_VLM_TICK_HZ` | `2.0` | VLM tick rate in Hz |
+| `XIAO_HEI_VLM_TICK_HZ` | `1.0` | VLM tick rate in Hz |
 
 ## Gemini engine
 
@@ -35,9 +35,7 @@ are required — docker-compose sets them for you, but they can be overridden.
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Sidecar URL the responder talks to |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate. Lower → more detections, more noise |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped |
-| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Keyframes accumulated to densify the sparse single sweep before lifting |
-| `XIAO_HEI_SCAN_MIN_MOVE_M` | `0.25` | Minimum translation (m) between accumulated keyframes |
-| `XIAO_HEI_SCAN_MIN_ROT_DEG` | `15` | Minimum rotation (deg) between accumulated keyframes |
+| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Sweeps accumulated to densify the sparse single sweep before lifting. One per tick, so this is a window in *ticks* — 10 ≈ 5 s at the 2 Hz default |
 | `XIAO_HEI_SCAN_VOXEL_M` | `0.05` | Voxel size (m) for downsampling the accumulated scan |
 
 ## Exploration

@@ -31,7 +31,7 @@ def _grid(n_side: int, step: float = 0.2, origin=(0.0, 0.0, 0.0)) -> np.ndarray:
     return pts
 
 
-# ── keyframe policy ───────────────────────────────────────────────────────────
+# ── buffer policy ─────────────────────────────────────────────────────────────
 
 def test_first_update_stores_keyframe_and_returns_points():
     acc = ScanAccumulator()
@@ -40,34 +40,52 @@ def test_first_update_stores_keyframe_and_returns_points():
     assert out.shape[0] > 0 and out.shape[1] == 3
 
 
-def test_stationary_update_does_not_add_keyframe():
-    acc = ScanAccumulator(min_move_m=0.25, min_rot_deg=15.0)
+def test_every_update_stores_a_keyframe():
+    """There is no motion gate: a stationary tick still commits a keyframe.
+
+    This is exactly what the old move/rotation gate denied, so it is asserted
+    directly rather than left implicit.
+    """
+    acc = ScanAccumulator()
     acc.update(_grid(5), _pos(0, 0), _quat_yaw(0.0))
-    # moved only 0.1 m, no rotation → below both thresholds.
-    acc.update(_grid(5), _pos(0.1, 0.0), _quat_yaw(0.0))
-    assert acc.n_keyframes == 1
+    acc.update(_grid(5), _pos(0, 0), _quat_yaw(0.0))          # identical pose
+    acc.update(_grid(5), _pos(0.01, 0.0), _quat_yaw(0.0))     # 1 cm
+    assert acc.n_keyframes == 3
 
 
-def test_translation_beyond_threshold_adds_keyframe():
-    acc = ScanAccumulator(min_move_m=0.25)
-    acc.update(_grid(5), _pos(0, 0), _quat_yaw(0.0))
-    acc.update(_grid(5), _pos(0.4, 0.0), _quat_yaw(0.0))
-    assert acc.n_keyframes == 2
-
-
-def test_rotation_beyond_threshold_adds_keyframe():
-    acc = ScanAccumulator(min_move_m=10.0, min_rot_deg=15.0)  # move gate off
-    acc.update(_grid(5), _pos(0, 0), _quat_yaw(0.0))
-    # turned 30° in place → rotation gate fires despite no translation.
-    acc.update(_grid(5), _pos(0, 0), _quat_yaw(math.radians(30)))
-    assert acc.n_keyframes == 2
+def test_pose_arguments_do_not_affect_the_buffer():
+    """Pose is accepted but unused — two runs differing only in pose agree."""
+    moved, still = ScanAccumulator(), ScanAccumulator()
+    for i in range(4):
+        a = moved.update(_grid(3), _pos(i * 5.0, 0.0), _quat_yaw(i * 1.0))
+        b = still.update(_grid(3), _pos(0, 0), _quat_yaw(0.0))
+    assert moved.n_keyframes == still.n_keyframes
+    assert np.array_equal(np.sort(a, axis=0), np.sort(b, axis=0))
 
 
 def test_max_keyframes_caps_the_buffer():
-    acc = ScanAccumulator(max_keyframes=3, min_move_m=0.25)
+    acc = ScanAccumulator(max_keyframes=3)
     for i in range(5):
         acc.update(_grid(3), _pos(i * 1.0, 0.0), _quat_yaw(0.0))
     assert acc.n_keyframes == 3
+
+
+def test_standing_still_evicts_accumulated_coverage():
+    """The cost of a tick-keyed window, pinned down so it cannot drift silently.
+
+    The buffer holds the last ``max_keyframes`` *ticks*, so a robot that stops
+    refills it with copies of one sweep and the earlier coverage is gone. At
+    the 2 Hz live tick, ``max_keyframes=10`` means 5 s of standing still.
+    """
+    acc = ScanAccumulator(max_keyframes=3, voxel_m=0.05)
+    far = _grid(3, origin=(50.0, 0.0, 0.0))
+    near = _grid(3, origin=(0.0, 0.0, 0.0))
+    acc.update(far, _pos(50.0, 0.0), _quat_yaw(0.0))
+    out = acc.update(near, _pos(0, 0), _quat_yaw(0.0))
+    assert (out[:, 0] > 40.0).any()                  # far sweep still present
+    for _ in range(3):                               # parked, buffer turns over
+        out = acc.update(near, _pos(0, 0), _quat_yaw(0.0))
+    assert not (out[:, 0] > 40.0).any()              # coverage dropped
 
 
 def test_reset_clears_buffer():
@@ -80,7 +98,7 @@ def test_reset_clears_buffer():
 # ── densification + voxel downsample ──────────────────────────────────────────
 
 def test_accumulation_densifies_disjoint_regions():
-    acc = ScanAccumulator(min_move_m=0.25, voxel_m=0.05)
+    acc = ScanAccumulator(voxel_m=0.05)
     a = _grid(5, origin=(0.0, 0.0, 0.0))       # 25 pts near origin
     b = _grid(5, origin=(10.0, 0.0, 0.0))      # 25 pts far away (disjoint)
     acc.update(a, _pos(0, 0), _quat_yaw(0.0))
@@ -90,7 +108,7 @@ def test_accumulation_densifies_disjoint_regions():
 
 
 def test_overlapping_sweeps_are_deduped_by_voxel():
-    acc = ScanAccumulator(min_move_m=0.25, voxel_m=0.05)
+    acc = ScanAccumulator(voxel_m=0.05)
     g = _grid(5, step=0.2)                      # points 0.2 m apart → own voxels
     acc.update(g, _pos(0, 0), _quat_yaw(0.0))
     # identical cloud from a moved pose → same voxels → no growth.
@@ -131,7 +149,7 @@ def test_accumulation_rescues_a_sparse_small_object():
     from xiao_hei_vln.perception.lifter import PointLifter
 
     lifter = PointLifter(min_inliers=10)
-    acc = ScanAccumulator(min_move_m=0.25, voxel_m=0.0)  # keep every return
+    acc = ScanAccumulator(voxel_m=0.0)  # keep every return
     full_mask = np.ones((EQUIRECT_H, EQUIRECT_W), dtype=bool)
     q = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
     center = (3.0, 0.0, 0.0)

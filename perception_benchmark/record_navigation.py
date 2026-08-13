@@ -8,7 +8,7 @@ perception actually see on the trajectory the robot really takes." This script
 answers the second question.
 
 It reproduces the live ingest cadence exactly. In ``app/main.py`` the node ticks
-at ``XIAO_HEI_VLM_TICK_HZ`` (default **2 Hz**, i.e. every 0.5 s) and every
+at ``XIAO_HEI_VLM_TICK_HZ`` (default **1 Hz**, i.e. every 1 s) and every
 exploration tick calls ``responder.ingest()`` → ``_inject_visible()``, which runs
 detect → lift → fuse *unconditionally*. There is no distance, rotation or
 motion-blur gate anywhere on that path: a tick is skipped only when the snapshot
@@ -262,8 +262,8 @@ def main() -> int:
     # Defaults to the live node's own tick rate, so the two stay in step even if
     # XIAO_HEI_VLM_TICK_HZ is overridden.
     ap.add_argument("--rate-hz", type=float,
-                    default=float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0")),
-                    help="sampling rate; defaults to the live XIAO_HEI_VLM_TICK_HZ (2.0)")
+                    default=float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "1.0")),
+                    help="sampling rate; defaults to the live XIAO_HEI_VLM_TICK_HZ (1.0)")
     ap.add_argument("--stop-file", type=Path, default=Path("/tmp/stop_capture"),
                     help="polled; recorder exits cleanly once this path exists")
     ap.add_argument("--max-seconds", type=float, default=1800.0,

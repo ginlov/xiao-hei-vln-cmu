@@ -36,12 +36,13 @@ RUN pip install --no-cache-dir \
 
 # --- bake in model weights so first /detect is fast ----------------------
 # YOLOv8x-World v2 (~146 MB, largest open-vocab variant) and SAM 2.1
-# Hiera Tiny (~155 MB).
+# Hiera Large (~900 MB — best mask quality; VRAM is not the constraint on
+# the A10G and Task 1/2 answer within a 10-min budget, not real time).
 RUN mkdir -p /opt/perception/models \
  && curl -fsSL -o /opt/perception/models/yolov8x-worldv2.pt \
         https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8x-worldv2.pt \
- && curl -fsSL -o /opt/perception/models/sam2.1_hiera_tiny.pt \
-        https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
+ && curl -fsSL -o /opt/perception/models/sam2.1_hiera_large.pt \
+        https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 
 # --- bake in OpenAI CLIP ViT-B/32 weights for YOLO-World v2 ---------------
 # YOLOv8x-World v2's saved checkpoint actually uses `clip:ViT-B/32`

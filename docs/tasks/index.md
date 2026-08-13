@@ -56,6 +56,7 @@ Every row below links to a distinct document.
 | 25 | [Merge detections split by the panorama face seams](TASK%2025%20-%20Merge%20detections%20split%20by%20the%20panorama%20face%20seams.md) | Done |
 | 26 | [Scan-accumulator keyframe sweep & side-by-side dump comparison](TASK%2026%20-%20Scan-accumulator%20keyframe%20sweep%20and%20side-by-side%20dump%20comparison.md) | Dumps, viewer & GIF tool done; scored sweep not run |
 | 27 | [Verifying the 2D-detection → 3D-lift angular convention](TASK%2027%20-%20Verifying%20the%202D-detection%20to%203D-lift%20angular%20convention.md) | Done — extrinsic bug fixed + image/pose timestamp-matched in LatestCache |
+| 28 | [Swap YOLO-World for OWLv2 & drop the tick to 1 Hz](TASK%2028%20-%20Swap%20YOLO-World%20for%20OWLv2%20and%20drop%20the%20tick%20to%201%20Hz.md) | OWLv2 measured & reverted (over-produced + too slow); kept 1 Hz + SAM-Large |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
