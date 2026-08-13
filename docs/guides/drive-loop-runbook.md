@@ -439,3 +439,54 @@ cm.legal_points()                                    # everywhere it would stand
 Predicted within ~0.1 m on three drives. See
 [TASK 29](../tasks/TASK%2029%20-%20The%20converter%20is%20not%20a%20clamp,%20and%20we%20can%20predict%20it.md)
 and the [drive strategy](../vlm_drive_strategy.md).
+
+## Platform parameters, as shipped
+
+These are not ours to choose and not ours to measure. They are read straight
+out of the official image, `zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation`,
+and any number in our code that contradicts one of them is a bug — a comment
+reading "the vehicle is ~0.6 m across" is what made TASK 36 first call a
+`living_room_1` gap impassable that is merely narrow.
+
+`src/base_autonomy/local_planner/launch/local_planner.launch`:
+
+| | | |
+|---|---|---|
+| `vehicleLength` | 0.5 m | |
+| `vehicleWidth` | **0.5 m** | the only width there is |
+| `pathScale` | 0.875 | the path library shrinks to `minPathScale` 0.675 when tight |
+| `pointPerPathThre` | 2 | one obstacle point does not reject a path |
+| `adjacentRange` | 3.5 m | how far the local map reaches |
+| `obstacleHeightThre` | 0.05 m | above the local ground, an obstacle |
+
+`waypoint_converter/launch/waypoint_converter.launch`:
+
+| | | |
+|---|---|---|
+| `obstacleDisThre` | 0.75 m | where a **waypoint** may be placed, not where the vehicle may drive |
+| `waypointXYRadius` | 0.3 m | how near the waypoint counts as arrived |
+| `adjDisThre` | 5.0 m | beyond this the converter does not snap |
+| `checkTravArea` | true | and it checks against a shipped mesh — see below |
+| `trav_area_file_dir` | `mesh/<world>/traversable_area.ply` | |
+
+Because `local_planner` scales its path library and needs two blocking points
+to reject a path, the width a gap actually needs sits somewhere above 0.5 m and
+depends on the approach — which is why `studio` threads the same gap on three
+runs of six. **Do not build a "too narrow, skip it" rule on width alone.**
+
+`traversable_area.ply` ships per scene and is what the converter itself checks,
+so it — not a statistic over lidar points — is the authority on whether a gap
+is drivable:
+
+```
+~/workspace/dataset/unity-scene/<scene>/traversable_area.ply
+```
+
+To re-read any of these rather than trusting this table:
+
+```bash
+ssh xiaohei1 'docker run --rm --entrypoint bash \
+  zhangjicmu/ubuntu24_ros:cmu_vla_challenge_simulation -c \
+  "grep -E \"<param\" /home/docker/autonomy_stack_mecanum_wheel_platform/src/\
+base_autonomy/local_planner/launch/local_planner.launch"'
+```

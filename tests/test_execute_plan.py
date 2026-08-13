@@ -16,20 +16,48 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
-                           REVISIT_M,
+                           PROGRESS_M, REVISIT_M, closing,
                            SPENT_CONE_DEG, SPENT_PENALTY, already_tried,
                            bind_target, corroborated, explore_direction,
-                           lift_way, WAY_MAX_M,
-                           revisited)
-from execute_plan import (THROUGH_M, far_side_goal, gate_point,  # noqa: E402
-                          same_thing, through_point, went_between, xy_of)
-from vlm_probe import parse  # noqa: E402
+                           gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
+                           nearest_allowed_step, recrosses, revisited,
+                           nearer_reading, past, same_thing,
+                           relation_holds, RELATION_MAX_M,
+                           side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M,
+                           USE_KEEPOUT)
+from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
+                          far_side_stalled, gate_point,
+                          through_point, went_between, xy_of)
+from vlm_approach import has_relation  # noqa: E402
+from waypoint_converter_model import _seg_seg_dist  # noqa: E402
+from vlm_probe import build_prompt, parse  # noqa: E402
 from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
                               keepouts, parse_instruction, steps)
 
 
 def anchor(name, x, y):
     return {"name": name, "xy": np.array([float(x), float(y)])}
+
+
+def fake_cm(points=None, *, gates=(), keepout=()):
+    """A `ConverterModel` over a handful of legal points, without a terrain map.
+
+    The constructor wants a (N, 4) cloud and derives legality from obstacle
+    inflation; these tests are about the keep-out, so the legal set is set
+    directly and everything upstream of it is left out.
+    """
+    from scipy.spatial import cKDTree
+    from waypoint_converter_model import ConverterModel
+    cm = ConverterModel.__new__(ConverterModel)
+    P = np.zeros((0, 2)) if points is None else np.asarray(points, float)
+    # The real `legal` is (N, 3) — `snap` queries it in 3-D as the C++ does —
+    # while `legal_points()` is the planar view of it.
+    cm.legal = cm.allowed = np.column_stack([P, np.zeros(len(P))])
+    cm.kd_legal = cKDTree(cm.legal) if len(P) else None
+    cm.keepout = [(np.asarray(xy, float)[:2], float(r)) for xy, r in keepout]
+    cm.gates = [(np.asarray(a, float)[:2], np.asarray(b, float)[:2])
+                for a, b in gates]
+    return cm
 
 
 class TestGatePoint:
@@ -170,6 +198,77 @@ class TestFarSideGoal:
         assert far_side_goal(cm, self.SIDES, np.array([0.0, 2.0]),
                              np.array([1.2, 2.0])) is None
 
+    def test_a_frozen_entry_outranks_the_live_pose(self):
+        """Past the line, "beyond" must not become "back where I came from"."""
+        cm = self.FakeCM([[-2.0, 2.0], [2.0, 2.0]])
+        past = np.array([0.4, 2.0])
+        entry = np.array([-3.0, 2.0])
+        assert np.allclose(
+            far_side_goal(cm, self.SIDES, past, np.array([1.2, 2.0]))[0],
+            [-2.0, 2.0]), "the live pose sends it back"
+        assert np.allclose(
+            far_side_goal(cm, self.SIDES, past, np.array([1.2, 2.0]),
+                          entry=entry)[0], [2.0, 2.0])
+
+    def test_settle_still_reads_the_live_pose(self):
+        """Two positions with two jobs: `entry` picks the half-plane, the
+        vehicle's own pose is what `settle` needs to answer where it lands."""
+        seen = {}
+
+        class Recording(self.FakeCM):
+            def settle(self, waypoint, vehicle):
+                seen["vehicle"] = np.asarray(vehicle, float)
+                return np.asarray(waypoint, float)
+
+        cm = Recording([[2.0, 2.0]])
+        far_side_goal(cm, self.SIDES, np.array([-1.0, 2.0]),
+                      np.array([1.2, 2.0]), entry=np.array([-3.0, 2.0]))
+        assert np.allclose(seen["vehicle"], [-1.0, 2.0])
+
+
+class TestFarSideStalled:
+    """When a far-side waypoint stops being news.
+
+    The `living_room_1` numbers throughout: the converter answered every step
+    with the same corner about 2 m north-west of the gate, and the leg took it
+    as progress each time.
+    """
+
+    HERE = np.array([-1.35, 0.12])
+
+    def test_a_real_new_point_is_progress(self):
+        far = (np.array([-1.83, 0.13]), np.array([-0.20, -1.60]))
+        assert far_side_stalled(far, self.HERE, []) is None
+
+    def test_no_point_at_all(self):
+        assert far_side_stalled(None, self.HERE, []) == \
+            "no legal point beyond the gap yet"
+
+    def test_a_waypoint_the_vehicle_is_already_standing_on(self):
+        """The measured step 5: 0.20 m of motion on offer."""
+        far = (np.array([-1.83, 0.13]), np.array([-1.55, 0.12]))
+        assert far_side_stalled(far, self.HERE, []) == \
+            "the best far-side waypoint is where it stands"
+
+    def test_a_waypoint_this_leg_has_already_driven_to(self):
+        """The measured step 6: a 1.45 m move, back to step 4's resting pose.
+
+        Distance alone calls this progress -- which is exactly how the leg
+        talked itself into shuttling. Only the history refuses it.
+        """
+        here = np.array([-0.15, -0.69])          # where step 6 actually stood
+        far = (np.array([-1.73, 0.02]), np.array([-1.47, -0.10]))
+        assert np.linalg.norm(far[1] - here) > 1.4, "distance calls it progress"
+        assert far_side_stalled(far, here, []) is None
+        assert far_side_stalled(far, here, [np.array([-1.38, 0.14])]) == \
+            "the far-side waypoint is one already driven to"
+
+    def test_a_different_far_side_point_still_counts(self):
+        """Refusing repeats must not refuse a genuinely new approach."""
+        far = (np.array([1.90, -3.10]), np.array([1.60, -2.80]))
+        assert far_side_stalled(far, self.HERE,
+                                [np.array([-1.38, 0.14])]) is None
+
 
 class TestThroughPoint:
     def test_it_lands_on_the_far_side(self):
@@ -194,6 +293,90 @@ class TestThroughPoint:
     def test_coincident_anchors_degrade_to_the_midpoint(self):
         a = np.array([1.0, 1.0])
         assert np.allclose(through_point(a, a.copy(), np.zeros(2)), a)
+
+    def test_frozen_entry_keeps_forward_forward(self):
+        """The oscillation this exists to stop.
+
+        The vehicle has crossed the gap and `went_between` did not fire -- the
+        planner rounded the end of the segment, or an anchor lifted half a
+        metre out. Passing the live pose flips the aim back the way it came,
+        and the leg drives through the gap and out again until its steps run
+        out. Passing the pose the gap was bound at does not.
+        """
+        a, b = np.array([0.0, 0.0]), np.array([0.0, 4.0])
+        entry = np.array([-3.0, 2.0])
+        past = np.array([0.4, 2.0])                  # just over the line
+        assert through_point(a, b, past)[0] < 0, "the live pose flips it"
+        assert through_point(a, b, entry)[0] > 0, "the frozen one does not"
+
+
+class TestRecrosses:
+    """Bearings that would undo a passage the robot has already driven."""
+
+    # The `home_building_1` gap, from the run logs: the dining table north of
+    # the corridor and the picture on the wall south of it. The robot entered
+    # from the east and came out west.
+    TABLE = np.array([-1.68, -4.17])
+    PICTURE = np.array([-0.32, -6.57])
+    ENTRY = np.array([2.51, -4.43])
+    OUT = np.array([-1.22, -5.48])
+    CROSSED = [(TABLE, PICTURE, ENTRY)]
+
+    def east(self):
+        return np.array([1.0, 0.0])
+
+    def west(self):
+        return np.array([-1.0, 0.0])
+
+    def test_going_back_east_is_caught(self):
+        assert recrosses(self.OUT, self.east(), self.CROSSED, 3.0)
+
+    def test_carrying_on_west_is_not(self):
+        assert not recrosses(self.OUT, self.west(), self.CROSSED, 3.0)
+
+    def test_it_only_bites_within_reach(self):
+        """A bearing the robot cannot get far enough along is not a reversal.
+
+        The margin here is thin and that is the measurement, not a rounding:
+        the robot came out only 0.28 m past the line, so half a metre back east
+        already re-crosses it. That is why the exit pose alone cannot carry
+        this -- one step of any size leaves the neighbourhood `already_tried`
+        recognises, while the gap stays exactly where it was.
+        """
+        assert recrosses(self.OUT, self.east(), self.CROSSED, 0.5)
+        assert not recrosses(self.OUT, self.east(), self.CROSSED, 0.2)
+
+    def test_driving_the_passage_the_right_way_is_never_penalised(self):
+        """From the entry side, crossing is the constraint, not a reversal."""
+        assert not recrosses(self.ENTRY, self.west(), self.CROSSED, 6.0)
+
+    def test_nothing_crossed_yet_penalises_nothing(self):
+        assert not recrosses(self.OUT, self.east(), [], 3.0)
+
+    def test_a_bearing_that_misses_the_gap_is_not_a_crossing(self):
+        """Past the end of the segment is not through it.
+
+        Synthetic, because the real gap is diagonal and almost every bearing
+        from the exit pose meets it somewhere. A gap along x=0 spanning y=0..4,
+        entered from the west and left to the east; heading back west level
+        with it is a reversal, and heading back west 9 m north of it is not --
+        that is the line the anchors lie on, not the passage between them.
+        """
+        crossed = [(np.array([0.0, 0.0]), np.array([0.0, 4.0]),
+                    np.array([-3.0, 2.0]))]
+        assert recrosses(np.array([1.0, 2.0]), self.west(), crossed, 5.0)
+        assert not recrosses(np.array([1.0, 9.0]), self.west(), crossed, 5.0)
+
+
+class TestSideOf:
+    def test_it_signs_the_two_halves_apart(self):
+        a, b = np.array([0.0, 0.0]), np.array([0.0, 4.0])
+        assert side_of(a, b, np.array([-1.0, 2.0])) != \
+            side_of(a, b, np.array([1.0, 2.0]))
+
+    def test_a_point_on_the_line_is_neither(self):
+        a, b = np.array([0.0, 0.0]), np.array([0.0, 4.0])
+        assert side_of(a, b, np.array([0.0, 2.0])) == 0.0
 
 
 class TestXyOf:
@@ -340,6 +523,38 @@ class TestExploreDirectionMemory:
         assert abs(delta) > 0.0
         assert not already_tried(np.array([0.0, 0.0]), u, spent)
 
+    def test_a_passage_already_driven_is_not_the_way_onward(self):
+        """The `home_building_1` regression, in the terms the loop sees it.
+
+        The robot has just come west through the dining-table gap and the next
+        destination is not in sight. The model asks for due east -- back the
+        way it came, which in three runs of four is what it got, the first
+        exploration step of the leg driving 1.7 m back through the gap. Open
+        floor in every direction, so nothing but the crossed passage can break
+        the tie.
+        """
+        crossed = [(TestRecrosses.TABLE, TestRecrosses.PICTURE,
+                    TestRecrosses.ENTRY)]
+        out = TestRecrosses.OUT
+        assert explore_direction(FlatTerrain(), out, 0.0, [])[2] == 0.0
+        u, _, delta = explore_direction(FlatTerrain(), out, 0.0, [], crossed)
+        assert abs(delta) > 0.0, "due east still chosen"
+        assert not recrosses(out, u, crossed, 5.0)
+
+    def test_it_may_still_go_back_if_that_is_the_only_way(self):
+        """Discounted, never forbidden -- the room with one door again."""
+
+        class OneCorridorEast:
+            def reach_along(self, origin, u):
+                return 5.0 if float(u[0]) > 0.9 else 0.0
+
+        crossed = [(TestRecrosses.TABLE, TestRecrosses.PICTURE,
+                    TestRecrosses.ENTRY)]
+        u, reach, _ = explore_direction(OneCorridorEast(), TestRecrosses.OUT,
+                                        0.0, [], crossed)
+        assert reach == 5.0
+        assert u[0] == pytest.approx(1.0)
+
     def test_with_no_history_it_takes_what_was_asked_for(self):
         u, reach, delta = explore_direction(FlatTerrain(),
                                             np.array([0.0, 0.0]), 0.0, [])
@@ -427,6 +642,53 @@ class TestPromptV6:
         from vlm_probe import PROMPT_V6
         assert "null" in PROMPT_V6.split('"way": {{')[1][:300]
         assert "leave \"way\" null" in PROMPT_V6
+
+
+class TestDoneBlock:
+    """What the executor tells the model about constraints already banked."""
+
+    MISSION = {"question": "First, go to the nightstand with a clock on it, "
+                           "then take the path between the dining table and "
+                           "the picture, and stop at the trash can closest to "
+                           "the refridgerator.",
+               "plan": ["GOTO  the nightstand with a clock on it",
+                        "PASS  between the dining table + the picture",
+                        "GOTO  the trash can closest to the refridgerator"],
+               "k": 3}
+
+    def test_nothing_banked_renders_nothing(self):
+        """The condition every cached reply depends on.
+
+        The block is appended to whichever version is selected, so a prompt
+        that renders it unconditionally would move v5's bytes -- and the 117
+        cached replies are keyed to them.
+        """
+        assert build_prompt("x", mission=self.MISSION) == \
+            build_prompt("x", mission={**self.MISSION, "done": []})
+
+    def test_a_banked_passage_reaches_the_model(self):
+        got = build_prompt("x", mission={
+            **self.MISSION,
+            "done": ["drove the passage 'between the dining table and the "
+                     "picture' — between 'dining table' and 'picture'"]})
+        assert "Already driven" in got
+        assert "dining table" in got.split("Already driven")[1]
+
+    def test_it_says_a_spent_constraint_is_not_the_way_onward(self):
+        """The rule itself, which is the whole point of showing the list."""
+        got = build_prompt("x", mission={**self.MISSION, "done": ["a passage"]})
+        assert "not back the way it came" in got
+
+    def test_it_leaves_a_way_back_open(self):
+        """Discouraged, not forbidden -- the geometry says the same thing."""
+        got = " ".join(build_prompt(
+            "x", mission={**self.MISSION, "done": ["a passage"]}).split())
+        assert "last resort" in got
+        assert "Send it back through one only if" in got
+
+    def test_it_survives_having_no_mission_at_all(self):
+        """Single-object runs pass no mission, and must not grow a block."""
+        assert "Already driven" not in build_prompt("x")
 
 
 class TestLiftWay:
@@ -523,6 +785,540 @@ class TestWayRange:
                            {"position": [1.0, 2.0, 0.0]}) is None
 
 
+class TestComparingPredicate:
+    """When is a sighting "the right kind of thing, not the one asked for"?
+
+    Both cases below are real replies. They are indistinguishable on
+    `has_relation`, which reads our sentence, and they separate cleanly on what
+    the model itself reported.
+    """
+
+    @staticmethod
+    def comparing(reply):
+        """The predicate `run_goto` computes; kept in step with it by the two
+        recorded cases below."""
+        return (bool(reply.get("relation"))
+                or len(reply.get("candidates") or []) >= 2)
+
+    # `home_building_1` leg 3, "the trash can closest to the refridgerator".
+    # The model is mid-comparison and cannot finish it: it never saw the
+    # refrigerator, and the bin it found was in another room.
+    WRONG_BIN = {"visible": True, "relation": "closest_to", "confidence": 0.35,
+                 "candidates": [{"name": "trash can"}], "anchors": []}
+
+    # `livingroom_2` q4, "the crystal ball decoration on the shelf near the TV".
+    # "near" makes the phrase relational to us; the model reports no comparison
+    # because there is only one, and says in its evidence that it can see the
+    # shelf beside the TV.
+    CRYSTAL_BALL = {"visible": True, "relation": None, "confidence": 0.82,
+                    "candidates": [], "anchors": [],
+                    "box_2d": [252, 30, 288, 78], "image_index": 3}
+
+    def test_an_unfinished_comparison_is_still_caught(self):
+        assert self.comparing(self.WRONG_BIN)
+
+    def test_a_single_unqualified_nomination_is_not(self):
+        assert not self.comparing(self.CRYSTAL_BALL)
+
+    def test_rival_candidates_count_even_with_no_relation_named(self):
+        """The model dropped the relation but still offered a choice — that is
+        a comparison it has not made."""
+        assert self.comparing({"visible": True, "relation": None,
+                               "candidates": [{"name": "a"}, {"name": "b"}]})
+
+    def test_the_two_cases_are_identical_to_has_relation(self):
+        """Which is why the old test could not tell them apart."""
+        assert has_relation("the trash can closest to the refridgerator")
+        assert has_relation("the crystal ball decoration on the shelf near the TV")
+
+    def test_a_nomination_is_verified_where_a_comparison_is_not(self):
+        """`verified` has to follow `comparing` too, or the leg approaches
+        something it can never declare arrival at."""
+        def verified(reply, relational=True):
+            return (not relational) or (not self.comparing(reply)) \
+                or False        # `chosen` is None in both recorded cases
+        assert not verified(self.WRONG_BIN)
+        assert verified(self.CRYSTAL_BALL)
+
+
+class TestRelationHolds:
+    """The phrase has to hold of the answer, not only choose between answers.
+
+    Distances are from `runs/lr_2_0811_05` and `_08`, measured between what was
+    nominated and the anchor the model itself lifted:
+
+        1.38 m   the real soccer ball, 0.06 m from ground truth
+        9.67 m   an 11 m lift, 3.38 m out — the shape that cost a whole leg
+        3.95 m   a dice ornament on a bookshelf, 5.42 m out
+
+    Over the released questions an object said to be near another is 1.20 m
+    from it at the median and 4.65 m at the widest honest case, so the third of
+    those cannot be separated by distance and is not claimed to be.
+    """
+
+    def anchor_reply(self, name="couch", box=(0, 0, 10, 10), rel="closest_to"):
+        return {"relation": rel, "coord_space": "pixels",
+                "anchors": [{"name": name, "image_index": 0, "box_2d": list(box)}]}
+
+    def test_nothing_to_check_never_fails(self):
+        """Absence of evidence does not fail a binding."""
+        z, p = np.zeros((0, 3)), {}
+        for reply in ({}, {"relation": None}, {"relation": "closest_to"},
+                      {"relation": "closest_to", "anchors": []},
+                      {"relation": "closest_to", "anchors": "the couch"},
+                      {"relation": "farthest_from", "anchors": [{"name": "x"}]}):
+            ok, why = relation_holds(reply, np.zeros(2), z, p)
+            assert ok, reply
+
+    def test_an_anchor_that_does_not_lift_is_not_evidence(self):
+        ok, _ = relation_holds(self.anchor_reply(), np.zeros(2),
+                               np.zeros((0, 3)), {})
+        assert ok, "no scan, no lift, no verdict"
+
+    def test_the_threshold_admits_every_measured_honest_case(self):
+        assert RELATION_MAX_M > 4.65, "office_1's bench and map wall decal"
+
+    def test_and_still_catches_the_binding_that_cost_a_leg(self):
+        assert 9.67 > RELATION_MAX_M
+
+    def test_it_does_not_claim_the_dice_ornament(self):
+        """3.95 m sits inside the honest range. Said out loud so the next
+        reader does not assume this check covers that failure — the size gate
+        is where that one lives: implied height 0.26 m against a soccer ball's
+        0.36 m, passed by a generic band of [0.15, 4.0]."""
+        assert 3.95 < RELATION_MAX_M
+
+    def test_farthest_from_is_not_a_proximity_claim(self):
+        ok, _ = relation_holds(self.anchor_reply(rel="farthest_from"),
+                               np.array([50.0, 50.0]), np.zeros((0, 3)), {})
+        assert ok
+
+
+class TestSightings:
+    """Seeing a later step's object while working on an earlier one.
+
+    `runs/exec_hb1_q2b`, step 6, leg 1, while looking for a nightstand:
+
+        "middle of the kitchen floor: counter run with range hood and wall
+         cabinets ahead, second counter run with window and blue trash can to
+         the right, built-in oven/microwave column and stainless fridge
+         behind..."
+
+    Leg 3's target is "the trash can closest to the refridgerator". The
+    sentence was thrown away, and leg 3 bound a different bin on every run.
+    """
+
+    MISSION = {"question": "First, go to the nightstand with a clock on it, "
+                           "then take the path between the dining table and "
+                           "the picture, and stop at the trash can closest to "
+                           "the refridgerator.",
+               "plan": ["GOTO  the nightstand with a clock on it",
+                        "PASS  between the dining table + the picture",
+                        "GOTO  the trash can closest to the refridgerator"],
+               "k": 1}
+
+    @staticmethod
+    def ctx(**kw):
+        from approach_loop import Ctx
+        return Ctx(robot=None, out=Path("."), log=None, **kw)
+
+    def reply(self, step=3, what="blue trash can beside the stainless fridge",
+              **kw):
+        return {"sightings": [{"step": step, "what": what, **kw}]}
+
+    def test_a_later_step_is_filed(self):
+        c = self.ctx()
+        got = c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        assert len(got) == 1 and got[0]["step"] == 3
+        assert c.sightings[0]["xy"] is None, "no box, no coordinate"
+
+    def test_the_current_step_is_not_a_sighting(self):
+        """That is just the answer, and belongs in `box_2d`."""
+        c = self.ctx()
+        assert c.note_sightings(self.reply(step=1), 1, np.zeros((0, 3)), {}) == []
+        assert c.note_sightings(self.reply(step=2), 3, np.zeros((0, 3)), {}) == []
+
+    def test_the_same_thing_twice_is_filed_once(self):
+        c = self.ctx()
+        c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        c.note_sightings(self.reply(what="blue trash can (seen again)"),
+                         2, np.zeros((0, 3)), {})
+        assert len(c.sightings) == 1
+
+    def test_a_malformed_entry_is_dropped_not_raised(self):
+        c = self.ctx()
+        for bad in ({"sightings": [{"what": "x"}]},
+                    {"sightings": [{"step": "later", "what": "x"}]},
+                    {"sightings": [{"step": 3, "what": "  "}]},
+                    {"sightings": "the trash can"}):
+            assert c.note_sightings(bad, 1, np.zeros((0, 3)), {}) == []
+
+    def test_only_this_leg_sees_its_own_leads(self):
+        c = self.ctx(mission=self.MISSION)
+        c.note_sightings(self.reply(), 1, np.zeros((0, 3)), {})
+        assert c.mission_for(3)["sightings"] == [
+            "blue trash can beside the stainless fridge"]
+        assert c.mission_for(2)["sightings"] == [], "a lead for 3 is noise on 2"
+
+    def test_the_prompt_asks_for_it_and_says_when_not_to(self):
+        got = " ".join(build_prompt("x", mission=self.MISSION).split())
+        assert '"sightings"' in got
+        assert "An empty list is the ordinary answer" in got
+        assert "not when you can see the room it is probably in" in got
+
+    def test_a_lead_is_fed_back_as_a_lead_not_as_a_place_to_avoid(self):
+        """`VISITED_BLOCK` says "do not send it back there"; these were the
+        same sentence on `home_building_1`, and the sign matters."""
+        got = build_prompt("x", mission={
+            **self.MISSION, "k": 3,
+            "sightings": ["blue trash can beside the stainless fridge"]})
+        assert "WORTH GOING BACK FOR" in got
+        assert "Treat this as a lead, not as an answer" in got
+
+    def test_no_sightings_renders_no_block(self):
+        got = build_prompt("x", mission={**self.MISSION, "k": 3})
+        assert "WORTH GOING BACK FOR" not in got
+
+
+class TestKeepOutIsOff:
+    """The keep-out is not steered around, and the reason is arithmetic.
+
+    README §175 penalises a trajectory that "passes through areas it is
+    forbidden to go through" and scores 0-6 with partial points, so driving
+    through is a deduction while failing to reach a destination forfeits it.
+    Enforced, `livingroom_2` q5 reached neither the ball nor partial credit;
+    unenforced it reaches both destinations and loses one penalty. Three of the
+    thirty released instruction questions carry a keep-out.
+    """
+
+    def test_it_is_off_unless_asked_for(self):
+        assert USE_KEEPOUT is False
+
+    def test_the_machinery_is_still_here(self):
+        """Kept behind the switch, not deleted — TASK 37 has the analysis that
+        would justify turning it back on."""
+        import approach_loop as al
+        for name in ("gates_from", "past", "lift_detour", "nearest_allowed_step"):
+            assert hasattr(al, name), name
+        assert hasattr(fake_cm(), "crosses_gate")
+
+    def test_the_model_is_still_asked_to_name_the_region(self):
+        """Two lines, and what any later enforcement would be built from."""
+        got = build_prompt("x", mission={
+            "question": "q", "plan": ["GOTO x"], "k": 1,
+            "keepouts": ["AVOID  between the TV + the tea table"]})
+        assert 'report it under "avoid"' in got
+
+    def test_but_not_for_a_detour_it_will_not_be_steered_by(self):
+        got = build_prompt("x", mission={
+            "question": "q", "plan": ["GOTO x"], "k": 1,
+            "keepouts": ["AVOID  between the TV + the tea table"]})
+        assert '"detour"' not in got
+
+
+class TestGate:
+    """A forbidden corridor, from `livingroom_2` q5.
+
+    "avoiding the path between the TV and the tea table". The robot drove
+    through the middle of it, 0.14 m from the midpoint, and every number here
+    is from that run.
+    """
+
+    TV = np.array([2.41, -2.90])        # as lifted, not ground truth
+    TEA = np.array([0.41, -2.31])
+    VEH = np.array([0.45, -1.31])       # where it stood at the violating step
+    WP = np.array([2.62, -6.23])        # what it published, straight through
+
+    def anchors(self, *names):
+        return [{"xy": xy, "name": nm} for nm, xy in names]
+
+    def test_it_pairs_the_two_anchors(self):
+        g = gates_from(self.anchors(("TV", self.TV), ("tea table", self.TEA)))
+        assert len(g) == 1
+        a, b = g[0]
+        assert np.linalg.norm(a - b) > np.linalg.norm(self.TV - self.TEA)
+
+    def test_both_ends_are_padded(self):
+        """A lift lands on the face the scanner saw, so the segment joining two
+        anchors is short of the furniture at both ends. Unpadded, a route that
+        'clears' this gate misses the tea table's centre by 0.03 m."""
+        (a, b), = gates_from(self.anchors(("TV", self.TV), ("tea table", self.TEA)))
+        grew = np.linalg.norm(a - b) - np.linalg.norm(self.TV - self.TEA)
+        assert grew == pytest.approx(2 * GATE_PAD_M, abs=1e-6)
+
+    def test_one_anchor_is_not_a_gate(self):
+        assert gates_from(self.anchors(("TV", self.TV))) == []
+
+    def test_the_same_object_twice_is_not_a_gate(self):
+        """Three of the five discs in that run were the same television."""
+        assert gates_from(self.anchors(("TV", self.TV),
+                                       ("tv (right view)", self.TV + 1.4))) == []
+
+    def test_the_violating_route_is_refused(self):
+        cm = fake_cm(gates=gates_from(
+            self.anchors(("TV", self.TV), ("tea table", self.TEA))))
+        assert cm.crosses_gate(self.VEH, self.WP)
+
+    def test_a_route_that_stays_on_one_side_is_allowed(self):
+        cm = fake_cm(gates=gates_from(
+            self.anchors(("TV", self.TV), ("tea table", self.TEA))))
+        assert not cm.crosses_gate(self.VEH, np.array([0.07, -1.54]))
+
+    def test_a_gate_removes_nothing_from_the_legal_set(self):
+        """It forbids crossing, not standing. Two discs wide enough to close a
+        2 m gap closed every route the leg had; this is why."""
+        pts = np.array([[0.0, 0.0], [1.0, -2.9], [2.0, -5.0]])
+        assert len(fake_cm(pts, gates=[(self.TEA, self.TV)]).legal_points()) \
+            == len(pts)
+
+
+class TestSearchWindowWithAConstraint:
+    """`search` ranks candidates by distance to the target and keeps the
+    nearest. That is a pure optimisation until a keep-out exists — and then the
+    candidates it keeps are exactly the ones the keep-out rejects, because the
+    target lies beyond the thing being avoided.
+
+    `livingroom_2` q5 reported `boxed in (no legal move)` from a frame with 721
+    legal moves available, and the leg before it fell through to publishing its
+    raw waypoint with the constraint dropped. One cause, two symptoms.
+    """
+
+    @staticmethod
+    def room():
+        """600 legal points beyond the gate, 300 on this side of it."""
+        r = np.random.RandomState
+        far = np.column_stack([r(0).uniform(-3, 3, 600),
+                               r(1).uniform(-8, -4, 600)])
+        near = np.column_stack([r(2).uniform(-3, 3, 300),
+                                r(3).uniform(1, 5, 300)])
+        return np.vstack([far, near])
+
+    GATE = [(np.array([-6.0, 0.0]), np.array([6.0, 0.0]))]
+    VEH = np.array([0.0, 2.0])
+    AIM = np.array([0.0, -7.0])          # beyond the gate
+
+    def test_every_nearest_candidate_is_refused_and_it_still_answers(self):
+        cm = fake_cm(self.room(), gates=self.GATE)
+        got = cm.best_waypoint_toward(self.AIM, self.VEH, search=400,
+                                      min_move=0.5)
+        assert got is not None, "721 legal moves existed and it said there were none"
+        assert got[0][1] > 0.0, "and the one it picks must not be over the gate"
+
+    def test_the_first_reachable_candidate_is_outside_the_window(self):
+        """The premise: without the pre-filter, rank 600 of 900 is unreachable
+        by a 400-wide window, so this is not a test that would pass anyway."""
+        P = self.room()
+        d = np.linalg.norm(P - self.AIM, axis=1)
+        first = int(np.argsort(d)[np.searchsorted(
+            np.sort(d), d[P[:, 1] > 0].min())])
+        assert int((d < d[first]).sum()) > 400
+
+    def test_an_unconstrained_frame_is_unchanged(self):
+        """The window still does its job when there is nothing to avoid."""
+        cm = fake_cm(self.room())
+        got = cm.best_waypoint_toward(self.AIM, self.VEH, search=400,
+                                      min_move=0.5)
+        assert got is not None and got[0][1] < 0.0
+
+    def test_a_truly_sealed_frame_still_says_so(self):
+        cm = fake_cm(self.room()[:600], gates=self.GATE)     # far side only
+        assert cm.best_waypoint_toward(self.AIM, self.VEH, min_move=0.5) is None
+
+
+class TestCircledBack:
+    """"Came back to where it stood" only means arrival if the target is there.
+
+    `runs/lr_2_0811_06` leg 2 shuffled twice inside half a metre and returned
+    `arrived, circled back (9.79 m)` — with the binding 9.79 m away and the
+    true soccer ball 6.37 m from where it stopped. Reported as arrival that is
+    a false positive in the log and in the score.
+    """
+
+    def test_the_recorded_false_positive_is_refused(self):
+        assert 9.79 > CIRCLE_ARRIVE_M
+
+    def test_a_real_ring_still_counts(self):
+        """The platform will not park inside 0.75 m of furniture, and measured
+        floors run 1.1-1.5 m to an object centre — that is what a ring is."""
+        assert 1.5 <= CIRCLE_ARRIVE_M
+        assert 0.95 < CIRCLE_ARRIVE_M, "`home_building_2`'s 0.95 m arrival"
+
+    def test_it_leaves_room_for_a_lift_error_but_not_a_room(self):
+        assert CIRCLE_ARRIVE_M < 3.0
+
+
+class TestClosingIsNotCircling:
+    """`runs/cr_0811_01` lost both legs to the circling test, each on the step
+    where it stood nearer its target than it ever had.
+
+    Leg 1 died on step 3 for passing 0.47 m from the pose it started at, with
+    the potted plant 2.51 m away (bound to 0.38 m of ground truth) and standable
+    floor 0.86 m from it. Leg 2 died on step 7 at 2.83 m from a painting bound
+    to 0.02 m, with standable floor 0.45 m away down a 1.31 m corridor. Nothing
+    was blocking either one.
+    """
+
+    def test_the_first_leg_survives_where_it_died(self):
+        # bound on step 2 from 3.42 m out; step 3 stood 2.51 m from it
+        assert closing(2.51, 3.42)
+
+    def test_the_second_leg_survives_where_it_died(self):
+        # rebound on step 6 from 3.13 m out; step 7 stood 2.83 m from it
+        assert closing(2.83, 3.13)
+
+    def test_the_second_leg_would_die_without_the_per_binding_reset(self):
+        """Why the record is kept per binding and not per leg: 2.83 m from the
+        painting is further than 1.60 m from a reading already discarded."""
+        assert not closing(2.83, 1.60)
+
+    def test_the_record_restarts_at_a_measurement_and_not_at_infinity(self):
+        """`lr_2_0811_06` rebound 5.5 m out on the step before the revisit and
+        then reported `arrived, circled back (9.79 m)`. Seeded from the distance
+        the binding was made at (9.31 m) that step buys nothing and the refusal
+        stands; seeded from infinity it would be excused."""
+        assert not closing(9.79, 9.31)
+        assert closing(9.79, float("inf")), "what infinity would have allowed"
+
+    def test_walking_a_ring_still_reads_as_circling(self):
+        """`exec_studio7` leg 3 came back 2.65 m from a binding it had already
+        been 2.31 m from — the return bought nothing, so the refusal stands."""
+        assert not closing(2.65, 2.31)
+
+    def test_a_genuine_arrival_on_the_ring_still_fires(self):
+        """`hm2_v6_2` step 4: 1.53 m out having been 1.32 m out. Not closing,
+        inside `CIRCLE_ARRIVE_M`, so it still reports arrival."""
+        assert not closing(1.53, 1.32)
+        assert 1.53 <= CIRCLE_ARRIVE_M
+
+    def test_nothing_bound_is_never_closing(self):
+        """With no binding there is no distance to improve on, so the
+        search-a-building branch keeps its behaviour unchanged."""
+        assert not closing(None, float("inf"))
+        assert not closing(None, 3.0)
+
+    def test_a_gain_must_clear_the_noise_floor(self):
+        """Sized on `PROGRESS_M`, which is already what the loop calls a move
+        rather than a clamp — so a leg cannot hold itself alive by twitching."""
+        assert not closing(3.0 - PROGRESS_M / 2, 3.0)
+        assert closing(3.0 - PROGRESS_M * 1.1, 3.0)
+
+
+class TestPastTheDetour:
+    """A detour names floor to drive over, and floor is not where a waypoint
+    may go: `obstacleDisThre` is 0.75 m, and "the clear floor between the tea
+    table and the sofa" is by construction inside it on both sides. On
+    `livingroom_2` the nearest legal point to the detour was 0.96 m from it and
+    moved the vehicle 0.10 m.
+    """
+
+    def test_it_aims_beyond_along_the_same_bearing(self):
+        here, there = np.array([0.0, 0.0]), np.array([3.0, 4.0])
+        got = past(here, there)
+        assert np.allclose(got / np.linalg.norm(got), there / np.linalg.norm(there))
+        assert np.linalg.norm(got - there) == pytest.approx(DETOUR_BEYOND_M)
+
+    def test_it_clears_the_inflation_that_makes_the_floor_unusable(self):
+        assert DETOUR_BEYOND_M >= 0.75, "obstacleDisThre"
+
+    def test_a_detour_underfoot_degrades_rather_than_dividing_by_zero(self):
+        p = np.array([1.0, 1.0])
+        assert np.allclose(past(p, p.copy()), p)
+
+
+class TestGateClearance:
+    """The constraint is checked on a line the vehicle does not drive.
+
+    Measured over the 121 recorded drives that carry a track, the driven path
+    strays sideways from the straight line we plan by 0.18 of its length at the
+    median and 0.60 at p95. On `livingroom_2` a 2.42 m move planned down x = 0
+    ended 1.49 m east and went through the middle of the forbidden gap — the
+    crossing test passed the plan, and the plan was not what was driven.
+    """
+
+    GATE = [(np.array([-2.0, 0.0]), np.array([2.0, 0.0]))]
+
+    def test_segment_distance(self):
+        assert _seg_seg_dist([0, 0], [2, 0], [1, -1], [1, 1]) == 0.0
+        assert _seg_seg_dist([0, 0], [2, 0], [0, 1], [2, 1]) == pytest.approx(1.0)
+        assert _seg_seg_dist([0, 0], [1, 0], [3, 0], [4, 0]) == pytest.approx(2.0)
+        assert _seg_seg_dist([0, 2], [0, 2], [-1, 0], [1, 0]) == pytest.approx(2.0)
+
+    def test_a_run_that_stops_short_of_the_gate_is_still_refused(self):
+        """The whole point: not crossing is not the same as being safe."""
+        cm = fake_cm(gates=self.GATE)
+        assert cm.gate_clearance([0.0, 2.0], [0.0, 0.4]) == pytest.approx(0.4)
+        assert cm.crosses_gate([0.0, 2.0], [0.0, 0.4]), "0.4 m of clearance"
+
+    def test_the_margin_grows_with_the_move(self):
+        """Because the deviation does. A long run cannot be checked at all."""
+        cm = fake_cm(gates=self.GATE)
+        assert not cm.crosses_gate([0.0, 1.0], [0.0, 0.7]), "0.3 m move, 0.7 clear"
+        assert cm.crosses_gate([0.0, 5.0], [0.0, 0.7]), "4.3 m move, same clearance"
+
+    def test_an_explicit_margin_still_means_crossing(self):
+        cm = fake_cm(gates=self.GATE)
+        assert not cm.crosses_gate([0.0, 2.0], [0.0, 0.4], 0.0)
+        assert cm.crosses_gate([0.0, 2.0], [0.0, -2.0], 0.0)
+
+    def test_no_gates_is_always_clear(self):
+        assert fake_cm().gate_clearance([0, 0], [1, 1]) == float("inf")
+        assert not fake_cm().crosses_gate([0, 0], [1, 1])
+
+    def test_the_margin_cannot_seal_the_only_route(self):
+        """`livingroom_2`'s only legal way south is a strip the reference
+        threads 0.8 m from the tea table; a 1.2 m margin would close it. When
+        nothing clears the margin the fallback is the run that does not cross —
+        worse, and still not a violation of the constraint as written."""
+        near = np.array([[0.0, 0.9], [0.0, 0.8]])       # both inside any margin
+        cm = fake_cm(near, gates=self.GATE)
+        got = cm.best_waypoint_toward(np.array([0.0, 0.85]), np.array([0.0, 3.0]),
+                                      min_move=0.0)
+        assert got is not None, "it must still answer rather than deadlock"
+        assert got[0][1] > 0.0, "and never with something over the gate"
+
+
+class TestNearestAllowedStep:
+    """What to do when every waypoint toward the aim is forbidden.
+
+    The old answer was to publish the raw waypoint with the constraint dropped
+    in silence, which is how the violation happened.
+    """
+
+    GATE = [(np.array([-2.0, -1.0]), np.array([2.0, -1.0]))]
+
+    def test_it_takes_the_nearest_point_it_may_reach(self):
+        pts = np.array([[0.0, -3.0], [0.5, 0.5], [1.5, 0.4]])   # first is over
+        cm = fake_cm(pts, gates=self.GATE)
+        got = nearest_allowed_step(cm, np.array([0.0, 1.0]),
+                                   np.array([0.0, -4.0]))
+        assert got is not None and got[1] > -1.0, "it must not cross the gate"
+
+    def test_none_when_everything_is_forbidden(self):
+        cm = fake_cm(np.array([[0.0, -3.0], [1.0, -4.0]]), gates=self.GATE)
+        assert nearest_allowed_step(cm, np.array([0.0, 1.0]),
+                                    np.array([0.0, -4.0])) is None
+
+    def test_no_legal_points_at_all(self):
+        assert nearest_allowed_step(fake_cm(np.zeros((0, 2))),
+                                    np.zeros(2), np.zeros(2)) is None
+
+
+class TestKeepOutAnchorMerge:
+    """One television, lifted three times, became three keep-out discs."""
+
+    def lifted(self, name, xy):
+        return {"avoid": [{"name": name, "box_2d": [0, 0, 1, 1],
+                           "image_index": 0}]}, np.asarray(xy, float)
+
+    def test_the_same_name_is_the_same_anchor(self):
+        assert same_thing("TV", "tv")
+        assert same_thing("TV", "TV (same set seen at right edge)")
+        assert same_thing("tea table", "tea table (coffee table)")
+
+    def test_different_names_stay_apart(self):
+        assert not same_thing("TV", "tea table")
+
+
 class TestLoopBudget:
     def test_a_leg_may_come_back_before_it_gives_up(self):
         """The fix in one line: one return is no longer fatal.
@@ -558,6 +1354,58 @@ def bind(seen, origin, bound, pending, *, conf=0.6, switched=None,
     _, out = bind_target(wp, origin, reply, bound, {}, verified=True,
                          measured=measured, pending=pending)
     return out
+
+
+class TestNearerReading:
+    """`livingroom_2` q5 leg 2, which reported arrival 2.77 m from the ball.
+
+    Every number is from `runs/lr_2_0811_03`. The binding was made from 11.08 m
+    on the first sighting; the reading that landed 0.12 m from the true soccer
+    ball was made from 3.63 m and was refused for jumping 3.52 m.
+    """
+
+    BALL = np.array([2.866, -6.813])        # ground truth, object_list.txt
+    FAR_FROM = np.array([-0.07, 0.27])      # where the bad binding was measured
+    FAR_SAW = np.array([4.370, -9.888])     # ...and what it measured
+    NEAR_FROM = np.array([1.35, -3.41])     # where the good reading was taken
+    NEAR_SAW = np.array([2.759, -6.764])    # ...and what it saw
+
+    def test_the_recorded_failure_now_re_binds(self):
+        pending = []
+        b = bind(self.FAR_SAW, self.FAR_FROM, None, pending, conf=0.62,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) > 3.0, "the bad binding"
+        b = bind(self.NEAR_SAW, self.NEAR_FROM, b, pending, conf=0.78,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) < 0.2, \
+            "the reading 0.12 m from the ball must now win"
+
+    def test_it_is_the_ranges_that_decide_not_the_confidence(self):
+        """The model's confidence rose too, but that is its own opinion — this
+        turns on how far the vehicle stood, which it has no say in."""
+        pending = []
+        b = bind(self.FAR_SAW, self.FAR_FROM, None, pending, conf=0.9,
+                 measured=False)
+        b = bind(self.NEAR_SAW, self.NEAR_FROM, b, pending, conf=0.1,
+                 measured=False)
+        assert np.linalg.norm(b["xy"] - self.BALL) < 0.2
+
+    def test_a_reading_from_no_closer_is_still_refused(self):
+        """The gate has to keep doing its old job: `japanese_room` bound a
+        lantern 0.19 m from the truth and a later reading 4.18 m away."""
+        pending = []
+        b = bind([4.0, 0.0], [0.0, 0.0], None, pending, conf=0.6,
+                 measured=False)
+        b = bind([0.0, 4.2], [0.0, 0.0], b, pending, conf=0.6,
+                 measured=False)
+        assert np.allclose(b["xy"], [4.0, 0.0]), "same range, no free pass"
+
+    def test_the_ratio(self):
+        assert nearer_reading(3.63, 11.08), "the recorded case, ratio 0.33"
+        assert nearer_reading(5.0, 10.0), "exactly half qualifies"
+        assert not nearer_reading(5.1, 10.0)
+        assert not nearer_reading(None, 10.0), "a blind lift claims nothing"
+        assert not nearer_reading(1.0, None)
 
 
 class TestBindingArbitration:

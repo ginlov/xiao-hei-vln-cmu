@@ -364,9 +364,72 @@ The plan, in the order the robot drives it:
 {plan}
 
 The robot is on step {k}. Steps before it are done and it has stood in those
-places; steps after it have not been attempted, so do not answer for them --
-you are being asked about step {k} only.
-{keepouts}"""
+places. The fields above are about step {k} and nothing else: do not box a
+later step's object in "box_2d", and do not let a later step change what you
+report as visible.
+
+WITH ONE EXCEPTION, WHICH IS WORTH MORE THAN THE REST OF THIS BLOCK. If, while
+looking for step {k}, you happen to see an object a LATER step names, say so in
+"sightings". Nothing here is asked twice: the robot arrives at a later step
+having forgotten the room, and one sentence written now can save it a search
+that costs minutes.
+
+  "sightings": [
+      {{"step": n, "what": "blue trash can beside the stainless fridge, on the
+        counter run under the window", "image_index": n, "box_2d": [...]}}
+  ]
+
+`step` is which numbered step above it belongs to. `what` is written for a
+reader who cannot see this image and will arrive from somewhere else, so name
+the thing and what it stands next to. `box_2d` is optional and only worth
+giving when you are confident which object it is -- it is used to point the
+robot in a direction, never to decide it has arrived.
+
+An empty list is the ordinary answer. Report a sighting only when you can
+actually see the object, not when you can see the room it is probably in.
+{sightings}{done}{keepouts}"""
+
+# Fed back on the leg the sighting was for, and deliberately not merged into
+# `VISITED_BLOCK`, which says "do not go back there". A sighting is the
+# opposite instruction, and on `home_building_1` the two were the same sentence:
+# the model wrote "counter run with window and blue trash can to the right,
+# stainless fridge behind" on step 6 of leg 1, and leg 3 -- whose target is "the
+# trash can closest to the refridgerator" -- got it back under a heading telling
+# it not to return.
+SIGHTINGS_BLOCK = """
+SEEN EARLIER, AND WORTH GOING BACK FOR. The robot wrote these while working on
+an earlier step, when it happened to see what this step is looking for:
+
+{sightings}
+
+Treat this as a lead, not as an answer. It was written from somewhere else and
+the robot has moved since; confirm it against what you can see now. If it names
+a place you cannot see from here, that is where to head.
+"""
+
+# Only rendered once something has actually been banked, so a prompt with an
+# empty plan history is byte-for-byte what it was before -- which is what keeps
+# the 117 cached replies keyed to v5 valid.
+#
+# The rule matters most for a passage. The score is on the trajectory and on
+# the ORDER of the constraints in it (README §175), so a required passage
+# driven and then driven back out of is worse than one driven once: the path
+# now reads through, back, through. The robot had no way to know this. On
+# `home_building_1` the destination leg after "take the path between the dining
+# table and the picture" turned round on its first exploration call in three
+# runs of four and drove back out through the same gap, once all the way to
+# where the passage had started.
+DONE_BLOCK = """
+Already driven, in this order, and not to be repeated:
+
+{done}
+
+A constraint the robot has already satisfied is spent. When the current target
+is not in sight, the way onward is not back the way it came: prefer an opening
+the robot has not used, and treat the passage or doorway it arrived through as
+the last resort rather than the obvious choice. Send it back through one only
+if the request can only be satisfied on that side and you say so in "why".
+"""
 
 # Keep-outs are named here rather than left to the request phrase because they
 # hold for the whole run, not for the step: the executor lifts their anchors
@@ -382,6 +445,10 @@ Throughout, the robot must NOT drive through:
 This holds on every step, including this one. Whenever you can see an object
 that one of these regions is anchored on, report it under "avoid" -- even if
 the request above never mentions it.
+
+(The robot is not steered round a keep-out: see `USE_KEEPOUT` in
+`approach_loop`. Naming the region is still worth the two lines it costs --
+it is what any later enforcement would be built from, and it is recorded.)
 """
 
 
@@ -397,12 +464,14 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
     something it can act on. On loft, without this, it proposed driving back to
     the origin it had just left.
 
-    `mission` is `{question, plan, k}`: the sentence the leg was cut out of,
-    the whole ordered plan, and which step is being asked about. It is context,
-    not a decision — the model is never asked which step to do next, because
-    the progress cursor is the executor's and stays monotonic. Reporting on the
-    current step is a judgement the model can make from what it sees; deciding
-    that a step is finished is one that it demonstrably cannot (`bind_target`).
+    `mission` is `{question, plan, k, done}`: the sentence the leg was cut out
+    of, the whole ordered plan, which step is being asked about, and what has
+    already been banked. It is context, not a decision — the model is never
+    asked which step to do next, because the progress cursor is the executor's
+    and stays monotonic. Reporting on the current step is a judgement the model
+    can make from what it sees; deciding that a step is finished is one that it
+    demonstrably cannot (`bind_target`). `done` is the executor telling it what
+    it decided, which is the opposite direction and safe.
     """
     if version not in PROMPTS:
         raise SystemExit(f"unknown prompt version {version!r}; "
@@ -412,11 +481,17 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
         base += APPROACH_BLOCK
     if mission:
         keep = mission.get("keepouts") or []
+        done = mission.get("done") or []
+        seen = mission.get("sightings") or []
         base += MISSION_BLOCK.format(
             question=mission["question"], k=mission["k"],
             plan="\n".join(
                 f"  {'->' if i == mission['k'] else '  '} {i}. {line}"
                 for i, line in enumerate(mission["plan"], 1)),
+            sightings=("" if not seen else SIGHTINGS_BLOCK.format(
+                sightings="\n".join(f"  - {x}" for x in seen))),
+            done=("" if not done else DONE_BLOCK.format(
+                done="\n".join(f"  - {x}" for x in done))),
             keepouts=("" if not keep else KEEPOUT_BLOCK.format(
                 keepouts="\n".join(f"  - {x}" for x in keep))))
     if visited:

@@ -46,6 +46,44 @@ SEARCH_DIS_THRE = 5.0
 VEHICLE_DIS_WEIGHT = 0.5
 ADJ_DIS_THRE = 5.0
 WAYPOINT_XY_RADIUS = 0.3
+# How near a planned run may come to a forbidden gate, as a fraction of its own
+# length plus a floor. Both measured over the 121 recorded drives that carry a
+# track: the sideways stray from the straight line we plan is 0.18 of the move
+# at the median, 0.51 at p90 and 0.60 at p95, and for moves under a metre the
+# worst seen was 0.51 m however short they were. So the margin is 0.60 of the
+# move, never less than 0.5 m.
+GATE_MARGIN_FRAC = 0.60
+GATE_MARGIN_MIN = 0.5
+
+
+def _seg_seg_dist(p1, p2, q1, q2) -> float:
+    """Shortest distance between two 2-D segments; 0 if they intersect.
+
+    Clamped parametric solve, with the parallel case falling through to the
+    endpoint distances — which is also the answer when either segment is a
+    point, so no special case is needed for a degenerate gate.
+    """
+    p1, p2, q1, q2 = (np.asarray(v, float)[:2] for v in (p1, p2, q1, q2))
+    u, v, w = p2 - p1, q2 - q1, p1 - q1
+    a, b, c = u @ u, u @ v, v @ v
+    d, e = u @ w, v @ w
+    den = a * c - b * b
+    if den > 1e-12:
+        s = float(np.clip((b * e - c * d) / den, 0.0, 1.0))
+        t = float(np.clip((a * e - b * d) / den, 0.0, 1.0))
+        # One clamp can invalidate the other, so re-solve each against the
+        # other's clamped value. Two passes are exact for segments.
+        s = float(np.clip((b * t - d) / a, 0.0, 1.0)) if a > 1e-12 else 0.0
+        t = float(np.clip((b * s + e) / c, 0.0, 1.0)) if c > 1e-12 else 0.0
+        return float(np.linalg.norm((p1 + s * u) - (q1 + t * v)))
+    best = float("inf")
+    for pt, (r1, r2) in ((p1, (q1, q2)), (p2, (q1, q2)),
+                         (q1, (p1, p2)), (q2, (p1, p2))):
+        seg = r2 - r1
+        L = float(seg @ seg)
+        t = 0.0 if L < 1e-12 else float(np.clip(((pt - r1) @ seg) / L, 0.0, 1.0))
+        best = min(best, float(np.linalg.norm(pt - (r1 + t * seg))))
+    return best
 
 
 def voxel_downsample(pts: np.ndarray, leaf: float = TERRAIN_VOXEL) -> np.ndarray:
@@ -63,7 +101,8 @@ class ConverterModel:
     """One `/terrain_map` frame, and what the converter would do with it."""
 
     def __init__(self, terrain: np.ndarray, *,
-                 keepout: Sequence[tuple[np.ndarray, float]] = ()) -> None:
+                 keepout: Sequence[tuple[np.ndarray, float]] = (),
+                 gates: Sequence[tuple[np.ndarray, np.ndarray]] = ()) -> None:
         """`terrain` is (N, 4): x, y, z, intensity, where intensity is height
         above the local ground — see `robot_io.py` on reading that column.
 
@@ -73,6 +112,22 @@ class ConverterModel:
         applies to `allowed`, the set we are willing to choose from — and
         because every motion decision reads that one set, waypoint choice,
         exploration and the arrival test inherit the constraint at once.
+
+        `gates` is the other shape a keep-out comes in, and for "avoid the path
+        between X and Y" it is the right one. Two discs big enough to close a
+        2 m gap are big enough to close the room: on `livingroom_2` q5, five
+        1.2 m discs (three of them the same TV, lifted three times and kept
+        apart by `JUMP_M`) left `best_waypoint_toward` with no answer at all,
+        and the caller then published its raw waypoint with the constraint
+        silently dropped — which is how the vehicle came to drive through the
+        middle of the forbidden gap, 0.14 m from its midpoint. A gate is the
+        segment joining the two anchors: it closes the corridor between them
+        and nothing else. On the same frame it rejects 19 of 928 legal points
+        where the discs rejected every usable one.
+
+        A gate forbids *crossing*, not standing: it is a line, so it removes
+        nothing from `allowed`, and is enforced on the run from the vehicle to
+        wherever a waypoint would settle.
         """
         if terrain.ndim != 2 or terrain.shape[1] != 4:
             raise ValueError(f"terrain must be (N, 4); got {terrain.shape}")
@@ -96,6 +151,8 @@ class ConverterModel:
         self.kd_legal = cKDTree(self.legal) if len(self.legal) else None
 
         self.keepout = [(np.asarray(xy, float)[:2], float(r)) for xy, r in keepout]
+        self.gates = [(np.asarray(a, float)[:2], np.asarray(b, float)[:2])
+                      for a, b in gates]
         self.allowed = self.legal
         for xy, r in self.keepout:
             if len(self.allowed) == 0:
@@ -166,6 +223,18 @@ class ConverterModel:
             t = float((xy - o) @ u)
             if 0 < t < far and float(np.linalg.norm(xy - (o + t * u))) < r:
                 far = min(far, max(t - r, 0.0))
+        # A gate stops the ray for the same reason: exploration must not read
+        # straight through a corridor it is forbidden to drive down.
+        for g0, g1 in self.gates:
+            e = g1 - g0
+            den = float(u[0] * e[1] - u[1] * e[0])
+            if abs(den) < 1e-9:
+                continue                          # parallel: never crossed
+            w = g0 - o
+            t = float(w[0] * e[1] - w[1] * e[0]) / den      # along the ray
+            s = float(w[0] * u[1] - w[1] * u[0]) / den      # along the gate
+            if 0.0 < t < far and 0.0 <= s <= 1.0:
+                far = min(far, max(t - min_advance, 0.0))
         return far
 
     def best_waypoint_toward(self, target, vehicle, *, search: int = 400,
@@ -202,6 +271,39 @@ class ConverterModel:
             return None
         tgt = np.asarray(target, float)[:2]
         veh = np.asarray(vehicle, float)[:2]
+        # Drop the candidates a constraint will reject *before* ranking, not
+        # inside the loop. `search` keeps only the nearest candidates to the
+        # target, which is a pure optimisation until a keep-out is added — and
+        # then it is a bug, because the candidates a keep-out rejects are
+        # exactly the nearest ones when the target lies beyond it. Every one of
+        # the first 400 is refused, the loop ends with nothing, and the caller
+        # reads "no legal move" from a frame with hundreds of them. That is how
+        # `livingroom_2` q5 reported `boxed in` with 721 legal moves available,
+        # and how the same leg on the run before it fell through to publishing
+        # its raw waypoint with the keep-out dropped.
+        #
+        # The test on the published point is not the one that decides — the run
+        # to where it *settles* is, below — but it is cheap and it culls the
+        # doomed half, so the window covers plausible candidates instead.
+        if self.gates or self.keepout:
+            def survives(margin):
+                return np.array(
+                    [not (self.gates and self.crosses_gate(veh, p, margin))
+                     and not (self.keepout and self._crosses_keepout(veh, p))
+                     for p in legal])
+            keep = survives(None)               # clearance, scaled by length
+            # A margin must never be able to seal the only way through. It is
+            # there because we cannot predict the driven path, and when nothing
+            # clears it the honest fallback is the run that at least does not
+            # cross — worse, but still not a violation of the constraint as
+            # written. `livingroom_2`'s only legal route south is a strip the
+            # reference trajectory threads 0.8 m from the tea table, which a
+            # 1.2 m margin would otherwise close.
+            if not keep.any():
+                keep = survives(0.0)
+            if not keep.any():
+                return None
+            legal = legal[keep]
         # Walk candidates nearest-the-target first and prune with an exact
         # bound: settling stops within waypointXYRadius of the goal, so no goal
         # can settle nearer the target than `|goal - target| - waypointXYRadius`.
@@ -221,6 +323,8 @@ class ConverterModel:
             if self.keepout and (self.forbidden(s)[0]
                                  or self._crosses_keepout(veh, s)):
                 continue
+            if self.gates and self.crosses_gate(veh, s):
+                continue
             if min_move and float(np.linalg.norm(s - veh)) < min_move:
                 continue
             v = float(np.linalg.norm(s - tgt))
@@ -234,6 +338,37 @@ class ConverterModel:
         n = max(int(np.linalg.norm(b - a) / step), 1)
         return bool(self.forbidden(a + np.outer(np.linspace(0, 1, n + 1),
                                                 b - a)).any())
+
+    def gate_clearance(self, a, b) -> float:
+        """How near the straight run from `a` to `b` comes to a forbidden gate.
+
+        Zero when it crosses. `inf` when there are no gates.
+        """
+        a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+        return min((_seg_seg_dist(a, b, g0, g1) for g0, g1 in self.gates),
+                   default=float("inf"))
+
+    def crosses_gate(self, a, b, margin: float | None = None) -> bool:
+        """Is this run too near a forbidden gate to publish?
+
+        Not "does it cross": the vehicle does not drive the line we plan. It
+        drives whatever `local_planner` chooses, and measured over 121 recorded
+        drives that path strays sideways from the straight line by 0.18 of its
+        length at the median and 0.60 at the 95th percentile. On
+        `livingroom_2` a 2.42 m move planned straight down x = 0 ended 1.49 m
+        east and took the vehicle through the middle of the forbidden gap; the
+        crossing test had passed the plan, and the plan was not what was driven.
+
+        So the test is on clearance, and the margin scales with the length of
+        the move, because the deviation does. A short hop earns a small margin
+        and a long one cannot be checked at all — which is the other half of
+        the answer, and why the caller caps a step while a keep-out is in force.
+        """
+        a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+        if margin is None:
+            margin = max(GATE_MARGIN_MIN,
+                         GATE_MARGIN_FRAC * float(np.linalg.norm(b - a)))
+        return self.gate_clearance(a, b) <= margin
 
     def settle(self, waypoint, vehicle, *, step: float = 0.05,
                max_iter: int = 2000) -> np.ndarray:
