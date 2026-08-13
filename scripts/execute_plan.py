@@ -65,7 +65,8 @@ from decompose import decompose  # noqa: E402
 from instruction_plan import GOTO, PASS, Clause, keepouts, steps  # noqa: E402
 from vlm_approach import STANDOFF_M, _lift_xy  # noqa: E402
 from vlm_locate import scan_to_camera  # noqa: E402
-from vlm_probe import DEFAULT_PROMPT_VER, to_pixels  # noqa: E402
+from vlm_probe import (DEFAULT_GEMINI_MODEL, DEFAULT_PROMPT_VER,  # noqa: E402
+                       to_pixels)
 from waypoint_converter_model import ConverterModel  # noqa: E402
 from faces import faces_of  # noqa: E402
 
@@ -641,7 +642,7 @@ def main() -> int:
     args = ap.parse_args()
 
     model = args.model or ("claude-opus-5" if args.backend == "claude"
-                           else "gemini-2.5-flash")
+                           else DEFAULT_GEMINI_MODEL)
     cache_p = Path("artifacts/decompose_cache.json")
     cache = json.loads(cache_p.read_text()) if cache_p.is_file() else {}
     plan, from_model = decompose(args.question, cache=cache)

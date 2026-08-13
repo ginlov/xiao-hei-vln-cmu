@@ -204,12 +204,52 @@ spending ten minutes of sim time on it.
 | `--budget` | 540 | seconds for the **whole question**; README allows 600 |
 | `--goto-steps` | 20 | safety cap on grounding calls per destination — the real governor is the leg's share of `--budget` |
 | `--model` | `claude-opus-5` | any vision model: `claude-sonnet-5`, `claude-fable-5`, `claude-haiku-4-5-20251001` |
-| `--backend` | `claude` | `gemini` reads `XIAO_HEI_GEMINI_API_KEY` (or `GEMINI_API_KEY`) from the environment; default model `gemini-2.5-flash` |
+| `--backend` | `claude` | `gemini` reads `XIAO_HEI_GEMINI_API_KEY` (or `GEMINI_API_KEY`); default model `gemini-3.6-flash`. See below — it needs its own `--with` |
 | `--prompt-version` | `v6-way-out` | `v5-constraints` is the version the cached replies and the offline scripts are keyed to |
 | `--host` | — | omit to run inside the container instead of over ssh |
 
 `--model` does **not** reach the decomposition step, which always uses
 `claude-opus-5` — one cached call per question, 3.3 s, 30/30 on drive order.
+
+### Driving on Gemini
+
+```bash
+eval "$(grep -E '^[[:space:]]*export (ANTHROPIC|XIAO_HEI_GEMINI)_API_KEY=' ~/.zshrc)"
+
+uv run --with anthropic --with google-genai python scripts/execute_plan.py \
+  "<question>" --backend gemini --model gemini-3.1-pro-preview \
+  --host xiaohei1 --out runs/x
+```
+
+**Both** `--with` flags: decomposition always calls Claude whatever `--backend`
+says, so dropping `--with anthropic` fails before the first Gemini call.
+
+Which models are callable is a property of the key's billing tier, not of the
+catalogue — `models.list` still advertises `gemini-2.5-flash`, which answers
+404 "no longer available to new users". Probed on a Tier 1 key:
+
+| model | note |
+|---|---|
+| `gemini-3.6-flash` | the default; pinned, thinks unasked |
+| `gemini-3.1-pro-preview` | frontier tier; **Free tier gives it a daily quota of zero**, so this one needs billing |
+| `gemini-3.1-flash-lite` | no thinking, ~2.7 s a call against ~12 s for Pro |
+| `gemini-flash-latest` | resolves to `gemini-3.6-flash` **today** — never use it for an A/B |
+| `gemini-2.5-*` | 404 for new keys |
+
+Free → Tier 1 is billing linked in AI Studio (not Cloud Console) and takes
+effect immediately. At the measured 6394 input tokens a grounding call, Pro
+costs about $0.031 a call, $0.37 a run, $11 for all thirty released questions.
+
+Two things differ from Claude and are handled in code, not by you:
+
+- **`coord_space` is not taken on trust.** Gemini emits 0-1000 normalised
+  boxes; `gemini-3.1-pro-preview` sometimes declares them `"pixels"`. Read as
+  declared, the box lands on bare wall. `settle_coord_space` corrects it in
+  `ground()`. See TASK 40.
+- **`XIAO_HEI_GEMINI_MAX_TOKENS`** (default 8192) caps output *including*
+  thinking, which the 3.x models spend without being asked — 676 tokens of
+  thinking against 251 of answer on one Pro call. Truncation now raises
+  instead of arriving as "unparseable reply".
 
 ### One destination only
 
@@ -406,6 +446,9 @@ the ground-truth answer, measuring 10.46 m against a true 10.22 m.
 |---|---|---|
 | `ssh: connect ... timed out` | `xiaohei1`'s public IP changes on **every** instance restart | update `HostName` in `~/.ssh/config` |
 | `ModuleNotFoundError: No module named 'anthropic'` | missing `--with anthropic` | see above |
+| `ModuleNotFoundError: No module named 'google'` | missing `--with google-genai` | see "Driving on Gemini" |
+| `RuntimeError: Cannot send a request, as the client has been closed` | fixed in TASK 40 — the genai client was a temporary | update the branch |
+| gemini 429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier` | Pro on the free tier, whose daily quota is zero | link billing in AI Studio, or use `gemini-3.6-flash` |
 | `anthropic.AuthenticationError` | the `eval` line was not run in this shell | see above |
 | preflight reports `rival_waypoint_publishers` | `xiao_hei_ai_module` is up | `ssh xiaohei1 'docker stop xiao_hei_ai_module'` |
 | preflight reports nothing on `/joy` | the local planner discards every waypoint silently | the sim did not fully start; check `docker exec iros2026_system cat /tmp/sim.log` |
