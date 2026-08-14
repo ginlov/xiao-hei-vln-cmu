@@ -15,6 +15,17 @@ def _cube(center, half=0.25, n=30, seed=0):
     return c + rng.uniform(-half, half, size=(n, 3))
 
 
+def _slab(center, half_xyz, n=60, seed=0):
+    """n points inside an axis-aligned box with per-axis half-extents.
+
+    A thin z half-extent makes a "flat" box (carpet/rug), which the merge gate
+    scores with 2D footprint IoU instead of the volumetric 3D IoU."""
+    rng = np.random.default_rng(seed)
+    c = np.asarray(center, float)
+    h = np.asarray(half_xyz, float)
+    return c + rng.uniform(-h, h, size=(n, 3))
+
+
 # ── fusion behaviour ──────────────────────────────────────────────────────────
 
 def test_second_view_of_one_object_does_not_grow_the_box():
@@ -28,7 +39,7 @@ def test_second_view_of_one_object_does_not_grow_the_box():
     """
     om = ObjectMap()
     om.add("chair", 0.8, _cube([0.0, 0.0, 0.0], half=0.25, seed=1))
-    # second view, center 0.25 away (< MERGE_DIST) → merges.
+    # second view, center 0.25 away → boxes overlap (gap 0) → merges.
     om.add("chair", 0.9, _cube([0.25, 0.0, 0.0], half=0.25, seed=2))
     nodes = om.to_list()
     assert len(nodes) == 1                       # fused, not duplicated
@@ -41,6 +52,44 @@ def test_second_view_of_one_object_does_not_grow_the_box():
     # ...and the box sits between the two views rather than spanning both.
     mid_x = (node["bbox_aabb"]["min"][0] + node["bbox_aabb"]["max"][0]) / 2
     assert 0.0 < mid_x < 0.25
+
+
+def test_iou_2d_ignores_z_where_iou_3d_collapses():
+    """A carpet box is ~0 m thick, so volumetric IoU is 0 even for two fully
+    overlapping footprints; the 2D fallback recovers the real overlap."""
+    from xiao_hei_vln.perception.object_map import iou_2d, iou_3d
+    amin, amax = np.array([0.0, 0.0, 0.04]), np.array([2.0, 1.0, 0.04])
+    bmin, bmax = np.array([1.0, 0.0, 0.04]), np.array([3.0, 1.0, 0.04])
+    assert iou_3d(amin, amax, bmin, bmax) == 0.0          # zero thickness -> 0
+    assert iou_2d(amin, amax, bmin, bmax) > 0.3           # footprints overlap
+
+
+def test_flat_fragments_touching_merge_at_add():
+    """The carpet case: two flat fragments whose footprints touch (surface gap
+    ~0) fuse on the way in, where the old fixed centre-distance gate left them
+    apart because their offset centroids sat >0.4 m apart."""
+    om = ObjectMap()
+    om.add("carpet", 0.8, _slab([-0.5, 0.0, 0.04], [0.5, 0.7, 0.01], seed=1))
+    om.add("carpet", 0.7, _slab([0.5, 0.0, 0.04], [0.5, 0.7, 0.01], seed=2))
+    assert len(om.nodes) == 1                             # merged, not two nodes
+
+
+def test_size_scaled_gap_merges_small_fragment_into_large_flat_node():
+    """A small fragment 0.1 m off a large carpet merges — the tolerance scales
+    with the LARGER footprint, so a big object can absorb a nearby sliver."""
+    om = ObjectMap()
+    om.add("carpet", 0.9, _slab([0.0, 0.0, 0.04], [1.0, 0.7, 0.01], seed=1))
+    om.add("carpet", 0.6, _slab([1.2, 0.0, 0.04], [0.1, 0.1, 0.01], seed=2))
+    assert len(om.nodes) == 1
+
+
+def test_size_scaled_gap_keeps_small_same_label_neighbours_apart():
+    """Two small same-label objects with a real gap (two pillows side by side)
+    stay separate — the tolerance is a fraction of their small footprint."""
+    om = ObjectMap()
+    om.add("pillow", 0.9, _slab([0.0, 0.0, 0.1], [0.15, 0.15, 0.15], seed=1))
+    om.add("pillow", 0.8, _slab([0.5, 0.0, 0.1], [0.15, 0.15, 0.15], seed=2))
+    assert len(om.nodes) == 2
 
 
 def test_different_labels_do_not_merge():
@@ -144,15 +193,15 @@ def test_sync_keeps_object_id_stable_across_ticks():
 # Same-label gap/distance suppression (NMS_DIST / NMS_GAP)
 # ---------------------------------------------------------------------------
 #
-# These pass `merge_dist` small to isolate the finalize-time rule. With the
-# production MERGE_DIST (0.4, equal to NMS_DIST) `add` would already have
-# merged these pairs on the way in — the rule only earns its keep on nodes
-# whose centres DRIFT inside the radius after creation, which cannot be
+# These pass `merge_gap_frac=0.0` to isolate the finalize-time rule: with the
+# gap gate off, only exactly-overlapping boxes merge at add() (these pairs have
+# a positive surface gap, so they don't). The finalize rule only earns its keep
+# on nodes whose surfaces DRIFT together after creation, which cannot be
 # constructed in a couple of calls.
 
 
 def _pair(label_a, label_b, sep, **kw):
-    om = ObjectMap(merge_dist=0.05, **kw)          # no merging at add() time
+    om = ObjectMap(merge_gap_frac=0.0, **kw)       # no merging at add() time
     om.add(label_a, 0.9, _cube([0.0, 0.0, 0.0], half=0.08, n=60))
     om.add(label_b, 0.7, _cube([sep, 0.0, 0.0], half=0.08, n=40, seed=1))
     return om

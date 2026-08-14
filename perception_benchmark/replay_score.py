@@ -286,7 +286,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.6)
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     # Default: score every class in the query vocab (incl. wall/floor/ceiling),
     # matching what the detector is asked to find. --scoreable-only restores the

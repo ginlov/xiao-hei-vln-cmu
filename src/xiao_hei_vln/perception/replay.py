@@ -183,7 +183,7 @@ def run_detect(
     *,
     base_url: str,
     classes: tuple[str, ...],
-    score_threshold: float = 0.25,
+    score_threshold: float = 0.6,
     iou_threshold: float = 0.5,
     limit: int | None = None,
     min_move_m: float = 0.0,

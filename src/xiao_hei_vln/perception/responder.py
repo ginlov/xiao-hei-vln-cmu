@@ -53,9 +53,14 @@ log = logging.getLogger(__name__)
 # tail is mostly labels that never fire confidently at all — `photo` lands
 # below 0.35 in 98% of its detections. Swept offline over 3 recorded scenes,
 # 0.35 cut the object count by a third and the counting error by 26% while
-# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325). Raising it further
-# trades recall for precision, which needs end-to-end scoring to judge.
-DEFAULT_SCORE_THRESHOLD = 0.35
+# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325).
+#
+# Raised to 0.6: the higher floor also keeps low-confidence fragments out of the
+# sidecar's face-seam merge (a 0.9 detection could otherwise be unioned with a
+# 0.3 fragment, contaminating its mask), and on arabic_room it cut carpet nodes
+# 27 -> 13 and total nodes 199 -> 50. This trades recall for precision on
+# small/faint objects; watch end-to-end recall.
+DEFAULT_SCORE_THRESHOLD = 0.6
 DEFAULT_IOU_THRESHOLD = 0.5
 
 

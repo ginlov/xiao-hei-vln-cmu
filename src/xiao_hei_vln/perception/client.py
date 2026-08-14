@@ -133,7 +133,7 @@ class HTTPPerceptionClient:
         image_bgr: np.ndarray,
         *,
         classes: tuple[str, ...] | None = None,
-        score_threshold: float = 0.25,
+        score_threshold: float = 0.6,
         iou_threshold: float = 0.5,
     ) -> list[Detection]:
         """JPEG-encode and POST the image, parse the response, decode

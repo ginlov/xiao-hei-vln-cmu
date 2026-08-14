@@ -60,6 +60,27 @@ def project_to_equirect(pts_map, pos, ori):
     return u, v, in_fov, dist
 
 
+def _gt_world_aabb(e):
+    """World-axis-aligned min/max of a GT object's floor footprint, WITH heading.
+
+    ``e.size`` is expressed in the object's own frame; ``e.heading`` rotates it
+    into the world. Ignoring the rotation (center ± size/2) draws a box that is
+    mis-oriented whenever heading isn't a multiple of 90° aligned with the size
+    axes — e.g. arabic_room's carpets carry a -90° heading, so their long axis
+    (size.x) actually runs along world y. We rotate the four footprint corners
+    and take their world AABB, which is what the viewer/video consume. z is not
+    rotated (floor objects), so it stays center ± size.z/2.
+    """
+    hx, hy = e.size.x / 2.0, e.size.y / 2.0
+    c, s = np.cos(e.heading), np.sin(e.heading)
+    corners = np.array([[hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy]])
+    rot = corners @ np.array([[c, s], [-s, c]])          # local -> world (Rz)
+    world = rot + [e.center.x, e.center.y]
+    lo, hi = world.min(0), world.max(0)
+    zc, zh = e.center.z, e.size.z / 2.0
+    return [float(lo[0]), float(lo[1]), zc - zh], [float(hi[0]), float(hi[1]), zc + zh]
+
+
 def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
                scan_keyframes=DEFAULT_MAX_KEYFRAMES, scan_voxel_m=DEFAULT_VOXEL_M,
                use_frozen=True, image_lag_s=0.0,
@@ -73,11 +94,12 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
     objs = load_objects(scene)
     keep = {i: e for i, e in objs.items() if scoreable(e.label)}
     classes = tuple(sorted({e.label for e in keep.values()}))
-    gt = [{"id": i, "label": e.label,
-           "center": [e.center.x, e.center.y, e.center.z],
-           "bmin": [e.center.x - e.size.x/2, e.center.y - e.size.y/2, e.center.z - e.size.z/2],
-           "bmax": [e.center.x + e.size.x/2, e.center.y + e.size.y/2, e.center.z + e.size.z/2]}
-          for i, e in keep.items()]
+    gt = []
+    for i, e in keep.items():
+        bmin, bmax = _gt_world_aabb(e)
+        gt.append({"id": i, "label": e.label,
+                   "center": [e.center.x, e.center.y, e.center.z],
+                   "bmin": bmin, "bmax": bmax})
 
     # Skip the sidecar when every frame already has frozen masks — otherwise
     # wait_until_ready() blocks on a service this run never calls.
@@ -232,7 +254,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", "http://localhost:8001"))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.6)
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     ap.add_argument("--no-accumulate", dest="accumulate", action="store_false")
     ap.set_defaults(accumulate=True)

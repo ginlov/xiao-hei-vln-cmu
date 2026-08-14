@@ -165,7 +165,7 @@ def main() -> int:
     ap.add_argument("--scene", required=True)
     ap.add_argument("--vp", type=int, default=None, help="single viewpoint id (default: all)")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", "http://localhost:8001"))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.6)
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     ap.add_argument("--no-accumulate", dest="accumulate", action="store_false")
     ap.set_defaults(accumulate=True)

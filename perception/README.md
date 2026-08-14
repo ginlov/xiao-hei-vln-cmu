@@ -65,7 +65,7 @@ curl -sX POST http://localhost:8001/reload_classes \
 curl -sX POST http://localhost:8001/detect \
   -F image=@/path/to/any.jpg \
   -F classes=chair,table \
-  -F score_threshold=0.25
+  -F score_threshold=0.6
 # → {"detections": [], "inference_ms": 0.42, "schema_version": "1.0.0-skeleton"}
 ```
 
@@ -127,5 +127,5 @@ curl -sX POST http://localhost:8001/reload_classes \
 
 curl -sX POST http://localhost:8001/detect \
   -F image=@/tmp/empty.jpg \
-  -F score_threshold=0.25
+  -F score_threshold=0.6
 ```

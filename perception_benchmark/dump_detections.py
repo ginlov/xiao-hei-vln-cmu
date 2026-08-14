@@ -83,7 +83,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", "http://localhost:8001"))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.6)
     # Default: query ALL classes (incl. wall/floor/ceiling) so the open-vocab
     # prompt keeps the context that in-wall objects like doors depend on. Pass
     # --scoreable-only to restore the old scoreable-only query (which collapses

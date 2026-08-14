@@ -68,6 +68,10 @@ Every row below links to a distinct document.
 | 26 | [Scan-accumulator keyframe sweep & side-by-side dump comparison](TASK%2026%20-%20Scan-accumulator%20keyframe%20sweep%20and%20side-by-side%20dump%20comparison.md) | Dumps, viewer & GIF tool done; scored sweep not run |
 | 27 | [Verifying the 2D-detection → 3D-lift angular convention](TASK%2027%20-%20Verifying%20the%202D-detection%20to%203D-lift%20angular%20convention.md) | Done — extrinsic bug fixed + image/pose timestamp-matched in LatestCache |
 | 28 | [Swap YOLO-World for OWLv2 & drop the tick to 1 Hz](TASK%2028%20-%20Swap%20YOLO-World%20for%20OWLv2%20and%20drop%20the%20tick%20to%201%20Hz.md) | OWLv2 measured & reverted (over-produced + too slow); kept 1 Hz + SAM-Large |
+| 29 | [Watching the carpet fragment, frame by frame](TASK%2029%20-%20Watching%20the%20carpet%20fragment,%20frame%20by%20frame.md) | Done — cross-frame fusion animator; seam-merge overlay left as follow-up |
+| 30 | [Raising the detection floor to 0.6 and gating the seam merge](TASK%2030%20-%20Raising%20the%20detection%20floor%20to%200.6%20and%20gating%20the%20seam%20merge.md) | Done — 0.6 default stack-wide, re-dumped; carpet 13→9; e2e re-score pending |
+| 31 | [GT footprints ignored heading, and a flat-object box finding](TASK%2031%20-%20GT%20footprints%20ignored%20heading,%20and%20a%20flat-object%20box%20finding.md) | Done — GT heading fixed in dump_debug; flat-object box fix proposed, not implemented |
+| 32 | [A flat-aware, gap-based merge gate for ObjectMap](TASK%2032%20-%20A%20flat-aware,%20gap-based%20merge%20gate%20for%20ObjectMap.md) | Done — carpet 9→2 on arabic_room; multi-scene sweep pending |
 | 47 | [Periodic exploration snapshots instead of end-of-sweep only](TASK%2047%20-%20Periodic%20exploration%20snapshots%20instead%20of%20end-of-sweep%20only.md) | Done |
 | 48 | [Artefact paths keyed on scene and strategy](TASK%2048%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md) | Done |
 | 49 | [An eight-minute wall-clock cutoff for exploration](TASK%2049%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |

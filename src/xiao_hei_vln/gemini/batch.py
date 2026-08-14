@@ -267,11 +267,12 @@ def _verbatim_object_map() -> ObjectMap:
     The offline sources below are already one entry per object — VLA-3D
     ground truth, or a scene dump the live ObjectMap has *already* fused —
     so a second round of fusion could only lose objects the caller listed.
-    Merging is disabled with an unreachable IoU (>1) and a negative centre
-    distance; suppression with an unreachable NMS IoU and ``nms_dist=0``,
-    which :meth:`ObjectMap._suppresses` treats as "off".
+    Merging is disabled with an unreachable IoU (>1) and a negative gap
+    fraction (no non-negative surface gap can satisfy it); suppression with an
+    unreachable NMS IoU and ``nms_dist=0``, which
+    :meth:`ObjectMap._suppresses` treats as "off".
     """
-    return ObjectMap(merge_iou=2.0, merge_dist=-1.0, nms_iou=2.0,
+    return ObjectMap(merge_iou=2.0, merge_gap_frac=-1.0, nms_iou=2.0,
                      nms_dist=0.0, nms_gap=0.0)
 
 
