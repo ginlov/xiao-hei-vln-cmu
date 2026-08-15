@@ -71,6 +71,7 @@ Every row below links to a distinct document.
 | 40 | [Periodic exploration snapshots instead of end-of-sweep only](TASK%2040%20-%20Periodic%20exploration%20snapshots%20instead%20of%20end-of-sweep%20only.md) | Done |
 | 41 | [Artefact paths keyed on scene and strategy](TASK%2041%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md) | Done |
 | 42 | [An eight-minute wall-clock cutoff for exploration](TASK%2042%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |
+| 43 | [Why both explorers stall, and which one to keep](TASK%2043%20-%20Why%20both%20explorers%20stall,%20and%20which%20one%20to%20keep.md) | Frontier picked; 6 fixes landed + 13 tests — not yet re-run in sim |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
