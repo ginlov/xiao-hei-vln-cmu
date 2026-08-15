@@ -40,7 +40,10 @@ SIM_SH=/home/docker/autonomy_stack_mecanum_wheel_platform/system_simulation.sh
 ROS='source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'
 STOP_FILE=/tmp/stop_capture
 
-MAX_WAYPOINTS="${MAX_WAYPOINTS:-500}"
+# Effectively unlimited so the waypoint budget never ends a run (no
+# 'budget_exhausted'); the 8-min TIMEOUT is the real cap. Can't use 0 — that
+# disables exploration entirely in app/main.py.
+MAX_WAYPOINTS="${MAX_WAYPOINTS:-100000}"
 # Per scene, excluding sim boot. A ceiling, not a target: the explorer usually
 # ends first on its own (max_consecutive_skips), and this only truncates a run
 # that would otherwise overrun. At ~500 MB/min it also caps a scene at ~4.3 GB.
