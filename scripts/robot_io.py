@@ -60,6 +60,31 @@ TRACK_STEP_M = 0.10
 
 
 class Capture(Node):
+    """One frame of everything, with the pose taken *after* the image.
+
+    Each callback used to keep the first message it saw, independently. Pose
+    publishes at 100-200 Hz and `/camera/image` at ~9.3 Hz, so the pose landed
+    within milliseconds of subscribing and the image up to a full 107 ms camera
+    period later: the lift then mapped pixels through a pose from before the
+    frame was taken. Every bearing in the loop rides on that pairing.
+
+    PR #28 fixed the same defect on the perception side, where a 2 Hz responder
+    running while the vehicle drove measured up to 17° of azimuth error. This
+    loop is much less exposed — it captures after a drive returns, not during
+    one — and the residual against ground truth over 54 calls whose box is on
+    the right object is -0.11° ± 0.33, statistically indistinguishable from
+    zero. So this is hardening, not a repair.
+
+    A ring buffer keyed on `header.stamp` is what the perception side needed,
+    with several frames in flight. Here one frame is wanted and only the
+    ordering is wrong, so the fix is to discard any pose that arrived before
+    the image and keep the next one: the wait is then bounded by the *pose*
+    period, 5-10 ms, rather than the camera's. The scan is left alone —
+    `/registered_scan` arrives already in the map frame, so a stale one is
+    stale geometry rather than misregistered geometry, and `noDecayDis` gives
+    it a 1.75 m memory anyway.
+    """
+
     def __init__(self) -> None:
         super().__init__("loop_capture")
         self.img = self.scan = self.pose = self.terrain = None
@@ -79,6 +104,10 @@ class Capture(Node):
             with open(IMG, "wb") as f:
                 f.write(bytes(m.data))
             self.img = True
+            # Anything already held was sampled before this frame. Drop it and
+            # take the next one, which lands within a pose period. See the
+            # class docstring.
+            self.pose = None
 
     def _on_scan(self, m) -> None:
         if self.scan is not None:

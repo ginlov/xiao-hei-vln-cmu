@@ -48,14 +48,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
 from instruction_plan import GOTO  # noqa: E402
-from vlm_approach import (STANDOFF_M, _lift_xy, box_angular_size,  # noqa: E402
-                          crop_face, has_relation, in_blind_cone,
-                          next_waypoint, ray_from_box, resolve_relation)
+from vlm_approach import (STANDOFF_M, _lift_xy, aim_box,  # noqa: E402
+                          box_angular_size, crop_face, has_relation,
+                          in_blind_cone, next_waypoint, ray_from_box,
+                          resolve_relation)
 from vlm_locate import rot_from_quat, scan_to_camera  # noqa: E402
 from waypoint_converter_model import (WAYPOINT_XY_RADIUS,  # noqa: E402
                                       ConverterModel)
-from vlm_probe import (DEFAULT_PROMPT_VER, NAMES, ask_claude,  # noqa: E402
-                       ask_gemini, build_prompt, parse, to_pixels)
+from vlm_probe import (DEFAULT_GEMINI_MODEL, DEFAULT_PROMPT_VER,  # noqa: E402
+                       NAMES, ask_claude, ask_gemini, build_prompt, parse,
+                       settle_coord_space, to_pixels)
 from faces import faces_of  # noqa: E402
 
 BRIDGE = Path(__file__).resolve().parent / "robot_io.py"
@@ -142,6 +144,48 @@ MIN_VIEW_MOVE_M = WAYPOINT_XY_RADIUS + 0.2
 # that landing on a waypoint already visited counts, and well under the 1.4 m
 # hops the ring around an object is walked in. See the circling test.
 REVISIT_M = 0.5
+
+# How the "places already searched" block is written. `prose` is the original
+# and the exact rollback; `bearing` and `xy` are geometric; `off` removes the
+# block. Env so a sim run can be switched without editing anything, overridden
+# by `--visited`. See `Ctx.visited_for`.
+VISITED_STYLES = ("prose", "bearing", "xy", "off")
+VISITED_STYLE = os.environ.get("XIAO_HEI_VISITED", "prose")
+
+
+def says_far(reply: dict | None) -> bool:
+    """Does the model say the target still reads as part of the scene?
+
+    `target_state` is the one distance-ish field that is not a distance. The
+    prompt asks for it "judged only from how the target sits in the frame — how
+    much of the view it fills, whether the frame cuts it off, whether you can
+    make out surface detail", and forbids deriving it from the metre estimate.
+    That matters, because the metre estimate is the field that cannot be
+    trusted: `distance_m` has a median error of 2.80 m, worse than answering
+    with a constant. `far` only needs the model to get "small in the view"
+    right, and it is looking at the picture.
+
+    It is also the only signal here that is independent of the scanner, which
+    is what makes it worth having. On `runs/o_2_0814_02` all three legs stopped
+    at a binding the model put 2.8x, 3.0x and 3.6x further away — but on two of
+    them the scanner was right and `distance_m` was wrong (a 10° cone holds no
+    returns anywhere near the model's figure), so a rule built on the metres
+    would have vetoed two correct arrivals to catch one bad one. `target_state`
+    separates them exactly: those two read `approaching`, and the leg that
+    stopped 6.5 m short of a door behind glass read `far`.
+
+    Over the 38 recorded arrivals that carry a reply, 8 (21%) were declared on
+    a `far`, with the model putting the target 3.6-9.8 m away — including one
+    that arrived on a binding 9.79 m from the vehicle.
+    """
+    return bool(reply) and reply.get("target_state") == "far"
+
+
+def FACE_OF(heading_deg: float) -> str:
+    """Which of the four images a heading falls in, in the model's words."""
+    return ("front", "front-right", "right", "back-right", "back",
+            "back-left", "left", "front-left")[int(((heading_deg % 360) + 22.5)
+                                                   // 45) % 8]
 # Two departures within this angle of each other are the same door. Wide,
 # because the model's heading is a guess off a 90° face and the terrain then
 # moves it up to another 90°; anything tighter would call the same corridor a
@@ -870,7 +914,9 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
 def ground(faces: list[bytes], phrase: str, backend: str, model: str,
            prev: bytes | None, version: str,
            visited: list[str] | None = None,
-           mission: dict | None = None) -> tuple[dict | None, str]:
+           mission: dict | None = None, *,
+           visited_kind: str = "prose",
+           ask_here: bool = True) -> tuple[dict | None, str]:
     """The parsed reply and the text it came from.
 
     The raw text is returned because three runs died on "unparseable reply"
@@ -878,9 +924,16 @@ def ground(faces: list[bytes], phrase: str, backend: str, model: str,
     """
     fn = ask_claude if backend == "claude" else ask_gemini
     text = fn(build_prompt(phrase, approach=True, version=version,
-                           visited=visited, mission=mission),
+                           visited=visited, visited_kind=visited_kind,
+                           ask_here=ask_here, mission=mission),
               faces, model, previous=prev)
-    return parse(text), text
+    reply = parse(text)
+    # Before anything reads a box: the reply's own `coord_space` is not always
+    # true, and one wrong word here moves every waypoint. See
+    # `settle_coord_space`.
+    if reply is not None:
+        reply = settle_coord_space(reply, backend, G.FACE_SIZE)
+    return reply, text
 
 
 @dataclass
@@ -914,7 +967,17 @@ class Ctx:
     prompt_version: str = DEFAULT_PROMPT_VER
     standoff: float = STANDOFF_M
     dry_run: bool = False
-    visited: list[str] = field(default_factory=list)
+    # `{"xy": [x, y] | None, "text": str}` per place already searched. Both
+    # halves are kept because the style is a run-time choice: `prose` renders
+    # `text`, `bearing` and `xy` render the pose, and only one of them is in
+    # the prompt on any given run. See `visited_for`.
+    visited: list[dict] = field(default_factory=list)
+    # "prose" (the original), "bearing", "xy", or "off". See `visited_for`.
+    visited_style: str = VISITED_STYLE
+    # Stop asking the model for `here` at all. Only sane when nothing renders
+    # it: it is 19.7% of the reply's characters and the run's best diagnostic,
+    # so the styles that do not feed it back still ask for it by default.
+    drop_here: bool = False
     avoid: list[dict] = field(default_factory=list)
     # Departures already made, as (from, unit direction), across every leg.
     spent: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
@@ -946,6 +1009,9 @@ class Ctx:
     # the clauses still to drive. `deadline` is the question's; this one stops
     # an early leg from spending the budget the later ones need.
     leg_deadline: float | None = None
+    # The record `record()` is holding, unwritten, so that the verdict set on
+    # it after the step decides still reaches the log. See `record`.
+    _pending: dict | None = None
 
     def out_of_time(self) -> bool:
         return (self.deadline is not None and time.time() >= self.deadline) or \
@@ -960,8 +1026,133 @@ class Ctx:
         return float("inf") if self.deadline is None else self.deadline - time.time()
 
     def record(self, rec: dict) -> None:
-        self.log.write(json.dumps(rec, default=str) + "\n")
-        self.log.flush()
+        """Queue `rec` for the log; it is serialised when the next one arrives.
+
+        How a step ended — `arrived`, `stopped` — is set on `rec` *after* the
+        step has decided, which on the write-immediately version was after the
+        line had already been serialised. Every terminal verdict was therefore
+        missing from `steps.jsonl`, and a failed leg logged exactly like a
+        finished one: `runs/o_1_0814_02` holds seven complete-looking steps for
+        a leg `plan.json` reports as `boxed in`, with nothing in the log to say
+        so. Holding the object and serialising it late captures the mutations
+        that say how the step ended, at the cost of one step of durability —
+        the window is the microseconds between the verdict and the next call,
+        against a step that spends tens of seconds in the model and the drive.
+
+        Re-recording the same object is a no-op rather than a second line, so a
+        path that records twice on its way out cannot double-log a step.
+        """
+        if rec is not self._pending:
+            self.flush()
+            self._pending = rec
+
+    def flush(self) -> None:
+        """Serialise the held record, if any."""
+        if self._pending is not None:
+            self.log.write(json.dumps(self._pending, default=str) + "\n")
+            self.log.flush()
+            self._pending = None
+
+    def close(self) -> None:
+        self.flush()
+        self.log.close()
+
+    def note_settings(self) -> None:
+        """First line of the log: what this run was configured with.
+
+        Asked whether `runs/o_1_0814_04` was faster than the runs before it,
+        the only way to tell what it had been run with was whether `here`
+        appeared in the replies. Wall clock is meaningless without the
+        settings that produced it.
+        """
+        self.record({"step": "settings", "backend": self.backend,
+                     "model": self.model, "prompt_version": self.prompt_version,
+                     "visited_style": self.visited_style,
+                     "drop_here": self.drop_here, "standoff": self.standoff,
+                     "dry_run": self.dry_run,
+                     "max_tokens": os.environ.get("XIAO_HEI_CLAUDE_MAX_TOKENS"),
+                     "started": time.time()})
+
+    def prompt_visited_kind(self) -> str:
+        """Which `VISITED_BLOCKS` header frames what `visited_for` returned."""
+        return "prose" if self.visited_style == "off" else self.visited_style
+
+    def note_visit(self, xy, text: str) -> None:
+        """File a place already searched, with the pose it was written from."""
+        self.visited.append(
+            {"xy": None if xy is None else list(np.asarray(xy, float)[:2]),
+             "text": text})
+
+    def visited_for(self, pose: dict) -> list[str] | None:
+        """The "places already searched" list, written the way this run wants it.
+
+        `prose` is what the loop has always sent: the model's own `here`
+        clauses. It is the largest single field the model writes back (19.7% of
+        the reply) and, once a few steps in, the largest thing in the prompt
+        that prompt caching can never touch — it changes every call, so every
+        call pays for it twice.
+
+        Measured against a same-prompt control over 41 paired steps, the block
+        does reach the model: removing it moves the explore heading further
+        than re-rolling the identical prompt does, p = 0.016. What it does not
+        do is the thing it asks for. Its advantage on "prefer somewhere it has
+        not stood" is 0.06 m, and two samples of the same prompt differ by
+        0.06 m.
+
+        `bearing` is the hypothesis that the frame was the problem rather than
+        the content. The robot has stood in these places and we know exactly
+        where they are; the model cannot use `(2.31, -1.44)` because it has
+        never seen that frame, but it can use "4.2 m behind you" because that
+        names one of the four images in front of it. Headings therefore invert
+        the map yaw the same way `explore_goal` does, so a heading read out of
+        this block and handed back in `explore` means the same thing in both
+        directions — getting that sign wrong would tell the model to avoid the
+        one direction it should go.
+
+        `xy` sends the raw frame, as the control for that hypothesis. `off`
+        sends nothing.
+        """
+        if self.visited_style == "off" or not self.visited:
+            return None
+        # Tolerate a bare string. `note_visit` is meant to be the only writer,
+        # but it was not: `execute_plan.run_pass` kept appending `here` directly
+        # and the mismatch surfaced as `TypeError: string indices must be
+        # integers` inside a grounding call, which killed a whole question two
+        # legs in. A shape guard here is cheaper than that, whatever writes next.
+        visits = [v if isinstance(v, dict) else {"xy": None, "text": v}
+                  for v in self.visited]
+        if self.visited_style == "prose":
+            return [v["text"] for v in visits if v["text"]]
+
+        o = np.asarray(pose["position"], float)[:2]
+        yaw = yaw_of(pose)
+        out: list[str] = []
+        for v in visits:
+            if v["xy"] is None:
+                # A sentinel with no pose — the loop-return note. Keep the
+                # words; there is no geometry to replace them with.
+                out.append(v["text"])
+                continue
+            p = np.asarray(v["xy"], float)
+            d = float(np.linalg.norm(p - o))
+            if self.visited_style == "xy":
+                out.append(f"({p[0]:+.2f}, {p[1]:+.2f})")
+                continue
+            if d < REVISIT_M:
+                out.append("the robot is standing on this one now")
+                continue
+            # Inverse of `explore_goal`: it drives `yaw - heading`, so the
+            # heading that points at `p` is `yaw - atan2(dy, dx)`.
+            h = np.degrees(yaw - np.arctan2(p[1] - o[1], p[0] - o[0])) % 360.0
+            out.append(f"{d:.1f} m away at heading {h:.0f}° ({FACE_OF(h)})")
+        # Order-preserving unique, not just consecutive: the geometric
+        # renderings collapse to the same string far more often than prose did,
+        # and the collisions are not adjacent. Ten steps of `hm1_q2_v6` produce
+        # "the robot is standing on this one now" three times, spread through
+        # the list. Distinct places along one bearing survive — four entries at
+        # 333-336° and 4.5, 8.0, 9.3, 9.5 m are a trail, not a repetition.
+        seen: set[str] = set()
+        return [x for x in out if not (x in seen or seen.add(x))]
 
     def mission_for(self, k: int) -> dict | None:
         # Only this step's sightings. A lead for step 5 shown on step 2 is
@@ -1065,8 +1256,28 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         np.save(ctx.out / f"step{step}_terrain.npy", terrain)
         np.save(ctx.out / f"step{step}_scan.npy", scan)
 
-        reply, raw = ground(faces, phrase, ctx.backend, ctx.model, prev_crop,
-                            ctx.prompt_version, ctx.visited, ctx.mission_for(k))
+        # A grounding call is the one place in the loop that reaches outside the
+        # process, and until now it was also the one place that could take the
+        # whole question down. On `runs/hb_1_0814_01` a `TypeError` raised
+        # while *building* the prompt propagated out of `execute`, past the two
+        # legs that had already run, and past the third that had not — the
+        # process died with the log half written and nothing scored. The score
+        # is per-constraint with partial credit, so no single call is worth the
+        # rest of the question: one failed leg, and the executor drives on.
+        try:
+            reply, raw = ground(faces, phrase, ctx.backend, ctx.model,
+                                prev_crop, ctx.prompt_version,
+                                ctx.visited_for(pose), ctx.mission_for(k),
+                                visited_kind=ctx.prompt_visited_kind(),
+                                ask_here=not ctx.drop_here)
+        except Exception as e:
+            print(f"[{step}] grounding call failed ({type(e).__name__}: {e}); "
+                  f"ending this leg")
+            ctx.record({"step": step, "clause": k, "phrase": phrase,
+                        "kind": GOTO, "pose": pose, "reply": None,
+                        "error": f"{type(e).__name__}: {e}"})
+            return Outcome(False, f"grounding call failed ({type(e).__name__})",
+                           None, prev_crop)
         ctx.calls += 1
         rec: dict = {"step": step, "clause": k, "phrase": phrase,
                      "kind": GOTO, "pose": pose, "reply": reply}
@@ -1118,7 +1329,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # qualify it. `CIRCLE_ARRIVE_M` is the platform's own floor around
             # furniture plus room for a lift error, which is what a genuine
             # ring is made of.
-            if d is not None and d <= CIRCLE_ARRIVE_M:
+            # The distance qualifies the shape but not the binding, and it
+            # cannot tell "walked round the target" from "walked
+            # round something the scanner mistook for it": on
+            # `runs/o_2_0814_02` leg 3 the binding sat 1.81 m away, well inside
+            # `CIRCLE_ARRIVE_M`, and was a glass partition with the door 6.5 m
+            # beyond it. The model said `far` on that step and on four of the
+            # five before it. Falling through here costs nothing — the next
+            # branch counts the return, and `MAX_LOOPS` ends the leg honestly
+            # rather than reporting an arrival that did not happen.
+            if d is not None and d <= CIRCLE_ARRIVE_M and not says_far(reply):
                 print(f"      back where it already stood — the ring around the "
                       f"target has been walked; {d:.2f} m is the floor here")
                 rec["arrived"] = f"circled back ({d:.2f} m)"
@@ -1150,10 +1370,12 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                   f"({loops}/{MAX_LOOPS}) — the way taken from here led nowhere "
                   f"new; discounting it and looking again")
             rec["looped"] = loops
-            ctx.visited.append(
-                "(the robot came back to this spot after leaving it — whatever "
-                "route it took from here revealed nothing new, so send it a "
-                "different way)")
+            # No pose: this note is about the route taken *from* here, not
+            # about the spot, so the geometric renderings keep the words.
+            ctx.note_visit(None,
+                           "(the robot came back to this spot after leaving it "
+                           "— whatever route it took from here revealed nothing "
+                           "new, so send it a different way)")
             if loops >= MAX_LOOPS:
                 print(f"      {loops} returns to the same ground with nothing "
                       f"bound — this leg is going in circles")
@@ -1171,11 +1393,15 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         noted = ctx.note_sightings(reply, k, scan, pose)
         if noted:
             rec["sightings"] = noted
+        # The pose goes in whether or not the model wrote a clause: under the
+        # geometric styles the clause is not asked for, and the place still has
+        # to be logged as searched.
         here_txt = (reply.get("here") or "").strip()
-        if here_txt:
-            ctx.visited.append(here_txt)
-            rec["here"] = here_txt
-            print(f'      here: "{here_txt[:96]}"')
+        if here_txt or ctx.visited_style in ("bearing", "xy"):
+            ctx.note_visit(o[:2], here_txt)
+            if here_txt:
+                rec["here"] = here_txt
+                print(f'      here: "{here_txt[:96]}"')
 
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
         # A corridor the instruction forbids is a gate, not two discs. Discs
@@ -1355,14 +1581,40 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         misses = 0
 
         i = int(reply["image_index"])
-        box = to_pixels(reply.get("feature_box_2d") or reply["box_2d"],
-                        reply.get("coord_space"), G.FACE_SIZE)
+        box, feat_why = aim_box(reply, G.FACE_SIZE, scan, pose)
+        if feat_why:
+            rec["feature_box"] = feat_why
+            print(f"      {feat_why}")
         # A comparative relation is decided by measuring the candidates, not by
         # whichever one the model nominated; `chosen` was resolved above.
         if chosen is not None:
             box, i, rel_why = chosen
             rec["relation"] = rel_why
             print(f"      relation resolved: {rel_why}")
+            # A winner chosen over some of the candidates is not the winner.
+            # On `japanese_room` step 2 the one candidate the lift refused was
+            # the answer — the model had placed it within 0.2° of the truth —
+            # and the comparison over the other three named a ceiling lantern
+            # 3.98 m away with a rationale that reads as authoritative.
+            # Demoted, not discarded: the survivors are still the best measured
+            # evidence, so the leg drives at one while it keeps looking, and
+            # only the licence to overrule a later binding is withdrawn.
+            if not chosen.complete:
+                rec["relation_partial"] = [
+                    {"az": a, "el": e, "what": n} for a, e, n in chosen.missed]
+                print(f"      ...over {len(chosen.missed)} fewer candidate(s) "
+                      f"than the model reported — treating the winner as "
+                      f"unverified")
+                # And the bearing is worth keeping: a candidate the scanner
+                # could not reach is usually behind the robot, which is a
+                # direction to turn rather than a thing to forget.
+                for a, e, n in chosen.missed:
+                    # A bearing, not a place — no pose to render it from.
+                    ctx.note_visit(None,
+                                   f"(a possible {n[:60]!r} was seen at bearing "
+                                   f"{a:+.0f}° but could not be measured from "
+                                   f"here — turning to face it would settle the "
+                                   f"comparison)")
         elif reply.get("relation"):
             print(f"      relation {reply['relation']!r} not measurable "
                   f"({len(reply.get('candidates') or [])} candidates, "
@@ -1409,7 +1661,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         was_bound = None if bound is None else bound["xy"].copy()
         committed, bound = bind_target(wp, o[:2], reply, bound, rec,
                                        verified=verified,
-                                       measured=chosen is not None,
+                                       # `measured` is the licence to overrule
+                                       # an earlier binding "at any distance",
+                                       # and a comparison missing a candidate
+                                       # has not earned it: the candidate it
+                                       # could not lift is exactly the one that
+                                       # might have won. Still bound, so the leg
+                                       # drives at the best evidence it has —
+                                       # demoted, not discarded.
+                                       measured=(chosen is not None
+                                                 and chosen.complete),
                                        pending=pending)
         # A new binding is a new destination, and the record of how near the
         # vehicle got to the old one says nothing about it. Leg 2 of
@@ -1434,7 +1695,11 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # object, and the stack would only snap the waypoint back out again.
         if committed and bound is not None:
             here = float(np.linalg.norm(bound["xy"] - o[:2]))
-            if here <= ctx.standoff:
+            # Standing inside the standoff of the *binding* is not standing at
+            # the target when the binding is a surface in front of it. Both
+            # `jr_0812_01` and `jr_0812_04` arrived here on a `far`, with the
+            # model putting the object 6.0 m and 7.5 m out.
+            if here <= ctx.standoff and not says_far(reply):
                 print(f"      already within {ctx.standoff} m — arrived")
                 rec["arrived"] = "within standoff"
                 ctx.record(rec)
@@ -1585,11 +1850,27 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # gain it made is against wherever it was steered, and the target was
         # never aimed at. Same flag the min_move rule uses, so the two cannot
         # disagree about what this step was for.
+        # "The converter has nothing closer" is a fact about the binding, and
+        # it is only a fact about the target while the two are the same thing.
+        # A scanner that stopped at a glass partition, a chair back or a desk
+        # edge produces a binding the vehicle really cannot improve on and
+        # really is not at. The model is looking at the picture and saying the
+        # thing still reads as part of the scene; that is worth more here than
+        # the converter's certainty, because the converter is certain about the
+        # wrong point. Driving on costs steps, which `leg_deadline` and
+        # `max_steps` already bound, and a leg that runs out having never
+        # arrived is a truthful `ok: false` rather than a false `ok: true`.
+        far = says_far(reply)
         may_stop = (committed or bound is not None) and not diverted
-        if gain is not None and gain < PROGRESS_M and (here > NEAR_M or not may_stop):
-            print(f"      not close enough to call this the floor "
-                  f"({here:.2f} m{'' if may_stop else ', nothing bound yet'}) "
+        if gain is not None and gain < PROGRESS_M and (here > NEAR_M or far
+                                                      or not may_stop):
+            why = ("the model still reads it as far" if far and here <= NEAR_M
+                   else f"{here:.2f} m"
+                        f"{'' if may_stop else ', nothing bound yet'}")
+            print(f"      not close enough to call this the floor ({why}) "
                   f"— driving to look")
+            if far:
+                rec["far_veto"] = "target_state=far, not treating this as arrival"
         elif gain is not None and gain < PROGRESS_M:
             ctx.record(rec)
             if committed:
@@ -1659,6 +1940,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                           f"in, not arrived")
                     return Outcome(False, "boxed in (stack would not move us)",
                                    None, prev_crop)
+                if far:
+                    # Same reasoning as the predicted stop above: the stack
+                    # refusing to move is the platform's floor around the
+                    # binding, and the binding is what is in doubt.
+                    print(f"      stack will not move (moved {moved:.2f} m) but "
+                          f"the model still reads it as far — not arrived")
+                    rec["far_veto"] = ("target_state=far, stack clamp not "
+                                       "treated as arrival")
+                    return Outcome(False, "stack clamped short of a far target",
+                                   None, prev_crop)
                 print(f"      stack will not close the last {gap:.2f} m "
                       f"(moved {moved:.2f} m) — as near as it allows")
                 arrived, bound_xy = True, aim
@@ -1688,8 +1979,10 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         eq, scan, terrain, pose = ctx.robot.capture()
         try:
             got, _ = ground(faces_of(eq), phrase, ctx.backend, ctx.model,
-                            prev_crop, ctx.prompt_version, ctx.visited,
-                            ctx.mission_for(k))
+                            prev_crop, ctx.prompt_version,
+                            ctx.visited_for(pose), ctx.mission_for(k),
+                            visited_kind=ctx.prompt_visited_kind(),
+                            ask_here=not ctx.drop_here)
             ctx.calls += 1
         except Exception as e:
             # Advisory only. Losing it must not turn a completed run into a
@@ -1721,13 +2014,21 @@ def main() -> int:
     ap.add_argument("--prompt-version", default=DEFAULT_PROMPT_VER,
                     help="v3-occlusion-distance to reproduce TASK 26/28")
     ap.add_argument("--standoff", type=float, default=STANDOFF_M)
+    ap.add_argument("--visited", choices=VISITED_STYLES, default=VISITED_STYLE,
+                    help="how 'places already searched' is written: prose (the "
+                         "original, and the rollback), bearing, xy, or off. "
+                         "Env XIAO_HEI_VISITED sets the default.")
+    ap.add_argument("--drop-here", action="store_true",
+                    help="stop asking the model for 'here' — 19.7%% of the "
+                         "reply, and the run's best diagnostic. Only sane with "
+                         "--visited bearing/xy/off.")
     ap.add_argument("--out", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="ground and compute waypoints, publish nothing")
     args = ap.parse_args()
 
     model = args.model or ("claude-opus-5" if args.backend == "claude"
-                           else "gemini-2.5-flash")
+                           else DEFAULT_GEMINI_MODEL)
     out = Path(args.out or f"runs/{time.strftime('%m%d_%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
     log = (out / "steps.jsonl").open("w")
@@ -1742,9 +2043,13 @@ def main() -> int:
     print(f"\ntarget: {args.phrase!r}   model={model}   out={out}\n")
     ctx = Ctx(robot=robot, out=out, log=log, backend=args.backend, model=model,
               prompt_version=args.prompt_version, standoff=args.standoff,
+              visited_style=args.visited, drop_here=args.drop_here,
               dry_run=args.dry_run)
+    print(f"visited style: {ctx.visited_style}"
+          f"{'  (here not requested)' if ctx.drop_here else ''}")
+    ctx.note_settings()
     res = run_goto(ctx, args.phrase, max_steps=args.max_steps, confirm=True)
-    log.close()
+    ctx.close()
     print(f"\n{'ARRIVED' if res.arrived else 'did not arrive'} ({res.why}) in "
           f"{ctx.calls} calls (${ctx.calls * COST_PER_CALL:.2f})   "
           f"log: {out}/steps.jsonl")

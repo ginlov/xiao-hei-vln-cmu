@@ -56,7 +56,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "perception"))
 import geometry as G  # noqa: E402
 from approach_loop import (COST_PER_CALL, CTR, DEFAULT_HOST,  # noqa: E402
                            KEEPOUT_M, MIN_VIEW_MOVE_M, PROGRESS_M,
-                           REVISIT_M, USE_KEEPOUT,
+                           REVISIT_M, USE_KEEPOUT, VISITED_STYLE,
+                           VISITED_STYLES,
                            Ctx, Outcome, Robot,
                            bind_constraints, crosses, explore_direction,
                            explore_goal, gates_from, ground, run_goto,
@@ -65,7 +66,8 @@ from decompose import decompose  # noqa: E402
 from instruction_plan import GOTO, PASS, Clause, keepouts, steps  # noqa: E402
 from vlm_approach import STANDOFF_M, _lift_xy  # noqa: E402
 from vlm_locate import scan_to_camera  # noqa: E402
-from vlm_probe import DEFAULT_PROMPT_VER, to_pixels  # noqa: E402
+from vlm_probe import (DEFAULT_GEMINI_MODEL, DEFAULT_PROMPT_VER,  # noqa: E402
+                       to_pixels)
 from waypoint_converter_model import ConverterModel  # noqa: E402
 from faces import faces_of  # noqa: E402
 
@@ -347,8 +349,21 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
         np.save(ctx.out / f"step{step}_terrain.npy", terrain)
         np.save(ctx.out / f"step{step}_scan.npy", scan)
 
-        reply, raw = ground(faces, phrase, ctx.backend, ctx.model, None,
-                            ctx.prompt_version, ctx.visited, ctx.mission_for(k))
+        # Same reasoning as `run_goto`: no single call is worth the rest of the
+        # question. See there.
+        try:
+            reply, raw = ground(faces, phrase, ctx.backend, ctx.model, None,
+                                ctx.prompt_version, ctx.visited_for(pose),
+                                ctx.mission_for(k),
+                                visited_kind=ctx.prompt_visited_kind(),
+                                ask_here=not ctx.drop_here)
+        except Exception as e:
+            print(f"[{step}] grounding call failed ({type(e).__name__}: {e}); "
+                  f"ending this leg")
+            ctx.record({"step": step, "clause": k, "phrase": phrase,
+                        "kind": PASS, "pose": pose, "reply": None,
+                        "error": f"{type(e).__name__}: {e}"})
+            return Outcome(False, f"grounding call failed ({type(e).__name__})")
         ctx.calls += 1
         o = np.asarray(pose["position"], float)
         rec: dict = {"step": step, "clause": k, "phrase": phrase, "kind": PASS,
@@ -364,9 +379,10 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
         if noted:
             rec["sightings"] = noted
         here_txt = (reply.get("here") or "").strip()
-        if here_txt:
-            ctx.visited.append(here_txt)
-            rec["here"] = here_txt
+        if here_txt or ctx.visited_style in ("bearing", "xy"):
+            ctx.note_visit(o[:2], here_txt)
+            if here_txt:
+                rec["here"] = here_txt
         ctx.avoid = bind_constraints(reply, scan, pose, ctx.avoid)
         # A corridor the instruction forbids is a gate, not two discs. Discs
         # big enough to close it close the room as well — see `ConverterModel`.
@@ -633,6 +649,14 @@ def main() -> int:
                     help="seconds for the whole question (README allows 600)")
     ap.add_argument("--prompt-version", default=DEFAULT_PROMPT_VER)
     ap.add_argument("--standoff", type=float, default=STANDOFF_M)
+    ap.add_argument("--visited", choices=VISITED_STYLES, default=VISITED_STYLE,
+                    help="how 'places already searched' is written: prose (the "
+                         "original, and the rollback), bearing, xy, or off. "
+                         "Env XIAO_HEI_VISITED sets the default.")
+    ap.add_argument("--drop-here", action="store_true",
+                    help="stop asking the model for 'here' — 19.7%% of the "
+                         "reply, and the run's best diagnostic. Only sane with "
+                         "--visited bearing/xy/off.")
     ap.add_argument("--out", default=None)
     ap.add_argument("--plan-only", action="store_true",
                     help="decompose and print the plan; touch no robot")
@@ -641,7 +665,7 @@ def main() -> int:
     args = ap.parse_args()
 
     model = args.model or ("claude-opus-5" if args.backend == "claude"
-                           else "gemini-2.5-flash")
+                           else DEFAULT_GEMINI_MODEL)
     cache_p = Path("artifacts/decompose_cache.json")
     cache = json.loads(cache_p.read_text()) if cache_p.is_file() else {}
     plan, from_model = decompose(args.question, cache=cache)
@@ -666,11 +690,15 @@ def main() -> int:
 
     ctx = Ctx(robot=robot, out=out, log=log, backend=args.backend, model=model,
               prompt_version=args.prompt_version, standoff=args.standoff,
+              visited_style=args.visited, drop_here=args.drop_here,
               dry_run=args.dry_run, deadline=time.time() + args.budget)
+    print(f"visited style: {ctx.visited_style}"
+          f"{'  (here not requested)' if ctx.drop_here else ''}")
+    ctx.note_settings()
     t0 = time.time()
     results = execute(ctx, args.question, plan, goto_steps=args.goto_steps)
     ctx.leg_deadline = None
-    log.close()
+    ctx.close()
 
     done = sum(r["ok"] for r in results)
     print(f"\n{'=' * 72}")

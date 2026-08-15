@@ -204,12 +204,101 @@ spending ten minutes of sim time on it.
 | `--budget` | 540 | seconds for the **whole question**; README allows 600 |
 | `--goto-steps` | 20 | safety cap on grounding calls per destination — the real governor is the leg's share of `--budget` |
 | `--model` | `claude-opus-5` | any vision model: `claude-sonnet-5`, `claude-fable-5`, `claude-haiku-4-5-20251001` |
-| `--backend` | `claude` | `gemini` reads `XIAO_HEI_GEMINI_API_KEY` (or `GEMINI_API_KEY`) from the environment; default model `gemini-2.5-flash` |
+| `--backend` | `claude` | `gemini` reads `XIAO_HEI_GEMINI_API_KEY` (or `GEMINI_API_KEY`); default model `gemini-3.6-flash`. See below — it needs its own `--with` |
 | `--prompt-version` | `v6-way-out` | `v5-constraints` is the version the cached replies and the offline scripts are keyed to |
+| `--visited` | `prose` | how "places already searched" is written — see below |
+| `--drop-here` | — | stop asking the model for `here` at all |
 | `--host` | — | omit to run inside the container instead of over ssh |
+
+### `--visited` — what the robot is told about where it has been
+
+Both flags exist on `approach_loop.py` too, and `XIAO_HEI_VISITED` sets the
+default for either, so a sim run can be switched without editing anything.
+
+| value | the block reads | block size, 18-visit run |
+|---|---|---|
+| `prose` | the model's own `here` clauses (**the original; rollback**) | 5471 chars |
+| `bearing` | `5.6 m away at heading 211° (back-left)` | 600 chars |
+| `xy` | `(+2.31, -1.44)` — raw map frame | 238 chars |
+| `off` | no block at all | 0 |
+
+`--visited prose` renders a **byte-identical** prompt to the code before the
+flag existed, verified against `git show HEAD` for the bare, `+visited` and
+`+visited +mission` shapes. It is the rollback; nothing else needs reverting.
+
+On that run the whole prompt goes 4167 → 2859 tokens under `bearing`, and all
+1308 of them come off the part prompt caching can never reach, because the
+visit log changes every call. `--drop-here` takes another ~100 input tokens
+and ~65 output tokens per call, at the cost of the run's best diagnostic — the
+one-clause description of where the robot was standing, which is what makes a
+`steps.jsonl` readable afterwards. Leave it off unless the run is being scored
+on time.
+
+Why bearings rather than the coordinates themselves: the model reasons over the
+four face images and has never seen the map frame, so `(2.31, -1.44)` names
+nothing it can act on, while "4.2 m at heading 211°" names one of the pictures
+in front of it. `xy` is kept as the control that tests whether that is true.
+Headings invert map yaw exactly as `explore_goal` does, so a heading read out
+of this block means the same thing as one handed back in `explore`.
+
+What is known so far, from 123 paired API calls over 41 recorded steps
+(TASK 45): the block does reach the model — removing it moves the explore
+heading further than re-rolling the identical prompt does, sign test p = 0.016
+— but on its own stated goal, keeping away from places already stood, its
+advantage is 0.06 m and two samples of the *same* prompt differ by 0.06 m.
+Which style is better has not been driven. That is what these flags are for.
 
 `--model` does **not** reach the decomposition step, which always uses
 `claude-opus-5` — one cached call per question, 3.3 s, 30/30 on drive order.
+
+**`XIAO_HEI_CLAUDE_MAX_TOKENS`** (default 16000) caps the grounding reply
+*including* thinking, which `claude-opus-5` does unless it is switched off —
+so a call can spend the whole budget before it writes a brace. It was 4096,
+which stopped being enough; truncation raises rather than arriving as
+"unparseable reply". Going much higher is not free: the SDK's non-streaming
+requests hit an HTTP timeout well below the model's 128000 ceiling.
+
+### Driving on Gemini
+
+```bash
+eval "$(grep -E '^[[:space:]]*export (ANTHROPIC|XIAO_HEI_GEMINI)_API_KEY=' ~/.zshrc)"
+
+uv run --with anthropic --with google-genai python scripts/execute_plan.py \
+  "<question>" --backend gemini --model gemini-3.1-pro-preview \
+  --host xiaohei1 --out runs/x
+```
+
+**Both** `--with` flags: decomposition always calls Claude whatever `--backend`
+says, so dropping `--with anthropic` fails before the first Gemini call.
+
+Which models are callable is a property of the key's billing tier, not of the
+catalogue — `models.list` still advertises `gemini-2.5-flash`, which answers
+404 "no longer available to new users". Probed on a Tier 1 key:
+
+| model | note |
+|---|---|
+| `gemini-3.6-flash` | the default; pinned, thinks unasked |
+| `gemini-3.1-pro-preview` | frontier tier; **Free tier gives it a daily quota of zero**, so this one needs billing |
+| `gemini-3.1-flash-lite` | no thinking, ~2.7 s a call against ~12 s for Pro |
+| `gemini-flash-latest` | resolves to `gemini-3.6-flash` **today** — never use it for an A/B |
+| `gemini-2.5-*` | 404 for new keys |
+
+Free → Tier 1 is billing linked in AI Studio (not Cloud Console) and takes
+effect immediately. At the measured 6394 input tokens a grounding call, Pro
+costs about $0.031 a call, $0.37 a run, $11 for all thirty released questions.
+
+Two things are handled in code, not by you:
+
+- **`coord_space` is not taken on trust.** Gemini emits 0-1000 normalised
+  boxes; `gemini-3.1-pro-preview` sometimes declares them `"pixels"`. Read as
+  declared, the box lands on bare wall. `settle_coord_space` corrects it in
+  `ground()`. See TASK 40.
+- **`XIAO_HEI_GEMINI_MAX_TOKENS`** (default 8192) caps output *including*
+  thinking, which the 3.x models spend without being asked — 676 tokens of
+  thinking against 251 of answer on one Pro call. Truncation now raises
+  instead of arriving as "unparseable reply". No longer a difference from
+  Claude: `claude-opus-5` thinks by default too, and has the same knob under
+  `XIAO_HEI_CLAUDE_MAX_TOKENS`.
 
 ### One destination only
 
@@ -406,6 +495,9 @@ the ground-truth answer, measuring 10.46 m against a true 10.22 m.
 |---|---|---|
 | `ssh: connect ... timed out` | `xiaohei1`'s public IP changes on **every** instance restart | update `HostName` in `~/.ssh/config` |
 | `ModuleNotFoundError: No module named 'anthropic'` | missing `--with anthropic` | see above |
+| `ModuleNotFoundError: No module named 'google'` | missing `--with google-genai` | see "Driving on Gemini" |
+| `RuntimeError: Cannot send a request, as the client has been closed` | fixed in TASK 40 — the genai client was a temporary | update the branch |
+| gemini 429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier` | Pro on the free tier, whose daily quota is zero | link billing in AI Studio, or use `gemini-3.6-flash` |
 | `anthropic.AuthenticationError` | the `eval` line was not run in this shell | see above |
 | preflight reports `rival_waypoint_publishers` | `xiao_hei_ai_module` is up | `ssh xiaohei1 'docker stop xiao_hei_ai_module'` |
 | preflight reports nothing on `/joy` | the local planner discards every waypoint silently | the sim did not fully start; check `docker exec iros2026_system cat /tmp/sim.log` |
@@ -413,6 +505,7 @@ the ground-truth answer, measuring 10.46 m against a true 10.22 m.
 | no `/terrain_map`, robot never moves | Unity has no display | `xhost +local:` and `DISPLAY=:0`, then restart the scene |
 | GPU rendering dead after an EC2 restart | modeset grabs the Amazon VGA and unloads nvidia | already pinned in `xorg.conf`; if the DCV session is gone, `sudo systemctl restart dcv-autosession` |
 | `529 OverloadedError` | API under sustained load | `max_retries` is already 8; raise with `XIAO_HEI_API_MAX_RETRIES` |
+| `RuntimeError: reply hit max_tokens ... and is truncated` | the ceiling covers thinking as well as the answer, and `claude-opus-5` thinks by default | raise `XIAO_HEI_CLAUDE_MAX_TOKENS` (default 16000, was 4096) — or `XIAO_HEI_GEMINI_MAX_TOKENS` on `--backend gemini` |
 | robot wedged, moves 0.02 m and stops | it is against the obstacle inflation | `./scripts/sim.sh restart`; the converter model now predicts this before driving |
 | `sim.sh up` times out after 120 s | Unity failed to start | `ssh xiaohei1 'docker exec iros2026_system cat /tmp/sim.log'` |
 | on the box: `ModuleNotFoundError` after `setup` said "done" | the venv is fine but an import reaches further than the dep list | `on_host.sh check` names the missing module; add it to `cmd_setup` |

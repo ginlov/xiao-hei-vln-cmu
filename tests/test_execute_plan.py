@@ -7,6 +7,7 @@ and is exactly where a wrong answer is invisible in a log.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -14,6 +15,10 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+# Run artefacts are gitignored, so tests keyed to a recorded scan skip
+# rather than fail on a fresh checkout.
+RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            PROGRESS_M, REVISIT_M, closing,
@@ -28,9 +33,11 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
 from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
-from vlm_approach import has_relation  # noqa: E402
+from vlm_approach import (Resolved, has_relation,  # noqa: E402
+                          resolve_relation)
 from waypoint_converter_model import _seg_seg_dist  # noqa: E402
-from vlm_probe import build_prompt, parse  # noqa: E402
+from vlm_probe import (build_prompt, every_box, parse,  # noqa: E402
+                       settle_coord_space, to_pixels)
 from instruction_plan import (AVOID, GOTO, PASS, Clause,  # noqa: E402
                               keepouts, parse_instruction, steps)
 
@@ -1201,6 +1208,202 @@ class TestClosingIsNotCircling:
         rather than a clamp — so a leg cannot hold itself alive by twitching."""
         assert not closing(3.0 - PROGRESS_M / 2, 3.0)
         assert closing(3.0 - PROGRESS_M * 1.1, 3.0)
+
+
+class TestAPartialComparisonSaysSo:
+    """A comparison over some of the candidates is not a comparison.
+
+    `runs/jr_0812_01` step 2, *"the lantern closest to the fan decoration"*.
+    The model named four candidates, one of which is the answer — the black
+    floor lantern, which it placed at azimuth -174.6°, elevation -8.3° against
+    a ground truth of -174.8°, -7.8°. The anchor was right to 0.4°. But that
+    candidate sits directly behind the robot, 17.7° under the scanner's floor
+    there, so the lift refused it and `boxes()` dropped it without a word.
+    `len(cb) >= 2` held over the remaining three and the comparison returned a
+    ceiling lantern 3.98 m from the answer, with a rationale that reads as
+    authoritative.
+
+    Fewer than two candidates is not the only way this measurement goes wrong.
+    Fewer than all is the other, and it is the dangerous one because it still
+    produces a number.
+    """
+
+    # Verbatim from the run, so the fixture cannot drift from what happened.
+    POSE = {"position": [0.6302914023399353, 2.864065408706665,
+                         0.7505226135253906],
+            "orientation": [0.004008696335836828, -0.0003143171813312787,
+                            0.7525954506660403, 0.6584708947213812]}
+    REPLY = {
+        "relation": "closest_to", "coord_space": "pixels",
+        "anchors": [{"name": "fan decoration", "image_index": 2,
+                     "box_2d": [252, 303, 316, 366]}],
+        "candidates": [
+            {"image_index": 2, "box_2d": [336, 281, 382, 307],
+             "note": "black floor lantern beside the low stand"},   # the answer
+            {"image_index": 0, "box_2d": [352, 74, 396, 101],
+             "note": "left of two small lanterns on the ledge"},
+            {"image_index": 0, "box_2d": [352, 112, 396, 143],
+             "note": "right of two small lanterns on the ledge"},
+            {"image_index": 3, "box_2d": [30, 190, 132, 300],
+             "note": "large slat lantern hanging from the ceiling"}]}
+
+    def _resolved(self):
+        scan = np.load(RUNS / "jr_0812_01" / "step2_scan.npy")
+        return resolve_relation(dict(self.REPLY), scan, self.POSE, size=640)
+
+    @pytest.mark.skipif(not (RUNS / "jr_0812_01" / "step2_scan.npy").is_file(),
+                        reason="run artefacts not present")
+    def test_the_recorded_comparison_reports_itself_incomplete(self):
+        got = self._resolved()
+        assert got is not None
+        assert not got.complete
+        assert len(got.missed) == 1
+
+    @pytest.mark.skipif(not (RUNS / "jr_0812_01" / "step2_scan.npy").is_file(),
+                        reason="run artefacts not present")
+    def test_the_dropped_candidate_is_the_answer_and_keeps_its_bearing(self):
+        got = self._resolved()
+        az, el, note = got.missed[0]
+        assert "floor lantern" in note
+        # ground truth for lantern id61 from this pose: az -174.8, el -7.8
+        assert abs(az - (-174.8)) < 2.0
+        assert abs(el - (-7.8)) < 2.0
+
+    @pytest.mark.skipif(not (RUNS / "jr_0812_01" / "step2_scan.npy").is_file(),
+                        reason="run artefacts not present")
+    def test_the_reason_string_names_what_was_left_out(self):
+        """So a log reader is not misled the way this one was."""
+        assert "NOT compared" in self._resolved().why
+
+    def test_a_complete_comparison_still_reads_as_complete(self):
+        r = Resolved([1, 2, 3, 4], 0, "why")
+        assert r.complete and r.missed == []
+
+    @pytest.mark.skipif(not (RUNS / "ar_0812_03" / "step1_scan.npy").is_file(),
+                        reason="run artefacts not present")
+    def test_on_farthest_from_the_survivor_is_evidence_against_itself(self):
+        """A lift fails because the object is far, occluded, or under the
+        scanner's floor — so "the only candidate that lifted" is biased toward
+        the near ones, and `farthest_from` is the one question whose answer is
+        the far one.
+
+        `runs/ar_0812_03` leg 1, *"the potted plant furthest from the hookah"*:
+        one of two candidates lifted and it was the nearest plant of five, 8.59 m
+        from the answer. Binding it locked the leg out of the two committed
+        waypoints that followed, 0.37 m and 0.55 m from the truth.
+        """
+        rec = next(json.loads(l)
+                   for l in (RUNS / "ar_0812_03" / "steps.jsonl").open()
+                   if json.loads(l)["step"] == 1)
+        assert rec["reply"]["relation"] == "farthest_from"
+        scan = np.load(RUNS / "ar_0812_03" / "step1_scan.npy")
+        assert resolve_relation(dict(rec["reply"]), scan, rec["pose"],
+                                size=640) is None
+
+    @pytest.mark.skipif(not (RUNS / "jr_0812_04" / "step3_scan.npy").is_file(),
+                        reason="run artefacts not present")
+    def test_one_survivor_is_undecided_and_not_unmeasurable(self):
+        """`runs/jr_0812_04` steps 3 and 4, same lantern phrase.
+
+        The anchor lifted to 0.11 m and 0.02 m of the true fan decoration and
+        exactly one candidate lifted — the right lantern, 0.57 m and 0.64 m
+        from it. The two that failed were the tokonoma ledge lanterns, behind
+        the robot in the blind cone. Returning None there reads as
+        "unverified", which makes the caller keep whatever binding it has: both
+        calls produced a committed waypoint within 0.05 m of the truth and both
+        were discarded for one carried from step 2 that sat 3.93 m away.
+        """
+        for step in (3, 4):
+            rec = next(json.loads(l)
+                       for l in (RUNS / "jr_0812_04" / "steps.jsonl").open()
+                       if json.loads(l)["step"] == step)
+            scan = np.load(RUNS / "jr_0812_04" / f"step{step}_scan.npy")
+            got = resolve_relation(dict(rec["reply"]), scan, rec["pose"], size=640)
+            assert got is not None, "an undecided comparison still has a reading"
+            assert not got.complete, "and it must not claim to be a comparison"
+            assert len(got.missed) == 2
+            assert "undecided" in got.why
+
+    def test_it_still_unpacks_as_a_triple(self):
+        """Two call sites destructure it; that must keep working."""
+        box, i, why = Resolved([1, 2, 3, 4], 2, "because")
+        assert (box, i, why) == ([1, 2, 3, 4], 2, "because")
+
+
+class TestCoordSpaceIsNotTakenOnTrust:
+    """`gemini-3.1-pro-preview` declares `"pixels"` and sends 0-1000.
+
+    Measured on `runs/cr_0811_03` step 4, the real reply from that model:
+    `box_2d [293, 330, 506, 596]`, `feature_box_2d [506, 388, 885, 559]`,
+    `coord_space "pixels"` — and 885 does not exist on a 640-pixel face. Read
+    as declared, both boxes land on bare wall and floor to the right of the
+    plant they describe.
+    """
+
+    PRO_REPLY = {"coord_space": "pixels", "box_2d": [293, 330, 506, 596],
+                 "feature_box_2d": [506, 388, 885, 559]}
+
+    def test_the_recorded_reply_is_corrected(self):
+        got = settle_coord_space(dict(self.PRO_REPLY), "gemini", 640)
+        assert got["coord_space"] == "normalized_1000"
+        px = to_pixels(got["box_2d"], got["coord_space"], 640)
+        assert [round(v) for v in px] == [188, 211, 324, 381]
+
+    def test_the_declaration_alone_would_have_put_it_on_the_wall(self):
+        """What the old code did: 2.1 m of error on this one box."""
+        bad = to_pixels(self.PRO_REPLY["box_2d"], "pixels", 640)
+        good = to_pixels(self.PRO_REPLY["box_2d"], "normalized_1000", 640)
+        cx = lambda b: ((b[1] + b[3]) / 2, (b[0] + b[2]) / 2)   # noqa: E731
+        a, b = cx(bad), cx(good)
+        assert ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 > 150
+
+    def test_magnitude_alone_is_not_enough(self):
+        """The same sweep had Pro declare `"pixels"` with a maximum of 494 —
+        a legal pixel value and a legal normalised one. Only the backend
+        settles that one, which is why the fix is not a magnitude guard."""
+        undecidable = {"coord_space": "pixels", "box_2d": [200, 300, 400, 494]}
+        assert max(undecidable["box_2d"]) < 640
+        got = settle_coord_space(dict(undecidable), "gemini", 640)
+        assert got["coord_space"] == "normalized_1000"
+
+    def test_claude_keeps_its_declaration(self):
+        """Claude answers in pixels and was never the problem; nine calls
+        across three Gemini models never once proved a pixel reply."""
+        r = {"coord_space": "pixels", "box_2d": [183, 207, 315, 396]}
+        got = settle_coord_space(dict(r), "claude", 640)
+        assert got["coord_space"] == "pixels"
+        assert to_pixels(got["box_2d"], got["coord_space"], 640) == r["box_2d"]
+
+    def test_a_box_outside_the_image_overrules_any_backend(self):
+        """Arithmetic, not preference: a coordinate above the face cannot be a
+        pixel on it, whatever the reply calls itself."""
+        r = {"coord_space": "pixels", "box_2d": [10, 20, 30, 999]}
+        assert settle_coord_space(dict(r), "claude", 640)["coord_space"] == \
+            "normalized_1000"
+
+    def test_it_looks_in_every_place_the_schema_puts_a_box(self):
+        r = {"coord_space": "pixels", "box_2d": [1, 2, 3, 4],
+             "alternates": [{"box_2d": [5, 6, 7, 8]}],
+             "candidates": [{"box_2d": [9, 10, 11, 900]}],
+             "anchors": [{"box_2d": [13, 14, 15, 16]}],
+             "sightings": [{"box_2d": [17, 18, 19, 20]}]}
+        assert len(every_box(r)) == 5
+        assert settle_coord_space(dict(r), "claude", 640)["coord_space"] == \
+            "normalized_1000"
+
+    def test_junk_in_the_box_slots_does_not_raise(self):
+        """A reply is model output, so the shape is not guaranteed."""
+        r = {"coord_space": "pixels", "box_2d": [1, 2, 3, 4],
+             "alternates": ["prose, not a dict"], "candidates": None,
+             "anchors": [{"box_2d": "not a list"}], "sightings": [{}]}
+        assert every_box(r) == [[1, 2, 3, 4]]
+        assert settle_coord_space(dict(r), "claude", 640)["coord_space"] == \
+            "pixels"
+
+    def test_a_reply_with_no_boxes_is_left_alone(self):
+        r = {"coord_space": "pixels", "visible": False}
+        assert settle_coord_space(dict(r), "claude", 640)["coord_space"] == \
+            "pixels"
 
 
 class TestPastTheDetour:

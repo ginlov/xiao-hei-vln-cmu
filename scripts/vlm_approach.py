@@ -29,7 +29,7 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -234,6 +234,83 @@ def free_range_along(ray_xy: np.ndarray, origin: np.ndarray, scan_map: np.ndarra
     return float(along[hit].min()) if hit.any() else float("inf")
 
 
+# Two lifts further apart than this are looking at different objects. Not a new
+# threshold: it is `dominant_cluster`'s `gap_m`, which is already this file's
+# definition of when neighbouring returns stop belonging to one thing.
+FEATURE_AGREE_M = 0.35
+
+
+def box_range(box_px, face_idx: int, scan_cam: np.ndarray,
+              pose: dict) -> float | None:
+    """Lidar range at a box's centre, or None when nothing returns in the cone."""
+    w_deg, h_deg = box_angular_size(box_px, face_idx)
+    cone = float(np.clip(min(w_deg, h_deg) / 4.0, 1.0, 5.0))
+    res = locate(box_px, face_idx, scan_cam, cone_deg=cone, pose=pose)
+    return float(res["range"]) if res.get("n") else None
+
+
+def aim_box(reply: dict, size: int, scan_map: np.ndarray,
+            pose: dict) -> tuple[list[float], str | None]:
+    """The box to point the ray at, and why the feature box was refused.
+
+    `feature_box_2d` is the distinguishing feature *of* the target — the
+    elephant figurine on the tea table — and where it really is one it is the
+    better box to lift from: tighter, and its edges do not run off the object
+    onto the wall behind. The trouble is that the anchor lands there too. Asked
+    for "the water cooler near the window", `runs/o_1_0814_02` put the cooler
+    in `box_2d` and the window frame in `feature_box_2d`, 24° away; the leg
+    drove at the window, lifted 1.77 m against the cooler's 1.17 m, and failed
+    `boxed in` standing in front of the thing it was sent to.
+    `_RELATIONAL_BRANCH` already warns that returning the anchor is the
+    commonest way to get this wrong, but it only guards the comparative forms
+    it names, and "near the window" is not one of them.
+
+    Containment is the obvious test and it is wrong. A feature sitting *on*
+    something legitimately pokes out above its box: over 222 recorded steps
+    carrying both boxes, 84% put the feature box outside the target box, and
+    the ones that do include the figurine on the tea table and the clock on
+    the nightstand, which are exactly the cases worth keeping. Angular
+    separation does not divide them either — the clock is 28° off its
+    nightstand, and the table *under* the plant, which is an anchor, is 38°.
+
+    What does divide them is the measurement we are about to take. A feature on
+    the target is at the target's range; an anchor across the room is not. Over
+    the 102 steps where both boxes lift, the figurine reads 0.26 m and 0.21 m
+    from its table and the clock 0.17 m from its nightstand, while the window
+    reads 0.50 m and 0.60 m from the cooler and the sofa 0.47 m from the
+    guitar. Testing the range costs one more `locate` on a scan already in
+    memory, and it tests the property that actually matters — whether the ray
+    lands on the target — rather than a proxy for it.
+
+    Refusing is cheap because the feature box is not the more accurate of the
+    two anyway: scored against the model's own independent `distance_m` over
+    the steps this refuses, the target box was closer on 40 and the feature box
+    on 41. It is worth keeping when it is real, and it is not worth guessing.
+    """
+    space = reply.get("coord_space")
+    target = to_pixels(reply["box_2d"], space, size)
+    raw = reply.get("feature_box_2d")
+    if not raw:
+        return target, None
+    feature = to_pixels(raw, space, size)
+    face = int(reply["image_index"])
+    cam = scan_map_to_cam(scan_map, pose)
+    rt, rf = (box_range(target, face, cam, pose),
+              box_range(feature, face, cam, pose))
+    # Unverifiable is not the same as wrong, but the target box is the one the
+    # model was asked to draw round the target, so it is what an unresolved
+    # disagreement falls back to. Where only the feature box lifts, taking the
+    # target box costs a commit and buys a step — and a step is what we want
+    # when the thing we would have committed to might be a window.
+    if rt is None or rf is None:
+        return target, ("feature box ignored: no lift to check it against "
+                        f"(target {rt}, feature {rf})")
+    if abs(rt - rf) > FEATURE_AGREE_M:
+        return target, (f"feature box ignored: it lifts to {rf:.2f} m against "
+                        f"the target box's {rt:.2f} m — different objects")
+    return feature, None
+
+
 def next_waypoint(box_px, face_idx: int, scan_map: np.ndarray, pose: dict, *,
                   phrase: str | None = None, standoff: float = STANDOFF_M,
                   max_step: float = MAX_STEP_M) -> Waypoint:
@@ -325,8 +402,30 @@ def has_relation(phrase: str) -> bool:
     return bool(_RELATIONAL.search(phrase or ""))
 
 
+@dataclass
+class Resolved:
+    """The winner of a comparative relation, and how much of it was compared.
+
+    `box`, `image_index` and `why` are what the caller has always used.
+    `complete` and `missed` are the part `japanese_room` proved was needed: a
+    comparison run over a subset that excludes the right answer does not fail,
+    it returns a confident wrong winner.
+    """
+
+    box: list
+    image_index: int
+    why: str
+    complete: bool = True
+    # (azimuth, elevation, note) for each candidate the lift could not place.
+    missed: list = field(default_factory=list)
+
+    def __iter__(self):
+        """So `box, i, why = resolved` keeps working at the older call sites."""
+        return iter((self.box, self.image_index, self.why))
+
+
 def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
-                     *, size: int = 640) -> tuple[list, int, str] | None:
+                     *, size: int = 640) -> "Resolved | None":
     """Decide a comparative relation by measuring, not by asking.
 
     v4 asks the model for every candidate and the anchor rather than for the
@@ -334,12 +433,23 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
     to the fan decoration" — it answered with the fan decoration. Here we lift
     each box to a map position and do the comparison ourselves.
 
-    Returns `(box_px, image_index, why)`, or None when the measurement cannot
-    be made and the caller should fall back to the model's own pick. Falling
-    back is not a silent failure: with fewer than two liftable candidates there
-    is nothing to compare, and the model's choice is the only answer available.
+    Returns a `Resolved`, or None when the measurement cannot be made and the
+    caller should fall back to the model's own pick. Falling back is not a
+    silent failure: with fewer than two liftable candidates there is nothing to
+    compare, and the model's choice is the only answer available.
 
     One nomination is a special case, not a failed comparison — see below.
+
+    **A candidate that will not lift is dropped from the comparison, and that
+    is reported.** `runs/jr_0812_01` step 2, on this same lantern phrase, is
+    what the flag is for: the model listed the correct floor lantern and placed
+    it within 0.2° of the truth, the anchor within 0.4°, and the lift refused
+    it because at azimuth -174.6° it sat 17.7° under the scanner's floor —
+    directly behind the robot. Three of four candidates lifted, `len(cb) >= 2`
+    held, and the comparison declared a ceiling lantern 3.98 m from the answer
+    with a rationale that reads as authoritative. Fewer than two is not the
+    only way this measurement can be wrong; fewer than all is the other, and it
+    is the dangerous one because it still produces a number.
     """
     rel = reply.get("relation")
     cands = reply.get("candidates") or []
@@ -353,7 +463,13 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
     space = reply.get("coord_space")
 
     def boxes(items):
-        out = []
+        """Lifted items, and the ones that would not lift with their bearing.
+
+        The bearing is kept because it is the useful half of a failed lift:
+        a candidate the scanner cannot reach is usually behind the robot, and
+        that is a direction to turn, not a thing to forget.
+        """
+        out, lost = [], []
         for it in items:
             if it.get("box_2d") is None or it.get("image_index") is None:
                 continue
@@ -362,9 +478,12 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
             xy = _lift_xy(px, i, scan_cam, pose)
             if xy is not None:
                 out.append((px, i, xy, it))
-        return out
+            else:
+                az, el = sensor_bearing(ray_from_box(px, i))
+                lost.append((az, el, (it.get("note") or it.get("name") or "?")))
+        return out, lost
 
-    cb, ab = boxes(cands), boxes(anchors)
+    (cb, missed), (ab, _) = boxes(cands), boxes(anchors)
     if not ab:
         # Nothing to measure against: the phrase is unchecked, and the caller
         # must treat whatever the model nominated as a guess at the noun.
@@ -376,13 +495,59 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
         # cost the second destination: the model had correctly boxed "guitar
         # leaning against the wall/shelf beyond the sofa's right end", the loop
         # called that unmeasurable, and kept an earlier binding that sat inside
-        # the couch. Note the condition is on what the model *reported*: one
-        # liftable candidate out of several is an undecided comparison, which
-        # is a different thing and still returns None below.
+        # the couch.
         c = cb[0]
-        return c[0], c[1], (
-            f"{rel}: one nomination ({(c[3].get('note') or '?')[:52]}), "
-            f"{len(ab)} anchor(s) lifted — nothing to compare it against")
+        return Resolved(c[0], c[1],
+                        f"{rel}: one nomination "
+                        f"({(c[3].get('note') or '?')[:52]}), "
+                        f"{len(ab)} anchor(s) lifted — nothing to compare it "
+                        f"against")
+    if len(cb) == 1:
+        # One liftable candidate out of several is an *undecided* comparison —
+        # the ones that would not lift might have won — and that used to return
+        # None, which the caller reads as "unverified" and answers by keeping
+        # whatever binding it already had.
+        #
+        # `runs/jr_0812_04` leg 1 is what that costs. At steps 3 and 4 the
+        # anchor lifted to 0.11 m and 0.02 m of the true fan decoration, and
+        # the single candidate that lifted was the right lantern, 0.57 m and
+        # 0.64 m from it. Both calls produced a committed waypoint **0.05 m and
+        # 0.04 m from the truth**. Both were discarded in favour of a binding
+        # carried from step 2 that sat 3.93 m away, and the leg then reported
+        # `arrived, within standoff` because the robot happened to stop 0.25 m
+        # from that wrong binding. The two candidates that failed to lift were
+        # the tokonoma ledge lanterns, behind the robot in the blind cone — the
+        # wrong ones.
+        #
+        # So: undecided is not unmeasurable. Return the one that lifted, marked
+        # incomplete, which binds it while withholding the licence to overrule
+        # a later complete comparison. Same treatment as a partial comparison,
+        # because it is one — with one survivor instead of several.
+        #
+        # **Except on `farthest_from`, where the survivor is evidence against
+        # itself.** A lift fails because the object is far, or occluded, or
+        # under the scanner's floor — so "the only candidate that lifted" is
+        # biased toward the near ones, and `farthest_from` is precisely the
+        # question whose answer is the far one. `runs/ar_0812_03` leg 1 is that
+        # bias costing a leg: *"the potted plant furthest from the hookah"*,
+        # one of two candidates lifted, and it was the nearest plant of five —
+        # 8.59 m from the answer. It bound, and steps 2 and 3 then produced
+        # committed waypoints 0.37 m and 0.55 m from the truth that `JUMP_M`
+        # refused because a binding was already held. Returning None here, as
+        # the code did before, leaves those two steps free to drive at the
+        # right plant. `jr_0812_04`, which this rescue was written for, is
+        # `closest_to`, where the same bias points at the answer instead.
+        if rel == "farthest_from":
+            return None
+        c = cb[0]
+        why = (f"{rel}: only 1 of {len(cands)} candidate(s) lifted "
+               f"({(c[3].get('note') or '?')[:46]}) vs {len(ab)} anchor(s) — "
+               f"undecided")
+        if missed:
+            why += ("; NOT compared: " +
+                    ", ".join(f"{n[:34]} (az {a:+.0f}°, el {e:+.0f}°)"
+                              for a, e, n in missed))
+        return Resolved(c[0], c[1], why, complete=False, missed=missed)
     if len(cb) < 2:
         return None
 
@@ -398,7 +563,11 @@ def resolve_relation(reply: dict, scan_map: np.ndarray, pose: dict,
     why = (f"{rel} over {len(cb)} lifted candidate(s) vs "
            f"{len(ab)} anchor(s): " +
            ", ".join(f"{n}={s:.2f}m" for s, n in ranked[:4]))
-    return pick[0], pick[1], why
+    if missed:
+        why += ("; NOT compared: " +
+                ", ".join(f"{n[:40]} (az {a:+.0f}°, el {e:+.0f}°)"
+                          for a, e, n in missed))
+    return Resolved(pick[0], pick[1], why, complete=not missed, missed=missed)
 
 
 def triangulate(o1: np.ndarray, d1: np.ndarray, o2: np.ndarray, d2: np.ndarray,
