@@ -69,6 +69,9 @@ class FrontierExplorer:
         stuck_timeout_s: float = 30.0,
         max_waypoint_dist: float = 1.5,
         max_consecutive_skips: int = 3,
+        reject_radius: float = 0.8,
+        empty_ticks_before_done: int = 20,
+        skip_reset_free_cells: int = 60,
     ) -> None:
         self._max_waypoints = max_waypoints
         self._reach_dist = waypoint_reach_dist
@@ -77,6 +80,9 @@ class FrontierExplorer:
         self._stuck_timeout_s = stuck_timeout_s
         self._max_waypoint_dist = max_waypoint_dist
         self._max_consecutive_skips = max_consecutive_skips
+        self._reject_radius = reject_radius
+        self._empty_ticks_before_done = empty_ticks_before_done
+        self._skip_reset_free_cells = skip_reset_free_cells
 
         self._grid = OccupancyGrid(grid_resolution)
         self._current_target: Waypoint | None = None
@@ -87,6 +93,19 @@ class FrontierExplorer:
         self._target_set_time: float | None = None
         self.skipped_count: int = 0
         self._consecutive_skip_count: int = 0
+        # Centroids we failed to reach. Suppressing only the grid cells under a
+        # rejected centroid is not enough: the *remaining* cells of the same
+        # cluster re-average to nearly the same point, so the selector hands
+        # back the same target forever (observed 18x in a row on `loft`).
+        self._rejected: list[tuple[float, float]] = []
+        self._empty_selection_ticks = 0
+        # Free-cell count when the consecutive-skip counter was last reset —
+        # a sweep that is still growing the map has not stalled.
+        self._free_at_last_progress = 0
+        # Diagnostics for the exploration log — see selection_diagnostics().
+        self._select_reason = "not_run"
+        self._select_diag: dict[str, int] = {}
+        self.skip_hatch_resets = 0
 
     # ------------------------------------------------------------------
     # Strategy interface
@@ -108,23 +127,14 @@ class FrontierExplorer:
 
         # Advance when robot reaches the current target via odometry.
         if self._current_target is not None and self._within_reach(rx, ry, self._current_target):
-            self._visited.append(self._current_target)
-            self._current_target = None
-            self._target_set_time = None
-            self._consecutive_skip_count = 0
+            self._reach_target()
 
         # Stuck detection: skip if timeout exceeded without nav-stack advance.
         if self._current_target is not None:
             elapsed = now - self._target_set_time  # type: ignore[operator]
             if elapsed > self._stuck_timeout_s:
-                self.skipped_count += 1
-                self._consecutive_skip_count += 1
-                # Mark a larger area so we don't re-select the same unreachable frontier.
-                self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
-                self._current_target = None
-                self._target_set_time = None
-                if self._consecutive_skip_count >= self._max_consecutive_skips:
-                    self._done = True
+                self._skip_target()
+                if self._done:
                     return None
 
         # Budget check
@@ -138,8 +148,15 @@ class FrontierExplorer:
             if self._current_target is None:
                 if not self._grid.free_cells:
                     return None  # waiting for terrain data
-                self._done = True
+                # One barren tick is not coverage. terrain_ext arrives in
+                # bursts, and a cluster can momentarily fall under
+                # min_frontier_size, so require a sustained drought before
+                # declaring the scene finished.
+                self._empty_selection_ticks += 1
+                if self._empty_selection_ticks >= self._empty_ticks_before_done:
+                    self._done = True
                 return None
+            self._empty_selection_ticks = 0
             self._target_set_time = now
 
         return self._current_target
@@ -147,25 +164,12 @@ class FrontierExplorer:
     def force_skip(self) -> None:
         """Skip the current target immediately — call when nav stack has demonstrably settled
         above the advance threshold with no improvement."""
-        if self._current_target is None:
-            return
-        self.skipped_count += 1
-        self._consecutive_skip_count += 1
-        self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=3)
-        self._current_target = None
-        self._target_set_time = None
-        if self._consecutive_skip_count >= self._max_consecutive_skips:
-            self._done = True
+        self._skip_target()
 
     def advance(self) -> None:
         """Mark the current target as visited — call when nav stack signals arrival."""
         if self._current_target is not None:
-            # Suppress this frontier so it isn't re-selected next tick.
-            self._grid.mark_occupied(self._current_target.x, self._current_target.y, radius_cells=1)
-            self._visited.append(self._current_target)
-            self._current_target = None
-            self._target_set_time = None
-            self._consecutive_skip_count = 0
+            self._reach_target()
 
     def is_complete(self) -> bool:
         return self._done
@@ -178,6 +182,12 @@ class FrontierExplorer:
         self._target_set_time = None
         self.skipped_count = 0
         self._consecutive_skip_count = 0
+        self._rejected = []
+        self._empty_selection_ticks = 0
+        self._free_at_last_progress = 0
+        self._select_reason = "not_run"
+        self._select_diag = {}
+        self.skip_hatch_resets = 0
 
     # ------------------------------------------------------------------
     # Accessors for visualisation / reporting
@@ -195,14 +205,75 @@ class FrontierExplorer:
     # ------------------------------------------------------------------
     # Internals
 
+    def _reach_target(self) -> None:
+        """Book the current target as visited and suppress it as a future goal."""
+        assert self._current_target is not None
+        self._grid.mark_no_target(
+            self._current_target.x, self._current_target.y, radius_cells=2
+        )
+        self._visited.append(self._current_target)
+        self._current_target = None
+        self._target_set_time = None
+        self._consecutive_skip_count = 0
+        self._free_at_last_progress = len(self._grid.free_cells)
+
+    def _skip_target(self) -> None:
+        """Abandon the current target and never propose anything near it again."""
+        if self._current_target is None:
+            return
+        self.skipped_count += 1
+        self._consecutive_skip_count += 1
+        self._rejected.append((self._current_target.x, self._current_target.y))
+        self._grid.mark_no_target(
+            self._current_target.x, self._current_target.y, radius_cells=4
+        )
+        self._current_target = None
+        self._target_set_time = None
+        if self._consecutive_skip_count < self._max_consecutive_skips:
+            return
+        # A run of skips only means "stalled" if the map stopped growing too.
+        # Terrain still streaming in means the next target may well be
+        # reachable, so bank the progress and keep going.
+        free_now = len(self._grid.free_cells)
+        if free_now - self._free_at_last_progress >= self._skip_reset_free_cells:
+            self._free_at_last_progress = free_now
+            self._consecutive_skip_count = 0
+            self.skip_hatch_resets += 1
+        else:
+            self._done = True
+
+    def _is_rejected(self, cx: float, cy: float) -> bool:
+        return any(
+            math.hypot(cx - px, cy - py) < self._reject_radius for px, py in self._rejected
+        )
+
     def _select_frontier(self, rx: float, ry: float) -> Waypoint | None:
-        raw_cells = self._grid.frontier_cells()
+        all_frontier = self._grid.frontier_cells()
+        raw_cells = [c for c in all_frontier if self._grid.is_targetable(c)]
+        self._select_diag = {
+            "frontier": len(all_frontier),
+            "open": len(raw_cells),
+            "clusters": 0,
+            "sized": 0,
+            "considered": 0,
+            "near": 0,
+            "rejected": 0,
+        }
         if not raw_cells:
+            # "all_suppressed" and "no_frontier" call for opposite responses:
+            # the first means we over-blacklisted, the second means coverage.
+            self._select_reason = "all_suppressed" if all_frontier else "no_frontier_cells"
             return None
 
         clusters = _cluster_frontier(raw_cells)
-        clusters = [c for c in clusters if len(c) >= self._min_frontier_size]
+        sized = [c for c in clusters if len(c) >= self._min_frontier_size]
+        # Rather than declaring the scene done, fall back to the small
+        # fragments that are left — a 3-cell frontier is still unseen space.
+        clusters = sized or clusters
+        self._select_diag["clusters"] = len(clusters)
+        self._select_diag["sized"] = len(sized)
         if not clusters:
+            self._select_reason = "no_clusters"
             return None
 
         best_wp: Waypoint | None = None
@@ -225,7 +296,16 @@ class FrontierExplorer:
             # Skip targets the robot is already at — assigning them causes
             # immediate false-visits without the robot moving anywhere.
             if dist <= self._reach_dist:
+                self._select_diag["near"] += 1
                 continue
+
+            # A centroid that drifted back onto a target we already failed to
+            # reach is the thrash loop; take the next-best cluster instead.
+            if self._is_rejected(cx, cy):
+                self._select_diag["rejected"] += 1
+                continue
+
+            self._select_diag["considered"] += 1
 
             # Track nearest VALID (outside reach_dist) cluster as fallback.
             if dist < nearest_dist:
@@ -245,7 +325,21 @@ class FrontierExplorer:
         if best_wp is None:
             best_wp = nearest_wp
 
+        if best_wp is None:
+            # Every cluster was either underfoot or previously rejected — the
+            # two are very different problems, so name which one dominated.
+            self._select_reason = (
+                "all_rejected"
+                if self._select_diag["rejected"] >= self._select_diag["near"]
+                else "all_underfoot"
+            )
+        else:
+            self._select_reason = "ok"
         return best_wp
+
+    def selection_diagnostics(self) -> dict[str, object]:
+        """Why the last `_select_frontier` call returned what it did."""
+        return {"why": self._select_reason, **self._select_diag}
 
     def _within_reach(self, rx: float, ry: float, wp: Waypoint) -> bool:
         return math.hypot(rx - wp.x, ry - wp.y) < self._reach_dist

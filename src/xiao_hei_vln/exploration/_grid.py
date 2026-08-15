@@ -25,6 +25,12 @@ class OccupancyGrid:
         self._occupied: set[tuple[int, int]] = set()
         # Cells explicitly suppressed via mark_occupied — terrain updates cannot re-free these.
         self._blacklisted: set[tuple[int, int]] = set()
+        # Cells that are still traversable but must not be *chosen* as a target
+        # again (already visited, or skipped as unreachable). Kept apart from
+        # _occupied on purpose: a visited waypoint in a doorway used to be
+        # stamped as an obstacle, which walled the robot off from everything
+        # behind it and collapsed the reachable set.
+        self._no_target: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------------
     # Public update
@@ -150,11 +156,16 @@ class OccupancyGrid:
     def free_cells(self) -> set[tuple[int, int]]:
         return self._free
 
+    @property
+    def no_target_cells(self) -> set[tuple[int, int]]:
+        return self._no_target
+
     def mark_occupied(self, x: float, y: float, radius_cells: int = 1) -> None:
         """Mark a region around (x, y) as permanently occupied.
 
-        Blacklisted cells are not restored by subsequent terrain updates, so
-        skipped / visited frontier areas are not re-selected.
+        Blacklisted cells are not restored by subsequent terrain updates. Use
+        this only for genuine obstacles — to suppress a *target* without
+        changing traversability, call `mark_no_target`.
         """
         cx, cy = self._to_grid(x, y)
         for dx in range(-radius_cells, radius_cells + 1):
@@ -163,6 +174,43 @@ class OccupancyGrid:
                 self._free.discard(cell)
                 self._occupied.add(cell)
                 self._blacklisted.add(cell)
+
+    def mark_no_target(self, x: float, y: float, radius_cells: int = 1) -> None:
+        """Suppress a disc around (x, y) from future target selection.
+
+        Traversability is untouched: the cells stay FREE, so path BFS can still
+        route *through* the region.
+        """
+        cx, cy = self._to_grid(x, y)
+        r2 = radius_cells * radius_cells
+        for dx in range(-radius_cells, radius_cells + 1):
+            for dy in range(-radius_cells, radius_cells + 1):
+                if dx * dx + dy * dy <= r2:
+                    self._no_target.add((cx + dx, cy + dy))
+
+    def is_targetable(self, cell: tuple[int, int]) -> bool:
+        return cell not in self._no_target
+
+    def stats(self, rx: float | None = None, ry: float | None = None) -> dict[str, int | float]:
+        """Map-health counters for the exploration log.
+
+        `reachable` is the one that matters: it is the free space the strategy
+        can actually plan to. Watching it stop tracking `free` is how you catch
+        the robot walling itself in.
+        """
+        frontier = self.frontier_cells()
+        area = len(self._free) * self._res * self._res
+        out: dict[str, int | float] = {
+            "free": len(self._free),
+            "occupied": len(self._occupied),
+            "frontier": len(frontier),
+            "frontier_open": sum(1 for c in frontier if c not in self._no_target),
+            "no_target": len(self._no_target),
+            "free_m2": round(area, 1),
+        }
+        if rx is not None and ry is not None:
+            out["reachable"] = len(self.reachable_path_costs(rx, ry))
+        return out
 
     @property
     def resolution(self) -> float:
