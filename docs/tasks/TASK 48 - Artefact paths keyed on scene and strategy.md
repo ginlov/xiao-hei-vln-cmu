@@ -1,4 +1,4 @@
-# TASK 41 - Artefact paths keyed on scene and strategy
+# TASK 48 - Artefact paths keyed on scene and strategy
 
 ## Purpose
 

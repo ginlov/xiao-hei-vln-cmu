@@ -56,7 +56,7 @@ _EXPLORATION_MAX_SECONDS = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_SECOND
 _EXPLORATION_SNAPSHOT_S = float(os.environ.get("XIAO_HEI_EXPLORATION_SNAPSHOT_S", "30"))
 # How often to log a MAP heartbeat (0 = off). WP_* events alone say nothing
 # about coverage — the objective had to be reconstructed from pose bounding
-# boxes in TASK 43 — and nothing at all about the gaps between waypoints.
+# boxes in TASK 50 — and nothing at all about the gaps between waypoints.
 _EXPLORATION_MAP_LOG_S = float(os.environ.get("XIAO_HEI_EXPLORATION_MAP_LOG_S", "10"))
 # Scene the sim is running. Only the basename is meaningful here — the value is
 # a *host* path (compose bind-mounts it into the sim, not into this container),

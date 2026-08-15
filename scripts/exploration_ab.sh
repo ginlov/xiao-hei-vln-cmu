@@ -14,7 +14,7 @@
 #     underneath a long run;
 #   * one budget, pinned here rather than left to a compose default, because the
 #     previous frontier sweep ran without a wall-clock cutoff and nbv ran with
-#     one — which was the biggest confound in that comparison (TASK 43);
+#     one — which was the biggest confound in that comparison (TASK 50);
 #   * an archive per strategy under exploration_logs_<strategy>_<LABEL>/, so the
 #     *next* A/B does not overwrite this one;
 #   * a transcript, and the comparison table at the end.

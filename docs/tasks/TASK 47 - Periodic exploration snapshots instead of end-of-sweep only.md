@@ -1,4 +1,4 @@
-# TASK 40 - Periodic exploration snapshots instead of end-of-sweep only
+# TASK 47 - Periodic exploration snapshots instead of end-of-sweep only
 
 ## Purpose
 
@@ -115,5 +115,5 @@ function it calls is covered by the new tests.
 submission stack `_EXPLORATION_SCENE` always resolved to `default_scene` and
 every scene's artefacts collided in one directory — periodic snapshots
 included. That, and the same collision between strategies, is fixed in
-[TASK 41](TASK%2041%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md):
+[TASK 41](TASK%2048%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md):
 artefacts now land in `<scene>/<strategy>/`.

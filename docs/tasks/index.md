@@ -68,11 +68,11 @@ Every row below links to a distinct document.
 | 26 | [Scan-accumulator keyframe sweep & side-by-side dump comparison](TASK%2026%20-%20Scan-accumulator%20keyframe%20sweep%20and%20side-by-side%20dump%20comparison.md) | Dumps, viewer & GIF tool done; scored sweep not run |
 | 27 | [Verifying the 2D-detection → 3D-lift angular convention](TASK%2027%20-%20Verifying%20the%202D-detection%20to%203D-lift%20angular%20convention.md) | Done — extrinsic bug fixed + image/pose timestamp-matched in LatestCache |
 | 28 | [Swap YOLO-World for OWLv2 & drop the tick to 1 Hz](TASK%2028%20-%20Swap%20YOLO-World%20for%20OWLv2%20and%20drop%20the%20tick%20to%201%20Hz.md) | OWLv2 measured & reverted (over-produced + too slow); kept 1 Hz + SAM-Large |
-| 40 | [Periodic exploration snapshots instead of end-of-sweep only](TASK%2040%20-%20Periodic%20exploration%20snapshots%20instead%20of%20end-of-sweep%20only.md) | Done |
-| 41 | [Artefact paths keyed on scene and strategy](TASK%2041%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md) | Done |
-| 42 | [An eight-minute wall-clock cutoff for exploration](TASK%2042%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |
-| 43 | [Why both explorers stall, and which one to keep](TASK%2043%20-%20Why%20both%20explorers%20stall,%20and%20which%20one%20to%20keep.md) | Frontier picked; 6 fixes landed + 13 tests — validated by the exp1 sweep: frontier 2516 m2 over 13 scenes, +59% median coverage |
-| 44 | [Three exploration changes that were tried and reverted](TASK%2044%20-%20Three%20exploration%20changes%20that%20were%20tried%20and%20reverted.md) | Reverted — none beat exp1. Kept as the record of what not to retry |
+| 47 | [Periodic exploration snapshots instead of end-of-sweep only](TASK%2047%20-%20Periodic%20exploration%20snapshots%20instead%20of%20end-of-sweep%20only.md) | Done |
+| 48 | [Artefact paths keyed on scene and strategy](TASK%2048%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md) | Done |
+| 49 | [An eight-minute wall-clock cutoff for exploration](TASK%2049%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |
+| 50 | [Why both explorers stall, and which one to keep](TASK%2050%20-%20Why%20both%20explorers%20stall,%20and%20which%20one%20to%20keep.md) | Frontier picked; 6 fixes landed + 13 tests — validated by the exp1 sweep: frontier 2516 m2 over 13 scenes, +59% median coverage |
+| 51 | [Three exploration changes that were tried and reverted](TASK%2051%20-%20Three%20exploration%20changes%20that%20were%20tried%20and%20reverted.md) | Reverted — none beat exp1. Kept as the record of what not to retry |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.

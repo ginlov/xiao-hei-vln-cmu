@@ -8,7 +8,7 @@ table plus a paired per-scene comparison over the scenes every strategy ran.
 
 Normalises by wall clock. Two sweeps run under different budgets are not
 comparable on totals — that confound is what made the first frontier-vs-nbv
-comparison hard to read (TASK 43) — so the headline number here is metres per
+comparison hard to read (TASK 50) — so the headline number here is metres per
 minute, measured from CLOCK_START rather than node boot.
 
 Also reads the diagnostic fields added for the second sweep, when present:

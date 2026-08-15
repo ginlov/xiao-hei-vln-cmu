@@ -1,8 +1,8 @@
-# TASK 43 — Why both explorers stall, and which one to keep
+# TASK 50 — Why both explorers stall, and which one to keep
 
 Two sweeps were on disk with no verdict attached: `exploration_logs_frontier/`
 (19 scenes, no wall-clock budget) and `exploration_logs_nbv/` (13 scenes, the
-480 s budget from TASK 42). The question was which strategy to invest in, and
+480 s budget from TASK 49). The question was which strategy to invest in, and
 then to fix what the logs showed was broken.
 
 Both have since been renamed to `exploration_logs_<strategy>_exp0/` — they are

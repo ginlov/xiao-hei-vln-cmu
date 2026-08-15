@@ -1,10 +1,10 @@
-# TASK 44 — Three exploration changes that were tried and reverted
+# TASK 51 — Three exploration changes that were tried and reverted
 
 **None of the code described here is in the branch.** It was written, run
 against the simulator, measured, and rolled back. This is the record so nobody
 re-derives it.
 
-The shipped state is TASK 43's fixes, validated by the `exp1` sweep: 13 scenes,
+The shipped state is TASK 50's fixes, validated by the `exp1` sweep: 13 scenes,
 frontier **2516 m²** total, +59% median coverage against the pre-fix baseline.
 Three subsequent rounds of changes each found a genuine defect and **none beat
 that number**.
@@ -16,7 +16,7 @@ All sweeps are 13 scenes, both strategies, 480 s per scene. Frontier totals:
 | sweep | code | frontier coverage |
 |---|---|---|
 | exp0 | pre-TASK-43 | — (baseline, +59% below exp1 at the median) |
-| **exp1** | **TASK 43 — what this branch ships** | **2516 m²** |
+| **exp1** | **TASK 50 — what this branch ships** | **2516 m²** |
 | exp2 | + per-target deadlines, reachability, clearance | 2039 m² (−19%) |
 | exp3 | + guard rewrite, cap fix (1 scene only) | worse again |
 
