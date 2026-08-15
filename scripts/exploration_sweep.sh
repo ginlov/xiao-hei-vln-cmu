@@ -122,22 +122,32 @@ for scene in "${scenes[@]}"; do
   "${COMPOSE[@]}" down
 done
 
-# Collate. Duration comes from the log's own START/DONE stamps, not wall clock,
-# which would include the sim startup we did not spend exploring.
+# Collate. Duration is measured from CLOCK_START (first tick with a pose) when
+# the log has one, because the robot cannot explore before /state_estimation
+# arrives and that wait is 90-190 s of dead time we did not spend exploring.
+# Falls back to START for logs predating the clock.
+#
+# visited/skipped count decisions, not coverage. path_m and free_m2 are the
+# ones to compare strategies on; reachable dropping away from free is a
+# strategy walling itself in.
 csv=$LOGS/results_$STRATEGY.csv
 {
-  echo "scene,duration_s,visited,skipped,reason"
+  echo "scene,duration_s,visited,skipped,path_m,free_m2,reachable,hatch_resets,select_why,reason"
   for scene in "${scenes[@]}"; do
     awk -v scene="$scene" '
-      /\] START/ { gsub(/[][]/, "", $1); t0 = $1 }
+      /\] START/       { gsub(/[][]/, "", $1); t_start = $1 }
+      /\] CLOCK_START/ { gsub(/[][]/, "", $1); t_clock = $1 }
       /\] DONE/  {
         gsub(/[][]/, "", $1); t1 = $1
+        t0 = (t_clock != "") ? t_clock : t_start
         for (i = 3; i <= NF; i++) { split($i, kv, "="); f[kv[1]] = kv[2] }
-        printf "%s,%.1f,%s,%s,%s\n", scene, t1 - t0, f["visited"], f["skipped"], f["reason"]
+        printf "%s,%.1f,%s,%s,%s,%s,%s,%s,%s,%s\n", scene, t1 - t0,
+               f["visited"], f["skipped"], f["path_m"], f["free_m2"],
+               f["reachable"], f["hatch_resets"], f["select_why"], f["reason"]
         done = 1
       }
-      END { if (!done) printf "%s,,,,did-not-finish\n", scene }
-    ' "$LOGS/$scene/$STRATEGY/exploration.log" 2>/dev/null || echo "$scene,,,,no-log"
+      END { if (!done) printf "%s,,,,,,,,,did-not-finish\n", scene }
+    ' "$LOGS/$scene/$STRATEGY/exploration.log" 2>/dev/null || echo "$scene,,,,,,,,,no-log"
   done
 } > "$csv"
 
