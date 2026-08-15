@@ -47,7 +47,7 @@ MAX_WAYPOINTS="${MAX_WAYPOINTS:-100000}"
 # Per scene, excluding sim boot. A ceiling, not a target: the explorer usually
 # ends first on its own (max_consecutive_skips), and this only truncates a run
 # that would otherwise overrun. At ~500 MB/min it also caps a scene at ~4.3 GB.
-TIMEOUT="${TIMEOUT:-480}"         # 8 min cap on exploration per scene
+TIMEOUT="${TIMEOUT:-180}"         # 3 min cap on exploration per scene (nav debug)
 BOOT_TRIES="${BOOT_TRIES:-40}"    # x3s = up to 2 min for the sim to come up
 SETTLE_S="${SETTLE_S:-12}"        # extra wait after nav is up (Unity + terrain)
 # 1 Hz matches the live node's XIAO_HEI_VLM_TICK_HZ default, i.e. one recorded
