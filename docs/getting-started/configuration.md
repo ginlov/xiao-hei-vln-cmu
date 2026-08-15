@@ -40,9 +40,21 @@ are required — docker-compose sets them for you, but they can be overridden.
 
 ## Exploration
 
+Every value below lives in **`config/exploration.env`**, which all three compose
+files load via `env_file`. That is the single source of truth — porting to the
+submission repo is copying that one file. The table documents what each knob
+does; change values there, not here, and not in the source.
+
+Precedence is: `environment:` in the compose file, then the shell, then
+`config/exploration.env`. A *bare* `- VAR` entry under `environment:` resolves
+to an **empty string** when the shell has it unset, which overrides the env file
+— for `STRATEGY` that silently disables exploration, so the compose entries keep
+their `${VAR:-default}` form and a test asserts those defaults still match the
+env file.
+
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_EXPLORATION_STRATEGY` | `frontier` | Exploration algorithm: `frontier` (cluster the frontier, score by size/distance) or `nbv` (sample reachable poses, score by unknown-gain/path-cost). Also names the artefact subdirectory. Unknown values disable exploration with an error log — they do **not** fall back to `frontier` |
+| `XIAO_HEI_EXPLORATION_STRATEGY` | `nbv` | Exploration algorithm: `frontier` (cluster the frontier, score by size/distance) or `nbv` (sample reachable poses, score by unknown-gain/path-cost). Also names the artefact subdirectory. Unknown values disable exploration with an error log — they do **not** fall back to `frontier` |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `500` | Waypoint budget. Set to `0` to disable exploration entirely and go straight to question answering. Exploration runs to completion (budget / skips / no frontiers) even if a question arrives first — the answer is deferred until it finishes |
 | `XIAO_HEI_EXPLORATION_MAX_SECONDS` | `480` (8 min) | Wall-clock cutoff for the sweep. The clock starts on the first tick with a pose — not at node boot, since `/state_estimation` takes 90-190 s to arrive and the robot cannot explore before it does. On expiry the loop logs `DONE reason=time_limit`, saves both PNGs, and hands over to the responder. `0` disables |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` | `1.5` | Preferred maximum distance (metres) to a frontier target. Closer targets score higher; if all exceed this cap the nearest valid one is used as a fallback |

@@ -73,6 +73,7 @@ Every row below links to a distinct document.
 | 49 | [An eight-minute wall-clock cutoff for exploration](TASK%2049%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |
 | 50 | [Why both explorers stall, and which one to keep](TASK%2050%20-%20Why%20both%20explorers%20stall,%20and%20which%20one%20to%20keep.md) | Frontier picked; 6 fixes landed + 13 tests — validated by the exp1 sweep: frontier 2516 m2 over 13 scenes, +59% median coverage |
 | 51 | [Three exploration changes that were tried and reverted](TASK%2051%20-%20Three%20exploration%20changes%20that%20were%20tried%20and%20reverted.md) | Reverted — none beat exp1. Kept as the record of what not to retry |
+| 52 | [Locking the exploration config, and switching the default to nbv](TASK%2052%20-%20Locking%20the%20exploration%20config,%20and%20switching%20the%20default%20to%20nbv.md) | Config locked in `config/exploration.env`; default now nbv — on a density argument, not a measurement. The responder A/B that would settle it is unrun |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.

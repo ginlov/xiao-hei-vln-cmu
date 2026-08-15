@@ -48,11 +48,19 @@ services:
 
   ai_module:
     container_name: ${XIAO_HEI_EVAL_PREFIX:-xiao_hei_eval}_ai_module
+    # Locked exploration algorithm + hyperparameters — the single source of
+    # truth for every tuning knob. Only the operational vars a sweep script
+    # overrides are repeated under `environment:` below; a test asserts those
+    # defaults still agree with this file. Note a bare `- VAR` entry would
+    # override this with an EMPTY string when the shell has it unset, which
+    # for STRATEGY silently disables exploration — hence the `:-` defaults.
+    env_file:
+      - ../config/exploration.env
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - DISPLAY=${DISPLAY:-:0}
       - XIAO_HEI_PERCEPTION_BASE_URL=http://localhost:${PERCEPTION_PORT:-8002}
-      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
+      - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-nbv}
       - XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST=${XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST:-3.0}
       - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-100}
       - XIAO_HEI_EXPLORATION_MAX_SECONDS=${XIAO_HEI_EXPLORATION_MAX_SECONDS:-540}

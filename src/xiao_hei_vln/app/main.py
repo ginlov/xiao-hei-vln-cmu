@@ -44,7 +44,40 @@ RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 # strategy completes (budget exhausted, consecutive-skip hatch, or no frontiers
 # remain), and only then does the responder answer — from the fully-built scene.
 _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINTS", "500"))
-_EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
+_EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "nbv").lower()
+
+# Every explorer hyperparameter is read from the environment, with the defaults
+# here matching config/exploration.env. Nothing is hard-coded at the call site:
+# porting to the submission repo is copying that file, and a sweep can override
+# one knob without a code edit.
+def _env_f(name: str, default: float) -> float:
+    return float(os.environ.get(name, default))
+
+
+def _env_i(name: str, default: int) -> int:
+    return int(os.environ.get(name, default))
+
+
+# Shared across strategies
+_EXPLORATION_GRID_RESOLUTION = _env_f("XIAO_HEI_EXPLORATION_GRID_RESOLUTION", 0.2)
+_EXPLORATION_COST_THRESHOLD = _env_f("XIAO_HEI_EXPLORATION_COST_THRESHOLD", 0.5)
+_EXPLORATION_REACH_DIST = _env_f("XIAO_HEI_EXPLORATION_REACH_DIST", 0.3)
+_EXPLORATION_WP_TIMEOUT_S = _env_f("XIAO_HEI_EXPLORATION_WP_TIMEOUT_S", 12.0)
+
+# NBV
+_NBV_N_SAMPLES = _env_i("XIAO_HEI_EXPLORATION_NBV_N_SAMPLES", 40)
+_NBV_MAX_SKIPS = _env_i("XIAO_HEI_EXPLORATION_NBV_MAX_SKIPS", 25)
+_NBV_SKIP_RESET_CELLS = _env_i("XIAO_HEI_EXPLORATION_NBV_SKIP_RESET_CELLS", 60)
+_NBV_VISIT_MARK_CELLS = _env_i("XIAO_HEI_EXPLORATION_NBV_VISIT_MARK_CELLS", 3)
+_NBV_SKIP_MARK_CELLS = _env_i("XIAO_HEI_EXPLORATION_NBV_SKIP_MARK_CELLS", 4)
+_NBV_SEED = _env_i("XIAO_HEI_EXPLORATION_NBV_SEED", 0)
+
+# Frontier
+_FRONTIER_MIN_CLUSTER = _env_i("XIAO_HEI_EXPLORATION_FRONTIER_MIN_CLUSTER", 5)
+_FRONTIER_MAX_SKIPS = _env_i("XIAO_HEI_EXPLORATION_FRONTIER_MAX_SKIPS", 20)
+_FRONTIER_REJECT_RADIUS = _env_f("XIAO_HEI_EXPLORATION_FRONTIER_REJECT_RADIUS", 0.8)
+_FRONTIER_EMPTY_TICKS = _env_i("XIAO_HEI_EXPLORATION_FRONTIER_EMPTY_TICKS", 20)
+_FRONTIER_SKIP_RESET_CELLS = _env_i("XIAO_HEI_EXPLORATION_FRONTIER_SKIP_RESET_CELLS", 60)
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
 # Wall-clock budget for the sweep (8 min; 0 disables). None of the strategy's
@@ -266,7 +299,7 @@ def _build_responder(
 def _build_explorer(node):
     """Instantiate the configured exploration strategy, or None if disabled.
 
-    Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: frontier).
+    Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: nbv).
     Add new strategies here as additional elif branches.
     """
     if _EXPLORATION_MAX_WAYPOINTS <= 0:
@@ -276,16 +309,31 @@ def _build_explorer(node):
         from xiao_hei_vln.exploration import FrontierExplorer
         explorer = FrontierExplorer(
             max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
-            waypoint_reach_dist=0.3,
+            grid_resolution=_EXPLORATION_GRID_RESOLUTION,
+            waypoint_reach_dist=_EXPLORATION_REACH_DIST,
+            min_frontier_size=_FRONTIER_MIN_CLUSTER,
+            cost_threshold=_EXPLORATION_COST_THRESHOLD,
+            stuck_timeout_s=_EXPLORATION_WP_TIMEOUT_S,
             max_waypoint_dist=_EXPLORATION_MAX_WAYPOINT_DIST,
-            stuck_timeout_s=12.0,
-            max_consecutive_skips=20,
+            max_consecutive_skips=_FRONTIER_MAX_SKIPS,
+            reject_radius=_FRONTIER_REJECT_RADIUS,
+            empty_ticks_before_done=_FRONTIER_EMPTY_TICKS,
+            skip_reset_free_cells=_FRONTIER_SKIP_RESET_CELLS,
         )
     elif _EXPLORATION_STRATEGY == "nbv":
         from xiao_hei_vln.exploration import NextBestViewExplorer
         explorer = NextBestViewExplorer(
             max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
-            waypoint_reach_dist=0.3,
+            grid_resolution=_EXPLORATION_GRID_RESOLUTION,
+            waypoint_reach_dist=_EXPLORATION_REACH_DIST,
+            cost_threshold=_EXPLORATION_COST_THRESHOLD,
+            stuck_timeout_s=_EXPLORATION_WP_TIMEOUT_S,
+            max_consecutive_skips=_NBV_MAX_SKIPS,
+            n_samples=_NBV_N_SAMPLES,
+            visit_mark_radius_cells=_NBV_VISIT_MARK_CELLS,
+            skip_mark_radius_cells=_NBV_SKIP_MARK_CELLS,
+            skip_reset_free_cells=_NBV_SKIP_RESET_CELLS,
+            seed=_NBV_SEED,
         )
     else:
         node.get_logger().error(
@@ -296,7 +344,8 @@ def _build_explorer(node):
     node.get_logger().info(
         f"Exploration enabled: {type(explorer).__name__} "
         f"(strategy={_EXPLORATION_STRATEGY}, max_waypoints={_EXPLORATION_MAX_WAYPOINTS}, "
-        f"reach_dist=0.3m, max_waypoint_dist={_EXPLORATION_MAX_WAYPOINT_DIST}m)"
+        f"grid={_EXPLORATION_GRID_RESOLUTION}m, reach_dist={_EXPLORATION_REACH_DIST}m, "
+        f"wp_timeout={_EXPLORATION_WP_TIMEOUT_S}s)"
     )
     return explorer
 
