@@ -33,10 +33,11 @@ from xiao_hei_vln.messages.common import Stamp
 from xiao_hei_vln.scene import SceneRepresentation
 from xiao_hei_vln.sync import LatestCache
 
-# 1 Hz default (was 2 Hz): the OWLv2 + SAM-large stack needs ~0.5–0.8 s per
-# tick, so a 1 s period keeps ticks from overlapping. Override with
-# XIAO_HEI_VLM_TICK_HZ.
-TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "1.0"))
+# 2 Hz default: the viewpoint-novelty gate (TASK 36) now runs detect→lift→fuse
+# only on position-novel ticks, so a faster tick no longer floods the pipeline —
+# it just samples poses more finely without extra perception work when the robot
+# dwells. Override with XIAO_HEI_VLM_TICK_HZ.
+TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
 RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
