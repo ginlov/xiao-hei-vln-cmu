@@ -132,16 +132,19 @@ Reply with JSON only, no prose, no markdown fence:
 # a constant), so it is logged and compared against geometry before it is
 # allowed near the controller — the same discipline `same_space` failed, having
 # returned true on all 52 claimed sightings including chairs behind glass.
-APPROACH_BLOCK = """
-
-Three more fields, appended to the JSON above.
-
+APPROACH_HERE = """
   "here": "one short clause naming where the robot is standing and what it
       could search from here — e.g. \\"the dining area left of the staircase;
       table top hidden behind the chair backs\\". This is written into a log of
       places already visited and given back to you on later calls, so write it
       for a reader who cannot see this image."
-  "target_state": "far" | "approaching" | "adjacent",
+"""
+
+APPROACH_BLOCK = """
+
+{n} more fields, appended to the JSON above.
+
+{here}  "target_state": "far" | "approaching" | "adjacent",
       how close the camera is to the target, judged only from how the target
       sits in the frame — how much of the view it fills, whether the frame cuts
       it off, whether you can make out surface detail. Do not convert this to
@@ -358,6 +361,36 @@ there and you say why. Prefer somewhere it has not stood.
 {visited}
 """
 
+# The geometric renderings. Same instruction, a tenth of the tokens, and stated
+# in the only frame the model and the map share: the headings that number the
+# four faces. Map coordinates are the obvious thing to send and the useless one
+# — the model reasons over these images and has never seen the frame those
+# numbers live in — so `bearing` converts each visited pose into the heading
+# the robot would have to turn to in order to drive back to it. `xy` sends the
+# raw frame anyway, as the control that shows what that costs.
+VISITED_BLOCK_BEARING = """
+
+PLACES ALREADY SEARCHED, given as where they lie from where the robot stands
+right now. Headings use the same convention as the four images above: 0° is
+image 0 (front), 90° is image 1 (right), 180° is image 2 (back), 270° is image
+3 (left). Do not send it back to one of them unless the request can only be
+satisfied there and you say why. Prefer somewhere it has not stood.
+
+{visited}
+"""
+
+VISITED_BLOCK_XY = """
+
+PLACES ALREADY SEARCHED, as coordinates in the robot's map frame, oldest
+first. Do not send it back to one of them unless the request can only be
+satisfied there and you say why. Prefer somewhere it has not stood.
+
+{visited}
+"""
+
+VISITED_BLOCKS = {"prose": VISITED_BLOCK, "bearing": VISITED_BLOCK_BEARING,
+                  "xy": VISITED_BLOCK_XY}
+
 
 MISSION_BLOCK = """
 
@@ -463,14 +496,33 @@ it is what any later enforcement would be built from, and it is recorded.)
 def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
                  version: str = DEFAULT_PROMPT_VER,
                  visited: list[str] | None = None,
+                 visited_kind: str = "prose", ask_here: bool = True,
                  mission: dict | None = None) -> str:
     """The prompt, optionally with the approach fields, a visit log and a plan.
 
-    `visited` is the model's own `here` clauses from earlier calls. Feeding
-    back map coordinates would be useless — it reasons over images, not over a
-    frame it cannot see — but its own words about a place it has stood in are
-    something it can act on. On loft, without this, it proposed driving back to
-    the origin it had just left.
+    `visited` is the list of already-searched places, pre-rendered by the
+    caller; `visited_kind` says which of `VISITED_BLOCKS` frames it, because
+    the heading a bearing list is read under is not the heading prose is read
+    under. `ask_here` drops the `here` field from the request entirely, which
+    is only sane when nothing is going to feed it back.
+
+    The original design fed back the model's own `here` clauses on the grounds
+    that map coordinates are useless to something that reasons over images and
+    has never seen the frame. The first half of that has since been measured
+    and the second half has not. Over 41 paired calls — the same step, the same
+    images, with and without the block, against a same-prompt control arm that
+    establishes what stochastic thinking alone does — removing the block
+    changes the explore heading more than re-rolling the identical prompt does
+    (22/30 steps, sign test p = 0.016). So the model reads it. But on the one
+    thing the block asks for, keeping away from places already stood, the
+    measured advantage is 0.06 m, and the two samples of the *same* prompt
+    differ by 0.06 m too. It moves the answer without moving it anywhere.
+
+    That is what `visited_kind` exists to test. `bearing` states the same
+    places in the frame the model can actually act on — the headings that
+    number the four faces — at roughly a tenth of the tokens. `xy` sends raw
+    map coordinates, which is the reading the original docstring called
+    useless, kept as the control that shows whether it was right.
 
     `mission` is `{question, plan, k, done}`: the sentence the leg was cut out
     of, the whole ordered plan, which step is being asked about, and what has
@@ -486,7 +538,9 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
                          f"have {sorted(PROMPTS)}")
     base = PROMPTS[version].format(phrase=phrase, size=size)
     if approach:
-        base += APPROACH_BLOCK
+        base += APPROACH_BLOCK.format(
+            n="Three" if ask_here else "Two",
+            here=APPROACH_HERE.lstrip("\n") if ask_here else "")
     if mission:
         keep = mission.get("keepouts") or []
         done = mission.get("done") or []
@@ -503,7 +557,10 @@ def build_prompt(phrase: str, size: int = 640, *, approach: bool = False,
             keepouts=("" if not keep else KEEPOUT_BLOCK.format(
                 keepouts="\n".join(f"  - {x}" for x in keep))))
     if visited:
-        base += VISITED_BLOCK.format(visited="\n".join(
+        if visited_kind not in VISITED_BLOCKS:
+            raise SystemExit(f"unknown visited_kind {visited_kind!r}; "
+                             f"have {sorted(VISITED_BLOCKS)}")
+        base += VISITED_BLOCKS[visited_kind].format(visited="\n".join(
             f"  {i}. {v}" for i, v in enumerate(visited, 1)))
     return base
 
@@ -659,13 +716,27 @@ def ask_claude(prompt: str, images: list[bytes], model: str,
     # japanese_room runs past 2048 and comes back with the JSON cut mid-object.
     # `parse` then finds no closing brace and reports "unparseable", which
     # looks like a model failure and is a budget failure.
+    #
+    # 4096 then stopped covering it either, and not because the answer grew:
+    # on `claude-opus-5` thinking is on unless it is switched off — a change
+    # from 4.8, where omitting the parameter meant no thinking — and thinking
+    # is billed against this same ceiling. Same shape as the Gemini note
+    # below. A grounding call that reasons its way across four faces can
+    # spend the whole budget before it writes a brace, so the reply is not
+    # cut off late, it never starts: `usage.output_tokens` comes back equal
+    # to the ceiling. 16000 covers the thinking and the answer, and stays
+    # under the SDK's non-streaming HTTP timeout, which is what rules out
+    # simply going to the model's 128000.
     msg = client.messages.create(
-        model=model, max_tokens=4096,
+        model=model,
+        max_tokens=int(os.environ.get("XIAO_HEI_CLAUDE_MAX_TOKENS", "16000")),
         messages=[{"role": "user", "content": content}])
     if msg.stop_reason == "max_tokens":
         raise RuntimeError(
-            f"reply hit max_tokens ({msg.usage.output_tokens}) and is truncated "
-            f"— raise it rather than treating this as a bad reply")
+            f"reply hit max_tokens ({msg.usage.output_tokens} output tokens, "
+            f"thinking counted in) and is truncated — raise "
+            f"XIAO_HEI_CLAUDE_MAX_TOKENS rather than treating this as a bad "
+            f"reply")
     return "".join(b.text for b in msg.content if b.type == "text")
 
 

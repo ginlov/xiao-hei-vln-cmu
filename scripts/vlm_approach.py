@@ -234,6 +234,83 @@ def free_range_along(ray_xy: np.ndarray, origin: np.ndarray, scan_map: np.ndarra
     return float(along[hit].min()) if hit.any() else float("inf")
 
 
+# Two lifts further apart than this are looking at different objects. Not a new
+# threshold: it is `dominant_cluster`'s `gap_m`, which is already this file's
+# definition of when neighbouring returns stop belonging to one thing.
+FEATURE_AGREE_M = 0.35
+
+
+def box_range(box_px, face_idx: int, scan_cam: np.ndarray,
+              pose: dict) -> float | None:
+    """Lidar range at a box's centre, or None when nothing returns in the cone."""
+    w_deg, h_deg = box_angular_size(box_px, face_idx)
+    cone = float(np.clip(min(w_deg, h_deg) / 4.0, 1.0, 5.0))
+    res = locate(box_px, face_idx, scan_cam, cone_deg=cone, pose=pose)
+    return float(res["range"]) if res.get("n") else None
+
+
+def aim_box(reply: dict, size: int, scan_map: np.ndarray,
+            pose: dict) -> tuple[list[float], str | None]:
+    """The box to point the ray at, and why the feature box was refused.
+
+    `feature_box_2d` is the distinguishing feature *of* the target — the
+    elephant figurine on the tea table — and where it really is one it is the
+    better box to lift from: tighter, and its edges do not run off the object
+    onto the wall behind. The trouble is that the anchor lands there too. Asked
+    for "the water cooler near the window", `runs/o_1_0814_02` put the cooler
+    in `box_2d` and the window frame in `feature_box_2d`, 24° away; the leg
+    drove at the window, lifted 1.77 m against the cooler's 1.17 m, and failed
+    `boxed in` standing in front of the thing it was sent to.
+    `_RELATIONAL_BRANCH` already warns that returning the anchor is the
+    commonest way to get this wrong, but it only guards the comparative forms
+    it names, and "near the window" is not one of them.
+
+    Containment is the obvious test and it is wrong. A feature sitting *on*
+    something legitimately pokes out above its box: over 222 recorded steps
+    carrying both boxes, 84% put the feature box outside the target box, and
+    the ones that do include the figurine on the tea table and the clock on
+    the nightstand, which are exactly the cases worth keeping. Angular
+    separation does not divide them either — the clock is 28° off its
+    nightstand, and the table *under* the plant, which is an anchor, is 38°.
+
+    What does divide them is the measurement we are about to take. A feature on
+    the target is at the target's range; an anchor across the room is not. Over
+    the 102 steps where both boxes lift, the figurine reads 0.26 m and 0.21 m
+    from its table and the clock 0.17 m from its nightstand, while the window
+    reads 0.50 m and 0.60 m from the cooler and the sofa 0.47 m from the
+    guitar. Testing the range costs one more `locate` on a scan already in
+    memory, and it tests the property that actually matters — whether the ray
+    lands on the target — rather than a proxy for it.
+
+    Refusing is cheap because the feature box is not the more accurate of the
+    two anyway: scored against the model's own independent `distance_m` over
+    the steps this refuses, the target box was closer on 40 and the feature box
+    on 41. It is worth keeping when it is real, and it is not worth guessing.
+    """
+    space = reply.get("coord_space")
+    target = to_pixels(reply["box_2d"], space, size)
+    raw = reply.get("feature_box_2d")
+    if not raw:
+        return target, None
+    feature = to_pixels(raw, space, size)
+    face = int(reply["image_index"])
+    cam = scan_map_to_cam(scan_map, pose)
+    rt, rf = (box_range(target, face, cam, pose),
+              box_range(feature, face, cam, pose))
+    # Unverifiable is not the same as wrong, but the target box is the one the
+    # model was asked to draw round the target, so it is what an unresolved
+    # disagreement falls back to. Where only the feature box lifts, taking the
+    # target box costs a commit and buys a step — and a step is what we want
+    # when the thing we would have committed to might be a window.
+    if rt is None or rf is None:
+        return target, ("feature box ignored: no lift to check it against "
+                        f"(target {rt}, feature {rf})")
+    if abs(rt - rf) > FEATURE_AGREE_M:
+        return target, (f"feature box ignored: it lifts to {rf:.2f} m against "
+                        f"the target box's {rt:.2f} m — different objects")
+    return feature, None
+
+
 def next_waypoint(box_px, face_idx: int, scan_map: np.ndarray, pose: dict, *,
                   phrase: str | None = None, standoff: float = STANDOFF_M,
                   max_step: float = MAX_STEP_M) -> Waypoint:
