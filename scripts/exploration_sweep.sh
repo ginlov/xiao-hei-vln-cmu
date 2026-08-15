@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Run the frontier explorer across Unity scenes, one after another.
+# Run an exploration strategy across Unity scenes, one after another.
 #
 # Per scene: mount it into the sim, launch, wait for the explorer to log DONE,
 # tear down. The node itself writes exploration.log, exploration.png and
-# rviz.png into exploration_logs/<scene>/ — this just drives the loop and
-# collates a results.csv at the end.
+# rviz.png into exploration_logs/<scene>/<strategy>/ — this just drives the
+# loop and collates a results_<strategy>.csv at the end.
 #
 #   scripts/exploration_sweep.sh chinese_room        # one scene (do this first)
 #   scripts/exploration_sweep.sh                     # every scene found
+#   STRATEGY=nbv scripts/exploration_sweep.sh chinese_room
 #
-# Env: SCENES_DIR, MAX_WAYPOINTS, TIMEOUT, DISPLAY.
+# The strategy is part of the artefact path, so sweeping one scene with a
+# second STRATEGY leaves the first one's logs and PNGs intact.
+#
+# Env: SCENES_DIR, MAX_WAYPOINTS, STRATEGY, TIMEOUT, DISPLAY. SCENES_DIR is
+# discovered when unset, so normally you set nothing but STRATEGY.
 #
 # If rviz.png is missing, RViz's window title may not match DEFAULT_MATCH in
 # exploration/_capture.py. List the real titles with:
@@ -20,8 +25,27 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-SCENES_DIR=${SCENES_DIR:-$HOME/Downloads/unity_env_models}
+
+# Scene location differs per box, so discover it — the same candidate list
+# scripts/sim.sh walks. First directory holding an unpacked scene wins;
+# SCENES_DIR overrides the search entirely.
+_discover_scenes_dir() {
+  local cand d
+  for cand in \
+      "$HOME/workspace/dataset/unity-scene" \
+      "$HOME/workspace/dataset/unity_scenes_extracted" \
+      "$HOME/workspace/dataset/unity_scenes" \
+      "$HOME/Downloads/unity_env_models"; do
+    [ -d "$cand" ] || continue
+    for d in "$cand"/*/; do
+      [ -d "$d/environment" ] && { echo "$cand"; return 0; }
+    done
+  done
+  echo "$HOME/Downloads/unity_env_models"   # legacy default, for the error message
+}
+SCENES_DIR=${SCENES_DIR:-$(_discover_scenes_dir)}
 MAX_WAYPOINTS=${MAX_WAYPOINTS:-500}
+STRATEGY=${STRATEGY:-frontier}    # also the artefact subdirectory, see below
 TIMEOUT=${TIMEOUT:-1800}          # per scene, incl. the 90-190s of sim startup
 export DISPLAY=${DISPLAY:-:0}
 
@@ -61,16 +85,21 @@ for scene in "${scenes[@]}"; do
   # truncates), and deleting it here while a lingering container still holds it
   # open orphans the file — writes vanish and only the PNGs (re-mkdir'd on DONE)
   # survive. Just clear the previous run's stale artefacts.
-  rm -f "$LOGS/$scene"/exploration.log "$LOGS/$scene"/*.png 2>/dev/null
-  log=$LOGS/$scene/exploration.log
+  rm -f "$LOGS/$scene/$STRATEGY"/exploration.log "$LOGS/$scene/$STRATEGY"/*.png 2>/dev/null
+  log=$LOGS/$scene/$STRATEGY/exploration.log
 
-  # The node names its log dir after this scene, so exploration_logs/<scene>/
-  # comes for free — no separate log-dir export.
+  # The node names its log dir after this scene and strategy, so
+  # exploration_logs/<scene>/<strategy>/ comes for free — no log-dir export.
   export XIAO_HEI_SCENE_DIR_HOST=$dir
   export XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=$MAX_WAYPOINTS
+  export XIAO_HEI_EXPLORATION_STRATEGY=$STRATEGY
   export XIAO_HEI_RESPONDER=dummy
 
-  "${COMPOSE[@]}" up -d || { echo "$scene: compose up failed" >&2; continue; }
+  # --remove-orphans: the project name is pinned, so a container left by another
+  # stack (e.g. the scene_gemini sidecar) would otherwise survive the whole
+  # sweep, holding GPU memory the sim needs to render.
+  "${COMPOSE[@]}" up -d --remove-orphans \
+    || { echo "$scene: compose up failed" >&2; continue; }
 
   # Detached, unlike the `docker exec -it` used by hand — that would block here.
   docker exec -d iros2026_system "$SIM_LAUNCH"
@@ -95,7 +124,7 @@ done
 
 # Collate. Duration comes from the log's own START/DONE stamps, not wall clock,
 # which would include the sim startup we did not spend exploring.
-csv=$LOGS/results.csv
+csv=$LOGS/results_$STRATEGY.csv
 {
   echo "scene,duration_s,visited,skipped,reason"
   for scene in "${scenes[@]}"; do
@@ -108,7 +137,7 @@ csv=$LOGS/results.csv
         done = 1
       }
       END { if (!done) printf "%s,,,,did-not-finish\n", scene }
-    ' "$LOGS/$scene/exploration.log" 2>/dev/null || echo "$scene,,,,no-log"
+    ' "$LOGS/$scene/$STRATEGY/exploration.log" 2>/dev/null || echo "$scene,,,,no-log"
   done
 } > "$csv"
 

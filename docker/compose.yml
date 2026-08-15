@@ -72,10 +72,15 @@ services:
       - XIAO_HEI_PERCEPTION_MIN_INLIERS
       - XIAO_HEI_PERCEPTION_SCORE_THRESHOLD
       - XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=${XIAO_HEI_EXPLORATION_MAX_WAYPOINTS:-500}
+      # Wall-clock cutoff for the sweep (8 min). 0 disables.
+      - XIAO_HEI_EXPLORATION_MAX_SECONDS=${XIAO_HEI_EXPLORATION_MAX_SECONDS:-480}
       - XIAO_HEI_EXPLORATION_STRATEGY=${XIAO_HEI_EXPLORATION_STRATEGY:-frontier}
       - XIAO_HEI_VLM_TICK_HZ
       - XIAO_HEI_VLM_LOG_DIR=${XIAO_HEI_VLM_LOG_DIR:-/vlm_logs}
       - XIAO_HEI_EXPLORATION_LOG_DIR=${XIAO_HEI_EXPLORATION_LOG_DIR:-/exploration_logs}
+      # Re-write both PNGs every N s, so a run torn down before DONE still
+      # leaves images. 0 = end of sweep only.
+      - XIAO_HEI_EXPLORATION_SNAPSHOT_S=${XIAO_HEI_EXPLORATION_SNAPSHOT_S:-30}
       # Periodic scene-graph dump for offline dataset building. Empty → off.
       - XIAO_HEI_SCENE_DUMP_PATH=${XIAO_HEI_SCENE_DUMP_PATH:-}
       # Raw-frame capture for the offline perception replay (image + scan +

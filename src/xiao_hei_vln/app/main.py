@@ -47,6 +47,13 @@ _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOI
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
+# Wall-clock budget for the sweep (8 min; 0 disables). None of the strategy's
+# own stop conditions is bounded in time, so a big scene with reachable
+# frontiers left never hands over to the responder.
+_EXPLORATION_MAX_SECONDS = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_SECONDS", "480"))
+# How often to re-write exploration.png / rviz.png mid-sweep (0 = on DONE only).
+# A run killed before DONE would otherwise leave no image at all.
+_EXPLORATION_SNAPSHOT_S = float(os.environ.get("XIAO_HEI_EXPLORATION_SNAPSHOT_S", "30"))
 # Scene the sim is running. Only the basename is meaningful here — the value is
 # a *host* path (compose bind-mounts it into the sim, not into this container),
 # so we never open it, we only name the log dir after it.
@@ -54,15 +61,26 @@ _EXPLORATION_SCENE = (
     os.path.basename(os.environ.get("XIAO_HEI_SCENE_DIR_HOST", "").rstrip("/"))
     or "default_scene"
 )
+# The strategy is part of the artefact path too: comparing two algorithms on one
+# scene is the common case, and a shared directory means the second run destroys
+# the first's evidence. "no_exploration" keeps a disabled run from claiming — and
+# truncating — a real strategy's directory.
+_EXPLORATION_RUN_LABEL = (
+    _EXPLORATION_STRATEGY if _EXPLORATION_MAX_WAYPOINTS > 0 else "no_exploration"
+)
 
 
 def _exploration_dir() -> Path:
-    """Where this run's log and images go: <log dir>/<scene>/.
+    """Where this run's log and images go: <log dir>/<scene>/<strategy>/.
 
-    Keeping every run under a scene name means consecutive runs never clobber
-    each other — exploration.log is opened with mode "w".
+    Keying on both means consecutive runs never clobber each other —
+    exploration.log opens with mode "w", so a collision is a deletion.
     """
-    return Path(_EXPLORATION_LOG_DIR or "/exploration_logs") / _EXPLORATION_SCENE
+    return (
+        Path(_EXPLORATION_LOG_DIR or "/exploration_logs")
+        / _EXPLORATION_SCENE
+        / _EXPLORATION_RUN_LABEL
+    )
 
 
 @dataclass(frozen=True)
@@ -279,16 +297,43 @@ def _build_explorer(node):
     return explorer
 
 
-def _maybe_save_png(explorer, node) -> None:
+def _budget_expired(clock_start: float | None, now_s: float, budget_s: float) -> bool:
+    """Has the sweep burned its wall-clock budget?
+
+    ``clock_start`` is None until the first tick with a pose, so the 90-190 s
+    wait for /state_estimation costs nothing. ``budget_s <= 0`` disables it.
+    """
+    if budget_s <= 0 or clock_start is None:
+        return False
+    return now_s - clock_start >= budget_s
+
+
+def _publish_atomically(out_path: Path, write) -> None:
+    """Run ``write(tmp)`` then rename tmp over ``out_path``.
+
+    Snapshots are read mid-run (an `scp`, an auto-reloading viewer), so the
+    file must never be observed half-written. The temp name keeps the ``.png``
+    suffix — matplotlib and pillow both infer the format from it.
+    """
+    tmp = out_path.with_name(f".{out_path.stem}.partial{out_path.suffix}")
+    write(tmp)
+    tmp.replace(out_path)
+
+
+def _maybe_save_png(explorer, node, *, quiet: bool = False) -> None:
     """Save the debug PNG if XIAO_HEI_EXPLORATION_LOG_DIR is configured.
 
     Skipped silently when the active strategy does not expose get_grid() /
     get_visited_waypoints() (not all algorithms maintain an OccupancyGrid).
+
+    ``quiet`` demotes the routine log lines to debug — set it for the periodic
+    snapshots, which would otherwise narrate every interval.
     """
     if not _EXPLORATION_LOG_DIR:
         return
     if not (hasattr(explorer, "get_visited_waypoints") and hasattr(explorer, "get_grid")):
-        node.get_logger().info("Exploration plot skipped: strategy does not support it.")
+        if not quiet:
+            node.get_logger().info("Exploration plot skipped: strategy does not support it.")
         return
     try:
         from xiao_hei_vln.exploration import save_exploration_plot
@@ -296,36 +341,46 @@ def _maybe_save_png(explorer, node) -> None:
         out_dir = _exploration_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "exploration.png"
-        save_exploration_plot(
-            explorer.get_visited_waypoints(),
-            explorer.get_grid(),
+        _publish_atomically(
             out_path,
+            lambda tmp: save_exploration_plot(
+                explorer.get_visited_waypoints(),
+                explorer.get_grid(),
+                tmp,
+            ),
         )
-        node.get_logger().info(f"Exploration plot saved to {out_path}")
+        log = node.get_logger().debug if quiet else node.get_logger().info
+        log(f"Exploration plot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save exploration plot: {exc}")
 
 
-def _maybe_save_rviz(node) -> None:
+def _maybe_save_rviz(node, *, quiet: bool = False) -> None:
     """Screenshot the sim's RViz window if a display is available.
 
     Gated on DISPLAY, so a headless run (the challenge submission, CI) skips
     it without complaint rather than failing.  Everything is best-effort: a
     missing X server, a missing python-xlib, or an RViz that never opened
-    must not take the node down — exploration has already finished by the
-    time we get here, and a lost debug image is not worth a crash.
+    must not take the node down — a lost debug image is not worth a crash.
+
+    ``quiet`` demotes the routine log lines to debug (see `_maybe_save_png`).
+    A *failed* grab still warns either way — that is how you notice mid-run
+    that snapshots are not landing.
     """
     if not _EXPLORATION_LOG_DIR:
         return
     if not os.environ.get("DISPLAY"):
-        node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
+        if not quiet:
+            node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
         return
     try:
         from xiao_hei_vln.exploration import save_rviz_screenshot
 
         out_path = _exploration_dir() / "rviz.png"
-        save_rviz_screenshot(out_path)
-        node.get_logger().info(f"RViz screenshot saved to {out_path}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _publish_atomically(out_path, save_rviz_screenshot)
+        log = node.get_logger().debug if quiet else node.get_logger().info
+        log(f"RViz screenshot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save RViz screenshot: {exc}")
 
@@ -481,7 +536,30 @@ def main() -> None:
         "exploration_started": False,
         "last_exploration_wp": None,
         "wp_start_time": None,
+        # Wall-clock cutoff. The strategy is never told it expired —
+        # is_complete() stays False — so the flag is what ends the sweep.
+        "exploration_clock_start": None,
+        "exploration_timed_out": False,
     }
+
+    def _exploration_over() -> bool:
+        """True once the sweep has ended, for either reason."""
+        return explorer is None or explorer.is_complete() or state["exploration_timed_out"]
+
+    if _EXPLORATION_SNAPSHOT_S > 0 and explorer is not None:
+
+        def _snapshot_exploration() -> None:
+            # rclpy's default executor is single-threaded, so this never
+            # interleaves with tick() — the grid is read between ticks.
+            if _exploration_over():
+                return  # the end-of-sweep save already wrote the fullest pair
+            _maybe_save_png(explorer, node, quiet=True)
+            _maybe_save_rviz(node, quiet=True)
+
+        node.create_timer(_EXPLORATION_SNAPSHOT_S, _snapshot_exploration)
+        node.get_logger().info(
+            f"Exploration snapshots every {_EXPLORATION_SNAPSHOT_S:.0f}s → {_exploration_dir()}"
+        )
 
     def tick() -> None:
         from xiao_hei_vln.messages.outputs import WaypointPathResponse
@@ -490,11 +568,11 @@ def main() -> None:
         snapshot = cache.snapshot(state["tick_id"], Stamp(sec=now.sec, nanosec=now.nanosec))
         state["tick_id"] += 1
 
-        # Exploration phase: runs until the strategy completes. A question
-        # arriving mid-exploration does NOT interrupt it — exploration keeps
-        # going (still building the scene) and the answer is deferred to the
-        # responder block below once explorer.is_complete() is True.
-        if explorer is not None and not explorer.is_complete():
+        # Exploration phase: runs until the strategy completes or the wall-clock
+        # budget expires. A question arriving mid-exploration does NOT interrupt
+        # it — exploration keeps going (still building the scene) and the answer
+        # is deferred to the responder block below once the sweep is over.
+        if not _exploration_over():
             # Build the scene graph on the fly *while* exploring. scene.update()
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
             # perception detect→lift→fuse cycle without ever emitting an
@@ -509,6 +587,7 @@ def main() -> None:
                 state["exploration_started"] = True
                 _exp_log("START",
                          max_waypoints=explorer._max_waypoints,
+                         max_seconds=(_EXPLORATION_MAX_SECONDS or "off"),
                          threshold=_WP_REACHED_THRESHOLD,
                          stuck_timeout=f"{explorer._stuck_timeout_s}s",
                          max_skips=explorer._max_consecutive_skips)
@@ -518,6 +597,41 @@ def main() -> None:
             robot_pos = (
                 f"({pose.position.x:.2f},{pose.position.y:.2f})" if pose is not None else "unknown"
             )
+
+            # Clock starts at the first pose, not at START: the node ticks for
+            # 90-190 s before /state_estimation arrives and cannot explore yet.
+            if (
+                _EXPLORATION_MAX_SECONDS > 0
+                and state["exploration_clock_start"] is None
+                and pose is not None
+            ):
+                state["exploration_clock_start"] = now_s
+                _exp_log("CLOCK_START",
+                         budget=f"{_EXPLORATION_MAX_SECONDS:.0f}s",
+                         robot=robot_pos)
+
+            clock_start = state["exploration_clock_start"]
+            if _budget_expired(clock_start, now_s, _EXPLORATION_MAX_SECONDS):
+                # Same exit as the strategy's own stop conditions — DONE, then
+                # the final images — so log watchers (vla3d_eval_sim.sh greps
+                # " DONE ") see one termination event whatever the reason.
+                state["exploration_timed_out"] = True
+                elapsed = now_s - clock_start
+                _exp_log("DONE",
+                         visited=len(explorer._visited),
+                         skipped=explorer.skipped_count,
+                         reason="time_limit",
+                         elapsed=f"{elapsed:.1f}s",
+                         budget=f"{_EXPLORATION_MAX_SECONDS:.0f}s",
+                         robot=robot_pos)
+                node.get_logger().info(
+                    f"Exploration time limit reached ({elapsed:.1f}s of "
+                    f"{_EXPLORATION_MAX_SECONDS:.0f}s): visited={len(explorer._visited)} "
+                    f"skipped={explorer.skipped_count} — handing over to the responder"
+                )
+                _maybe_save_png(explorer, node)
+                _maybe_save_rviz(node)
+                return
 
             # Advance when nav stack has settled within threshold for 3 consecutive ticks.
             if explorer._current_target is not None:

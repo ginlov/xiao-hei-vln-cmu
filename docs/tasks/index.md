@@ -68,6 +68,9 @@ Every row below links to a distinct document.
 | 26 | [Scan-accumulator keyframe sweep & side-by-side dump comparison](TASK%2026%20-%20Scan-accumulator%20keyframe%20sweep%20and%20side-by-side%20dump%20comparison.md) | Dumps, viewer & GIF tool done; scored sweep not run |
 | 27 | [Verifying the 2D-detection → 3D-lift angular convention](TASK%2027%20-%20Verifying%20the%202D-detection%20to%203D-lift%20angular%20convention.md) | Done — extrinsic bug fixed + image/pose timestamp-matched in LatestCache |
 | 28 | [Swap YOLO-World for OWLv2 & drop the tick to 1 Hz](TASK%2028%20-%20Swap%20YOLO-World%20for%20OWLv2%20and%20drop%20the%20tick%20to%201%20Hz.md) | OWLv2 measured & reverted (over-produced + too slow); kept 1 Hz + SAM-Large |
+| 40 | [Periodic exploration snapshots instead of end-of-sweep only](TASK%2040%20-%20Periodic%20exploration%20snapshots%20instead%20of%20end-of-sweep%20only.md) | Done |
+| 41 | [Artefact paths keyed on scene and strategy](TASK%2041%20-%20Artefact%20paths%20keyed%20on%20scene%20and%20strategy.md) | Done |
+| 42 | [An eight-minute wall-clock cutoff for exploration](TASK%2042%20-%20An%20eight-minute%20wall-clock%20cutoff%20for%20exploration.md) | Done |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.
