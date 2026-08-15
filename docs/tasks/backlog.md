@@ -385,6 +385,39 @@ purely a perception-benchmark item.
 
 ---
 
+## B10 — Viewpoint redundancy degrades the box (dwell bias)
+
+**Status:** both halves shipped (TASK 33); multi-scene sweep of the two knobs
+pending, centre-drift only partly addressed
+**Files:** `src/xiao_hei_vln/perception/object_map.py`,
+`src/xiao_hei_vln/perception/responder.py`, `src/xiao_hei_vln/app/main.py`
+
+When the robot dwells at one pose it produces many near-identical partial views;
+each carries its point-count weight, so a single vantage can own the majority of
+a node's box weight (measured: 228/240 obs = 88% of node #13's weight from one
+0.5 m cell), collapsing the box to that thin slice and drifting its centre.
+
+**Shipped (both levers):**
+- *Estimator* — flat nodes size from the **max** per-view extent, not the mean,
+  recovering the reach of the best view (arabic_room carpet GT-coverage 20→56%,
+  64→87%; volumetric untouched).
+- *Capture-time novelty gate* — `responder._inject_visible`: the accumulator
+  runs every tick while detect/lift/fuse fires only when the pose is farther
+  than `novel_viewpoint_m` (env `XIAO_HEI_NOVEL_VIEWPOINT_M`) from ALL kept
+  `(x,y)` (360° camera, so no heading term). Reproducible offline via
+  `replay_score.py --novel-viewpoint-m`. **Default OFF (0.0):** measured on
+  arabic_room, a 0.3 m gate cuts compute ~15× and raises box IoU@0.25
+  (0.051→0.073) but drops centre-distance mAP@0.5 (0.195→0.173) — it costs
+  detection recall, so it stays opt-in until a corpus sweep justifies it.
+
+**Next:** get the gate's box-quality/compute gain WITHOUT the recall cost —
+gate the *fusion weight* per viewpoint (perceive every frame, down-weight
+redundant poses in `_recompute`) rather than skipping the observation entirely.
+Then sweep `novel_viewpoint_m` and `max` vs a high percentile together against
+the real metric. See TASK 33.
+
+---
+
 ## B9 — Node box centre and extent use inconsistent estimators (points fall outside the box)
 
 **Status:** diagnosed (arabic_room node #0, TASK 31) — deferred, revisit later

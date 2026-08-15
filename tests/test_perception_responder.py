@@ -157,9 +157,9 @@ class _FakeLifter:
         return LiftResult(position=pos, n_inliers=len(pts), inlier_points=pts)
 
 
-def _detection(label: str, score: float = 0.9) -> Detection:
+def _detection(label: str, score: float = 0.9, sam: float = 1.0) -> Detection:
     return Detection(
-        label=label, score=score,
+        label=label, score=score, sam_score=sam,
         bbox_xyxy=(100.0, 100.0, 200.0, 200.0),
         mask=np.zeros((640, 1920), dtype=bool),
     )
@@ -190,6 +190,8 @@ def _responder(
     lifter_positions: list[Vector3 | None] | None = None,
     trajectory_path: Path | None = None,
     score_threshold: float = 0.25,
+    sam_threshold: float = 0.0,         # gate off by default so unit ticks are unaffected
+    novel_viewpoint_m: float = 0.0,     # gate off by default so unit ticks are unaffected
     take_waypoint_reached_signals=None,
 ) -> tuple[PerceptionResponder, _FakeClient, _FakeLifter, SceneRepresentation]:
     scene = scene or SceneRepresentation()
@@ -203,6 +205,8 @@ def _responder(
         vocabulary=vocab,
         trajectory_path=trajectory_path,
         score_threshold=score_threshold,
+        sam_threshold=sam_threshold,
+        novel_viewpoint_m=novel_viewpoint_m,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
         object_map=ObjectMap(),
         scan_accumulator=ScanAccumulator(),
@@ -221,6 +225,30 @@ class TestInjectVisible:
         # Snapshot with pose but no image / no scan → no /detect call.
         r.respond(_snapshot(pose=_pose(0, 0)))
         assert client.detect_calls == 0
+
+    def test_novelty_gate_skips_perception_until_robot_moves(self) -> None:
+        """Perception fires only from viewpoints farther than the threshold
+        from EVERY previously perceived pose (nearest-neighbour over all kept),
+        so dwelling and revisits do not re-run detect."""
+        r, client, _, _ = _responder(novel_viewpoint_m=0.5)
+
+        def tick(x, y):
+            r.respond(_snapshot(pose=_pose(x, y), image=_image(),
+                                scan=_scan(np.zeros((5, 4)))))
+
+        tick(0.0, 0.0); assert client.detect_calls == 1     # first is always novel
+        tick(0.0, 0.0); assert client.detect_calls == 1     # same pose -> skipped
+        tick(0.3, 0.0); assert client.detect_calls == 1     # within 0.5 m -> skipped
+        tick(1.0, 0.0); assert client.detect_calls == 2     # moved > 0.5 m -> novel
+        tick(1.0, 0.5); assert client.detect_calls == 2     # within 0.5 m of (1,0)
+        tick(0.2, 0.0); assert client.detect_calls == 2     # revisit near kept origin
+
+    def test_novelty_gate_disabled_perceives_every_tick(self) -> None:
+        r, client, _, _ = _responder(novel_viewpoint_m=0.0)
+        snap = _snapshot(pose=_pose(0, 0), image=_image(),
+                         scan=_scan(np.zeros((5, 4))))
+        r.respond(snap); r.respond(snap)
+        assert client.detect_calls == 2                     # gate off -> no skipping
 
     def test_detections_lifted_and_added_to_scene(self) -> None:
         positions = [
@@ -254,6 +282,20 @@ class TestInjectVisible:
         assert lifter.calls == 2
         labels = {o.label for o in scene.objects}
         assert labels == {"table"}     # chair was dropped (no LiDAR support)
+
+    def test_low_sam_masks_are_dropped_before_lifting(self) -> None:
+        """The SAM mask-quality gate (B5) drops weak masks before they reach the
+        lifter, so a low-SAM detection never becomes a node."""
+        r, _, lifter, scene = _responder(
+            sam_threshold=0.8,
+            detections=[_detection("chair", sam=0.5),   # below gate → dropped
+                        _detection("table", sam=0.95)],  # above gate → kept
+            lifter_positions=[Vector3(x=2.0, y=0.0, z=0.0)],
+        )
+        r.respond(_snapshot(
+            pose=_pose(0, 0), image=_image(), scan=_scan(np.zeros((5, 4)))))
+        assert lifter.calls == 1                          # only the high-SAM mask lifted
+        assert {o.label for o in scene.objects} == {"table"}
 
     def test_set_classes_pushed_with_current_vocab(self) -> None:
         r, client, _, _ = _responder()

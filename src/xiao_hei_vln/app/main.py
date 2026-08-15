@@ -100,9 +100,11 @@ class _PerceptionSettings:
 
     base_url: str
     score_threshold: float
+    sam_threshold: float
     min_inliers: int
     scan_keyframes: int
     scan_voxel_m: float
+    novel_viewpoint_m: float
 
     @classmethod
     def from_env(cls) -> _PerceptionSettings:
@@ -110,18 +112,31 @@ class _PerceptionSettings:
         # `perception` extra), and the package must stay importable without it.
         from xiao_hei_vln.perception.client import DEFAULT_BASE_URL
         from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS
-        from xiao_hei_vln.perception.responder import DEFAULT_SCORE_THRESHOLD
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NOVEL_VIEWPOINT_M,
+            DEFAULT_SAM_THRESHOLD,
+            DEFAULT_SCORE_THRESHOLD,
+        )
 
         return cls(
             base_url=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL),
             score_threshold=float(os.environ.get(
                 "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
             )),
+            sam_threshold=float(os.environ.get(
+                "XIAO_HEI_PERCEPTION_SAM_THRESHOLD", str(DEFAULT_SAM_THRESHOLD),
+            )),
             min_inliers=int(os.environ.get(
                 "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
             )),
-            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            # 2, not the accumulator's own 10: the offline perception sweeps
+            # (score/SAM/novelty-gate/box-estimator tuning) were all measured at
+            # 2 keyframes, so the live default matches what those numbers reflect.
+            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "2")),
             scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+            novel_viewpoint_m=float(os.environ.get(
+                "XIAO_HEI_NOVEL_VIEWPOINT_M", str(DEFAULT_NOVEL_VIEWPOINT_M),
+            )),
         )
 
     def as_log_config(self) -> dict[str, object]:
@@ -132,7 +147,9 @@ class _PerceptionSettings:
         return {
             "perception_base_url": self.base_url,
             "score_threshold": self.score_threshold,
+            "sam_threshold": self.sam_threshold,
             "min_inliers": self.min_inliers,
+            "novel_viewpoint_m": self.novel_viewpoint_m,
         }
 
 
@@ -177,6 +194,8 @@ def _build_perception_responder(
         lifter=lifter,
         vocabulary=Vocabulary(),
         score_threshold=settings.score_threshold,
+        sam_threshold=settings.sam_threshold,
+        novel_viewpoint_m=settings.novel_viewpoint_m,
         trajectory_path=trajectory_path,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
         logger=logger,

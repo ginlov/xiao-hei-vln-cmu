@@ -92,6 +92,49 @@ def test_size_scaled_gap_keeps_small_same_label_neighbours_apart():
     assert len(om.nodes) == 2
 
 
+def test_flat_node_box_takes_max_extent_not_mean():
+    """A flat node sized under many redundant narrow views must keep the reach
+    of the one wide view (max per-view extent), not shrink to their mean.
+
+    Simulates the dwell case: one full-width look at the carpet, then five thin
+    slices from a parked pose. The mean of the per-view widths would collapse
+    the box; the flat estimator takes the max, recovering the object."""
+    om = ObjectMap()
+    om.add("carpet", 0.9, _slab([1.0, 0.5, 0.04], [1.0, 0.5, 0.01], n=200, seed=0))
+    for s in range(5):                                   # redundant thin slices
+        om.add("carpet", 0.8, _slab([1.0, 0.5, 0.04], [0.2, 0.5, 0.01], n=200, seed=s + 1))
+    assert len(om.nodes) == 1
+    dx = om.nodes[0].cmax[0] - om.nodes[0].cmin[0]
+    assert dx > 1.5                                      # kept the wide view's ~2.0 m reach
+
+
+def test_volumetric_node_still_uses_mean_extent():
+    """The flat estimator must not touch volumetric objects: a tall (non-flat)
+    node keeps the shrink-to-mean behaviour that cancels pooling inflation."""
+    om = ObjectMap()
+    om.add("chair", 0.8, _cube([0.0, 0.0, 0.0], half=0.25, seed=1))
+    om.add("chair", 0.9, _cube([0.25, 0.0, 0.0], half=0.25, seed=2))
+    dx = om.nodes[0].cmax[0] - om.nodes[0].cmin[0]
+    assert dx < 0.6                                      # mean, not the 0.75 m union/max
+
+
+def test_flat_node_centre_is_union_midpoint_not_weighted_centroid():
+    """A flat node's centre must sit on the span it covers, not drift toward the
+    part the robot dwelled on.
+
+    Simulates partial reach: one wide view sees the whole carpet (x in [0, 2],
+    true centre x=1.0), then five heavy dwell views see only the right half
+    (centroid ~x=1.5). A point-weighted centroid would pull the centre to ~1.4;
+    the union midpoint of the per-view boxes stays on the true centre."""
+    om = ObjectMap()
+    om.add("carpet", 0.9, _slab([1.0, 0.5, 0.04], [1.0, 0.5, 0.01], n=200, seed=0))
+    for s in range(5):                                   # heavy dwell on the right half
+        om.add("carpet", 0.8, _slab([1.5, 0.5, 0.04], [0.4, 0.5, 0.01], n=400, seed=s + 1))
+    assert len(om.nodes) == 1
+    cx = om.nodes[0].center[0]
+    assert abs(cx - 1.0) < 0.2                           # on the span midpoint, not the ~1.4 dwell centroid
+
+
 def test_different_labels_do_not_merge():
     om = ObjectMap()
     pts = _cube([0.0, 0.0, 0.0])

@@ -87,7 +87,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
                range_cap_m=None, sam_thresh=0.0,
                range_gap_m=DEFAULT_RANGE_GAP_M,
                cluster_voxel_m=DEFAULT_CLUSTER_VOXEL_M, out_root=None,
-               max_pts=4000, request_timeout_s=60.0):
+               max_pts=4000, request_timeout_s=60.0, novel_viewpoint_m=0.0):
     vp_dirs = sorted(glob.glob(str(CAP_DIR / scene / "vp_*")))
     if not vp_dirs:
         print(f"[{scene}] no captures — skip"); return
@@ -128,12 +128,24 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
     out = (out_root or DEBUG_DIR) / scene
     out.mkdir(parents=True, exist_ok=True)
     vps = []
+    kept_xy: list[tuple[float, float]] = []      # viewpoint-novelty gate (TASK 33)
     for vp_dir in vp_dirs:
         vid = os.path.basename(vp_dir)
         img, scan, pos, ori = load_capture(Path(vp_dir))
+        # Accumulator ingests EVERY tick; every tick still renders a frame. The
+        # novelty gate only decides which ticks *trigger* perception + fusion —
+        # a non-novel tick shows the (unchanged) cumulative map with no new
+        # detections, the offline mirror of the live responder gate.
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
         ori_lift = deskew.update(ori, capture_time(Path(vp_dir)))
-        dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
+        novel = True
+        if novel_viewpoint_m > 0.0 and kept_xy:
+            nearest = min((pos.x - kx) ** 2 + (pos.y - ky) ** 2
+                          for kx, ky in kept_xy) ** 0.5
+            novel = nearest > novel_viewpoint_m
+        if novel and novel_viewpoint_m > 0.0:
+            kept_xy.append((pos.x, pos.y))
+        dets = (_frozen_detections(Path(vp_dir)) if use_frozen else None) if novel else []
         if dets is None:
             dets = client.detect(img, score_threshold=score_threshold)
         # Raise the YOLO score floor on frozen dets offline (they were dumped
@@ -233,6 +245,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
         yaw = math.atan2(2.0 * (ori.w * ori.z + ori.x * ori.y),
                          1.0 - 2.0 * (ori.y * ori.y + ori.z * ori.z))
         vps.append({"id": vid, "pose": [pos.x, pos.y, pos.z], "yaw": yaw,
+                    "perceived": bool(novel),
                     "n_det": len(dets), "n_lift": int(sum(flags)),
                     "detections": recs, "nodes": nodes, "nodes_vp": nodes_vp})
         print(f"[{scene}] {vid}: {len(dets)} det, {int(sum(flags))} lift, "
@@ -243,6 +256,7 @@ def dump_scene(scene, *, base_url, score_threshold, min_inliers, accumulate,
                "scan_keyframes": scan_keyframes, "scan_voxel_m": scan_voxel_m,
                "range_gap_m": range_gap_m,
                "cluster_voxel_m": cluster_voxel_m,
+               "novel_viewpoint_m": novel_viewpoint_m,
                "nms_dist": NMS_DIST, "nms_gap": NMS_GAP},
                "gt": gt, "viewpoints": vps},
               open(out / "viz.json", "w"))
@@ -280,6 +294,11 @@ def main() -> int:
                     help="B4: drop scan returns farther than this (m) before lifting")
     ap.add_argument("--sam-thresh", type=float, default=0.0,
                     help="B5: drop detections with SAM mask-quality below this (0-1)")
+    ap.add_argument("--novel-viewpoint-m", type=float, default=0.0,
+                    help="TASK 33: viewpoint-novelty gate. Every tick still renders "
+                         "a frame and feeds the accumulator, but perception + fusion "
+                         "fire only when the pose is farther than this (m) from ALL "
+                         "previously perceived viewpoints. 0 = off.")
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
     if args.all:
@@ -296,7 +315,7 @@ def main() -> int:
                    use_frozen=args.use_frozen, image_lag_s=args.image_lag,
                    range_cap_m=args.range_cap, sam_thresh=args.sam_thresh,
                    range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
-                   out_root=args.out,
+                   out_root=args.out, novel_viewpoint_m=args.novel_viewpoint_m,
                    request_timeout_s=args.timeout)
     return 0
 

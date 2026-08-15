@@ -228,6 +228,59 @@ def load_scene(run, scene):
     return data
 
 
+@st.cache_data(show_spinner=False)
+def load_lifts(run: str, scene: str):
+    """The dump_lifts.py payload for on-the-fly re-fusion, or None.
+
+    Holds every detection's lifted inlier cloud + score at a low floor, so the
+    scene graph can be rebuilt for any threshold without the sidecar (lifting is
+    threshold-independent; only fusion depends on the cut)."""
+    import pickle
+    f = Path(run) / scene / "lifts.pkl"
+    if not f.is_file():
+        return None
+    with open(f, "rb") as fh:
+        return pickle.load(fh)
+
+
+@st.cache_data(show_spinner=False)
+def rebuild_graph(run: str, scene: str, up_to: int, thr: float,
+                  overrides: tuple, sam_thr: float):
+    """Re-fuse the stored lifts into an ObjectMap at the given threshold(s).
+
+    ``overrides`` is a tuple of (label, threshold) pairs; a label not listed
+    uses the global ``thr``. Only viewpoints with index <= ``up_to`` (among the
+    perceived ones, in capture order) contribute, so the existing viewpoint
+    slider still scrubs time. Returns (node boxes, cloud points)."""
+    from xiao_hei_vln.perception.object_map import ObjectMap
+    lifts = load_lifts(run, scene)
+    if lifts is None:
+        return [], np.empty((0, 3), np.float32)
+    ov = dict(overrides)
+    order = [v["id"] for v in lifts["viewpoints"]]        # capture order
+    keep_ids = set(order[:up_to + 1])
+    om = ObjectMap()
+    cloud = []
+    for vid, dl in lifts["lifts"].items():
+        if vid not in keep_ids:
+            continue
+        for d in dl:
+            if d["score"] < ov.get(d["label"], thr) or d["sam"] < sam_thr:
+                continue
+            om.add(d["label"], d["score"], d["pts"])
+            cloud.append(d["pts"])
+    nodes = []
+    for n in om.export(min_pts=15, min_obs=1):
+        nodes.append({"node_id": n["node_id"], "label": n["label"],
+                      "score": n["score"], "n_obs": n["n_obs"],
+                      "structure": n["is_structure"], "center": n["center_3d"],
+                      "bmin": n["bbox_aabb"]["min"], "bmax": n["bbox_aabb"]["max"]})
+    pts = (np.vstack(cloud) if cloud else np.empty((0, 3), np.float32))
+    if len(pts) > MAX_CLOUD_PTS:
+        pts = pts[np.random.default_rng(0).choice(len(pts), MAX_CLOUD_PTS, False)]
+    return nodes, pts.astype(np.float32)
+
+
 @st.cache_data(persist="disk")
 def run_summary(run: str, scene: str) -> dict | None:
     """Scalars only, so a whole sweep can be tabulated without holding every
@@ -389,12 +442,39 @@ def _common_traces(data, vps, idx, yaws, *, path_to_here, show_gt, show_path,
             t.append(go.Scatter3d(x=poses[:, 0], y=poses[:, 1], z=poses[:, 2],
                      mode="lines+markers", line=dict(color="orange", width=3),
                      marker=dict(size=3, color="orange"), name="robot path"))
+            # Where perception actually ran (novelty gate). Only meaningful when
+            # the gate dropped some frames; otherwise every pose is perceived
+            # and the extra trace is noise.
+            pk = np.array([v["pose"] for v in vps[:idx + 1] if v.get("perceived")])
+            if len(pk) and len(pk) < idx + 1:
+                t.append(go.Scatter3d(
+                    x=pk[:, 0], y=pk[:, 1], z=pk[:, 2], mode="markers",
+                    marker=dict(size=5, color="limegreen", symbol="diamond"),
+                    name="perception ran"))
     t.append(go.Scatter3d(x=[vp["pose"][0]], y=[vp["pose"][1]], z=[vp["pose"][2]],
              mode="markers", marker=dict(size=7, color="red"),
              name="robot (this vp)"))
     if show_heading and yaws is not None:
         t += _heading_traces(vp["pose"], yaws[idx])
     return t
+
+
+@st.cache_data
+def _perceived_frames(run: str, scene: str) -> list[int]:
+    """Viewpoints where the perception stack actually ran (detect -> lift ->
+    fuse), as opposed to those the novelty gate skipped.
+
+    With the capture-time novelty gate on (TASK 33) the accumulator ingests
+    LiDAR every tick but perception fires only on a position-novel viewpoint,
+    so most frames contribute nothing new and the slider is mostly dead. The
+    dump records a ``perceived`` flag per viewpoint; older dumps predate it, so
+    fall back to "had at least one detection" and, failing that (gate was off,
+    every frame perceived), treat all frames as perceived."""
+    vps = load_scene(run, scene)["viewpoints"]
+    if any("perceived" in v for v in vps):
+        return [i for i, v in enumerate(vps) if v.get("perceived")]
+    hits = [i for i, v in enumerate(vps) if v.get("n_det", 0) > 0]
+    return hits if hits else list(range(len(vps)))
 
 
 @st.cache_data
@@ -438,6 +518,14 @@ def _viewpoint_nav(run: str, scene: str, vps: list, classes: tuple) -> int:
         if nxt:
             _go(nxt[0])
 
+    def _perceived_jump(delta: int) -> None:
+        here = st.session_state[key]
+        marks = _perceived_frames(run, scene)
+        nxt = ([m for m in marks if m > here] if delta > 0 else
+               [m for m in reversed(marks) if m < here])
+        if nxt:
+            _go(nxt[0])
+
     st.sidebar.markdown("**Viewpoint**")
     st.sidebar.slider("Viewpoint", 0, n - 1, key=key, format="vp %d",
                       label_visibility="collapsed")
@@ -471,14 +559,29 @@ def _viewpoint_nav(run: str, scene: str, vps: list, classes: tuple) -> int:
                 use_container_width=True,
                 help=f"next viewpoint that added a node ({what})")
 
+    perceived = _perceived_frames(run, scene)
+    gated = n - len(perceived)
+    if gated:                                        # novelty gate was on
+        p = st.sidebar.columns(2)
+        p[0].button("◀ perceived", on_click=_perceived_jump, args=(-1,),
+                    use_container_width=True,
+                    help="previous viewpoint where the perception stack ran")
+        p[1].button("perceived ▶", on_click=_perceived_jump, args=(1,),
+                    use_container_width=True,
+                    help="next viewpoint where the perception stack ran")
+
     i = st.session_state[key]
     gained = len(_keep(vps[i]["nodes"], classes)) - (
         len(_keep(vps[i - 1]["nodes"], classes)) if i else 0)
+    ran = i in set(perceived)
+    badge = "🟢 perception ran" if ran else "⚪ skipped (gated)"
     st.sidebar.caption(
-        f"`{vps[i]['id']}` · {i + 1} of {n} · "
+        f"`{vps[i]['id']}` · {i + 1} of {n} · {badge}")
+    st.sidebar.caption(
         f"{len(_keep(vps[i]['nodes'], classes))} nodes"
         + (f" (**+{gained}** here)" if gained > 0 else "")
-        + f"  ·  {len(marks)} growth frames")
+        + f"  ·  {len(marks)} growth frames"
+        + (f"  ·  {len(perceived)}/{n} perceived" if gated else ""))
     return i
 
 
@@ -888,9 +991,9 @@ st.sidebar.caption(f"params: {data['params']}")
 ev_data = load_eval(scene)
 def _bucket_n(b):
     return sum(1 for q in ev_data["questions"] if q["bucket"] == b) if ev_data else 0
-(tab_graph, tab_2d, tab_cmp,
+(tab_graph, tab_live, tab_2d, tab_cmp,
  tab_b6, tab_b7, tab_b8, tab_ground, tab_loc) = st.tabs([
-    "Scene graph", "2D detector", f"Compare runs ({len(runs)})",
+    "Scene graph", "Live threshold", "2D detector", f"Compare runs ({len(runs)})",
     f"B6 fragments ({_bucket_n('B6')})", f"B7 small-obj ({_bucket_n('B7')})",
     f"B8 label ({_bucket_n('B8')})", f"Grounding ({_bucket_n('grounding')})",
     f"Localization ({_bucket_n('localization')})"])
@@ -1568,3 +1671,124 @@ for _tab, _bucket in [(tab_b6, "B6"), (tab_b7, "B7"), (tab_b8, "B8"),
     with _tab:
         _render_error_tab(ev_data, _bucket, viz=data, run_dir=RUN_DIR,
                           scene_name=scene, min_score=min_score)
+
+
+# ===========================================================================
+# LIVE THRESHOLD — rebuild the scene graph at any YOLO score cut on the fly.
+# The heavy step (lifting each mask to a 3D cloud) is precomputed once by
+# dump_lifts.py at a low floor; here we only re-fuse, so the sliders are
+# instant. Lets you find the score cut (global or per-class) before baking it
+# into the detection path.
+# ===========================================================================
+with tab_live:
+    _lifts = load_lifts(run, scene)
+    st.title(f"{scene} — rebuild the scene graph at any YOLO threshold")
+    if _lifts is None:
+        st.info(
+            "No **lifts.pkl** for this run/scene yet. Precompute it (needs the "
+            "sidecar up), then reopen this tab:")
+        st.code(
+            f"PERCEPTION_CAP_DIR={CAP_DIR} uv run --extra perception python "
+            f"perception_benchmark/dump_lifts.py --scene {scene} --floor 0.05 "
+            "--novel-viewpoint-m 0.3 --scan-keyframes 2 --image-lag 0.0",
+            language="bash")
+    else:
+        _floor = float(_lifts["floor"])
+        _nperc = sum(v["perceived"] for v in _lifts["viewpoints"])
+        st.caption(
+            f"Lifted once at floor **{_floor}** · novelty gate "
+            f"**{_lifts['novel_viewpoint_m']} m** · **{_nperc}** perceived "
+            f"viewpoints · {sum(len(v) for v in _lifts['lifts'].values())} "
+            "lifted detections. Lifting is done — the sliders only **re-fuse**, "
+            "so they're instant. The graph is built up to the sidebar's current "
+            "viewpoint, so the viewpoint slider still scrubs time.")
+
+        cA, cB = st.columns([3, 2])
+        with cA:
+            _gthr = st.slider("Global score threshold", _floor, 0.90, 0.60, 0.01,
+                              key="live_thr")
+        with cB:
+            _sam = st.slider("SAM-score gate", 0.0, 1.0, 0.0, 0.05, key="live_sam",
+                             help="mask-quality gate (B5); 0 = off")
+        _scrub = st.checkbox(
+            "Build only up to the sidebar's current viewpoint (else the full graph)",
+            value=False, key="live_scrub",
+            help="Off = fuse all perceived viewpoints (the final graph). On = fuse "
+                 "up to the viewpoint slider, so you can watch the graph grow.")
+        _upto = idx if _scrub else len(vps) - 1
+        _ovtxt = st.text_input(
+            "Per-class overrides — `label=threshold`, comma-separated",
+            value="door=0.45, table=0.5, door frame=0.5", key="live_ov",
+            help="Classes listed here use their own cut; everything else uses the "
+                 "global slider. This is where the report's per-class recommendation "
+                 "gets tried: drop the cut only for detector-shy classes.")
+        _ov = {}
+        for _tok in _ovtxt.split(","):
+            if "=" in _tok:
+                _k, _v = _tok.rsplit("=", 1)
+                try:
+                    _ov[_k.strip()] = float(_v)
+                except ValueError:
+                    st.warning(f"ignored override `{_tok.strip()}`")
+
+        _nodes, _pts = rebuild_graph(run, scene, _upto, _gthr,
+                                     tuple(sorted(_ov.items())), _sam)
+        _shown = _keep(_nodes, classes)
+        _obj_shown = [n for n in _shown if not n["structure"]]
+        _gt_boxes = _keep(_lifts["gt"], classes)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("nodes", len(_shown),
+                  delta=(f"{len(_obj_shown)} objects" if _shown else None),
+                  delta_color="off")
+        m2.metric("GT (scoreable)", len(_gt_boxes))
+        m3.metric("lifted pts", len(_pts))
+        m4.metric("up to vp", f"{_upto + 1}/{len(vps)}")
+
+        # ---- 3D ----
+        traces = []
+        if show_gt and _gt_boxes:
+            traces.append(_boxes_trace(_gt_boxes, "rgba(80,80,80,0.5)", "GT boxes", 2))
+            traces.append(_labels_trace(_gt_boxes, "gray", "GT labels"))
+        if len(_pts):
+            traces.append(go.Scatter3d(
+                x=_pts[:, 0], y=_pts[:, 1], z=_pts[:, 2], mode="markers",
+                marker=dict(size=1.6, color="royalblue", opacity=0.45),
+                name=f"lifted points ({len(_pts)})", hoverinfo="skip"))
+        if _shown:
+            traces.append(_boxes_trace(_shown, "crimson", "pred boxes", 3))
+            traces.append(_labels_trace(_shown, "crimson", "pred labels",
+                                        show_ids=show_ids))
+        if show_path:
+            _poses = np.array([v["pose"] for v in vps[:_upto + 1]])
+            if len(_poses):
+                traces.append(go.Scatter3d(
+                    x=_poses[:, 0], y=_poses[:, 1], z=_poses[:, 2],
+                    mode="lines+markers", line=dict(color="orange", width=3),
+                    marker=dict(size=3, color="orange"), name="robot path"))
+        if show_heading and yaws is not None:
+            traces += _heading_traces(vps[idx]["pose"], yaws[idx])
+        _fig = go.Figure(traces)
+        _fig.update_layout(height=640, margin=dict(l=0, r=0, t=0, b=0),
+                           scene=dict(aspectmode="data", xaxis_title="x",
+                                      yaxis_title="y", zaxis_title="z"),
+                           legend=dict(orientation="h", yanchor="bottom", y=1.0))
+        st.plotly_chart(_fig, use_container_width=True, key="live3d")
+
+        # ---- per-class: nodes now vs GT ----
+        _gt_by = {}
+        for g in _lifts["gt"]:
+            _gt_by[g["label"]] = _gt_by.get(g["label"], 0) + 1
+        _node_by = {}
+        for n in _nodes:
+            _node_by[n["label"]] = _node_by.get(n["label"], 0) + 1
+        rows = []
+        for lbl in sorted(set(_gt_by) | set(_node_by)):
+            eff = _ov.get(lbl, _gthr)
+            rows.append({"class": lbl, "threshold": round(eff, 2),
+                         "GT": _gt_by.get(lbl, 0), "nodes": _node_by.get(lbl, 0),
+                         "override": "✓" if lbl in _ov else ""})
+        st.caption("Per-class node count at the current cut vs ground-truth "
+                   "instances. `nodes` well above `GT` = over-fragmentation / "
+                   "false positives; `nodes` below `GT` = a miss the cut can't fix.")
+        st.dataframe(rows, use_container_width=True, hide_index=True)

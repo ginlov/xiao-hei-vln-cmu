@@ -347,8 +347,45 @@ class _Node:
         # rather than a better estimator over the same points.
         w = np.asarray(self.obs_weights, dtype=np.float64)
         w = w / w.sum()
-        self.center = (np.array(self.obs_centers) * w[:, None]).sum(axis=0)
-        half = (np.array(self.obs_extents) * w[:, None]).sum(axis=0) / 2.0
+        ext = np.array(self.obs_extents)
+        ctrs = np.array(self.obs_centers)
+        self.center = (ctrs * w[:, None]).sum(axis=0)
+        # Extent estimator. The weighted MEAN of per-view boxes is right for
+        # volumetric objects — it cancels the ~6x inflation of pooling near-face
+        # LiDAR slabs. But it destroys FLAT objects: a carpet is coplanar, so
+        # there is no inflation to cancel, and when the robot dwells at one pose
+        # the many redundant partial views (each a thin slice) swamp the weighted
+        # mean and the box shrinks below the object (measured: right carpet
+        # width 1.44 -> 0.53, GT coverage 20%). For flat nodes we instead take
+        # the MAX per-view extent in x/y — the reach of the single best view that
+        # saw the whole object — which recovered coverage 20% -> 56% offline
+        # (TASK 33). z stays the weighted mean (it is ~0 either way). `max` is
+        # safe here because flat clouds are coplanar and _core_points already
+        # rejects spill; a redundancy-aware gate + high-percentile is the more
+        # robust eventual target (see the capture-time novelty gate, TASK 33).
+        if np.median(ext[:, 2]) <= FLAT_Z_M:
+            half_xy = ext[:, :2].max(axis=0) / 2.0
+            half_z = float((ext[:, 2] * w).sum()) / 2.0
+            half = np.array([half_xy[0], half_xy[1], half_z])
+            # Flat CENTRE from the union midpoint of the per-view boxes, not the
+            # weighted centroid. When navigation can only reach part of a large
+            # carpet, every view's centroid clusters on the seen part, so the
+            # centroid mean is biased toward it and — since the box is
+            # centre ± max_half — the box is misplaced. The union midpoint
+            # centres on the span the box actually covers, cancelling that bias
+            # (measured, gate on: right carpet centre error 0.52 -> 0.24 m,
+            # coverage 69 -> 82%; left 0.30 -> 0.12 m, 77 -> 84%). z keeps the
+            # weighted centroid. xy only, so a spill-free coplanar cloud is
+            # assumed — same regime the max-extent already relies on.
+            lo_xy = (ctrs[:, :2] - ext[:, :2] / 2.0).min(axis=0)
+            hi_xy = (ctrs[:, :2] + ext[:, :2] / 2.0).max(axis=0)
+            self.center = np.array([
+                (lo_xy[0] + hi_xy[0]) / 2.0,
+                (lo_xy[1] + hi_xy[1]) / 2.0,
+                self.center[2],
+            ])
+        else:
+            half = (ext * w[:, None]).sum(axis=0) / 2.0
         self.cmin, self.cmax = self.center - half, self.center + half
 
     def merge(self, label, score, pts, color_rgb=None, color_name=None):
