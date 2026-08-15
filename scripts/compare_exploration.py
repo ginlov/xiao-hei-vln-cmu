@@ -205,14 +205,22 @@ def main(argv: list[str]) -> int:
             return 0
         print(f"{'scene':<34}" + "".join(f"{n[:11]:>12}" for n in names) + "   (metres/min)")
         wins: dict[str, int] = defaultdict(int)
+        ties = 0
         for scene in common:
             rates = {n: runs[n][scene]["path"] / runs[n][scene]["dur"] * 60 for n in names}
-            wins[max(rates, key=lambda k: rates[k])] += 1
+            best = max(rates.values())
+            leaders = [n for n in names if math.isclose(rates[n], best, rel_tol=1e-9)]
+            # max() would hand a dead heat to whichever name sorts first.
+            if len(leaders) == 1:
+                wins[leaders[0]] += 1
+            else:
+                ties += 1
             print(f"{scene:<34}" + "".join(f"{rates[n]:>12.2f}" for n in names))
         print(f"{'MEAN':<34}" + "".join(
             f"{statistics.mean(runs[n][s]['path'] / runs[n][s]['dur'] * 60 for s in common):>12.2f}"
             for n in names))
-        print("\n  scenes won: " + "  ".join(f"{n}={wins[n]}" for n in names))
+        print("\n  scenes won: " + "  ".join(f"{n}={wins[n]}" for n in names)
+              + (f"  tied={ties}" if ties else ""))
         skipped = {n: sorted(s for s, r in runs[n].items() if r["no_data"]) for n in names}
         for n, ss in skipped.items():
             if ss:
