@@ -81,7 +81,8 @@ publish_question() {
 }
 
 wait_exploration_done() {
-  local scene=$1 log=$EXPLORE_LOGS/$scene/exploration.log started=$SECONDS
+  # The node keys its artefact dir on scene *and* strategy.
+  local scene=$1 log=$EXPLORE_LOGS/$scene/${STRATEGY:-frontier}/exploration.log started=$SECONDS
   echo "  waiting for exploration DONE (log=$log, timeout=${TIMEOUT}s)..."
   while ! grep -qE ' DONE |HARD_STOP' "$log" 2>/dev/null; do
     (( SECONDS - started > TIMEOUT )) && {

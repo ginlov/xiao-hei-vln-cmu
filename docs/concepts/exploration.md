@@ -135,27 +135,76 @@ is actively searched for during the remaining ticks.
 
 ### Stopping
 
-Exploration ends when `is_complete()` returns `True`.  There are three
-reasons this can happen:
+Exploration ends when `is_complete()` returns `True`, or when the wall-clock
+budget expires.  There are four reasons this can happen:
 
-| Reason | `exploration.log` field | What happened |
+| Reason | Decided by | What happened |
 |---|---|---|
-| `budget_exhausted` | `visited=N skipped=M` | `N` waypoints visited, budget used up |
-| `no_frontiers` | `visited=N skipped=M` | No frontier clusters remain — full coverage |
-| `max_consecutive_skips` | `visited=N skipped=M` | Nav stack failed on too many targets in a row |
+| `budget_exhausted` | strategy | `N` waypoints visited, budget used up |
+| `no_frontiers` | strategy | No frontier clusters remain — full coverage |
+| `max_consecutive_skips` | strategy | Nav stack failed on too many targets in a row |
+| `time_limit` | tick loop | `XIAO_HEI_EXPLORATION_MAX_SECONDS` elapsed (default 480 s) |
+
+### The wall-clock cutoff
+
+None of the strategy's own stop conditions is bounded in time, so a sweep that
+keeps finding reachable frontiers in a large scene never hands over to the
+responder.  `XIAO_HEI_EXPLORATION_MAX_SECONDS` (default **480 s = 8 minutes**,
+`0` disables) puts a ceiling on it.
+
+The clock starts on the first tick that has a pose, not at node boot:
+`/state_estimation` takes 90-190 s to arrive and the robot cannot explore
+before it does, so charging that dead time to the budget would silently
+shorten it.  The tick that starts the clock logs `CLOCK_START`.
+
+On expiry the loop logs `DONE  reason=time_limit` with the elapsed time,
+saves `exploration.png` and `rviz.png`, and stops entering the exploration
+branch — the responder takes over on that same tick's successor.  The strategy
+object is never told; `is_complete()` stays `False` and its accumulated grid
+remains readable.  Terminating through the same `DONE` event as every other
+reason is deliberate: `scripts/vla3d_eval_sim.sh` polls the log for `" DONE "`,
+so a timed-out sweep is detected exactly like a completed one.
+
+The cutoff does **not** brake the robot.  The last commanded waypoint stays
+with the nav stack until the responder publishes its own, which matches what
+already happens when a sweep ends for any other reason.
 
 After exploration ends, the tick loop falls through to the responder on
 every subsequent tick.  The map built during exploration is not discarded
 — it lives in the `FrontierExplorer` instance for the rest of the run
 and is used to save the debug PNG (if configured).
 
-On `DONE` the loop also saves two images into `exploration_logs/<scene>/`
-(the scene name comes from `XIAO_HEI_SCENE_DIR_HOST`, or `default_scene`):
+On `DONE` the loop also saves two images into
+`exploration_logs/<scene>/<strategy>/` (the scene name comes from
+`XIAO_HEI_SCENE_DIR_HOST`, or `default_scene`):
 `exploration.png` (the explorer's occupancy grid and visited waypoints) and
 `rviz.png` (a screenshot of the simulator's RViz window — the traversed path
 over the scene mesh).  The screenshot needs `DISPLAY` to be set and the X
 socket mounted; without either it is skipped with an info log.  Both are
 best-effort and never fail the run.
+
+### Periodic snapshots
+
+`DONE` is not guaranteed to arrive.  A sweep torn down mid-run, or one that
+never terminates, would leave the text log but no images at all — exactly the
+runs worth looking at.  So both PNGs are *also* re-written every
+`XIAO_HEI_EXPLORATION_SNAPSHOT_S` seconds (default 30; `0` restores
+end-of-sweep-only).  Each snapshot overwrites the last, so the file on disk is
+always the newest view of the sweep, and the `DONE` save is simply the final
+one.
+
+Snapshots are written by a separate ROS timer, but rclpy's default executor is
+single-threaded, so a snapshot never interleaves with a tick — the grid is read
+between ticks, never mid-update.  Each file is written to a temp path and
+renamed into place, so a reader tailing the directory never sees a half-written
+PNG.  The timer stops firing once the strategy reports complete.
+
+Two costs worth knowing.  Rendering the plot blocks the executor for its
+duration, so the tick that coincides with a snapshot is delayed by roughly the
+render time.  And the RViz grab raises the window before reading its pixels
+(X11 without a compositor does not retain obscured regions), so an interactive
+session will see RViz pop to the front on every interval — raise the interval,
+or set it to `0`, if that is disruptive.
 
 ## Disabling exploration
 
@@ -175,4 +224,5 @@ for the env var.
 | `WP_SET` | New frontier target selected |
 | `WP_ADVANCE` | Target marked visited (nav-stack or odometry) |
 | `WP_SKIP` | Target abandoned (stuck timeout or early-skip) |
-| `DONE` | Exploration complete |
+| `CLOCK_START` | First tick with a pose — the wall-clock budget starts here |
+| `DONE` | Exploration over (`reason=` names which of the four) |

@@ -140,7 +140,7 @@ PY
 
 export_live_dump() {
   local scene=$1
-  local live_dump=$EXPLORE_LOGS/$scene/scene_live.json
+  local live_dump=$EXPLORE_LOGS/$scene/$STRATEGY/scene_live.json
   # Prefer periodic AI dump (reliable); session export is optional bonus.
   if [[ -f "$live_dump" ]]; then
     echo "  exporting $live_dump"
@@ -150,8 +150,8 @@ export_live_dump() {
     echo "  ERROR: missing $live_dump" >&2
     return 1
   fi
-  [[ -f "$EXPLORE_LOGS/$scene/exploration.png" ]] && \
-    cp -f "$EXPLORE_LOGS/$scene/exploration.png" \
+  [[ -f "$EXPLORE_LOGS/$scene/$STRATEGY/exploration.png" ]] && \
+    cp -f "$EXPLORE_LOGS/$scene/$STRATEGY/exploration.png" \
       "$OUT_DIR/explored_scenes/$scene/occupancy.png"
   return 0
 }
@@ -161,9 +161,12 @@ explore_scene() {
   [[ -d "$dir/environment" ]] || {
     echo "  skip explore: missing $dir/environment" >&2; return 1; }
 
-  mkdir -p "$EXPLORE_LOGS/$scene"
-  rm -f "$EXPLORE_LOGS/$scene"/exploration.log "$EXPLORE_LOGS/$scene"/*.png 2>/dev/null || true
-  : > "$EXPLORE_LOGS/$scene/exploration.log" 2>/dev/null || true
+  # <scene>/<strategy>/ — keyed on both, so a second STRATEGY over the same
+  # scene does not truncate the first one's log.
+  mkdir -p "$EXPLORE_LOGS/$scene/$STRATEGY"
+  rm -f "$EXPLORE_LOGS/$scene/$STRATEGY"/exploration.log \
+        "$EXPLORE_LOGS/$scene/$STRATEGY"/*.png 2>/dev/null || true
+  : > "$EXPLORE_LOGS/$scene/$STRATEGY/exploration.log" 2>/dev/null || true
 
   export XIAO_HEI_SCENE_DIR_HOST=$dir
   export XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=$MAX_WAYPOINTS
@@ -175,7 +178,7 @@ explore_scene() {
   export XIAO_HEI_VIEWPOINT_RADIUS=${XIAO_HEI_VIEWPOINT_RADIUS:-0.8}
   export XIAO_HEI_WP_REACHED_M=${XIAO_HEI_WP_REACHED_M:-1.35}
   export XIAO_HEI_REF_SPATIAL=${XIAO_HEI_REF_SPATIAL:-1}
-  export XIAO_HEI_SCENE_DUMP_PATH=/exploration_logs/${scene}/scene_live.json
+  export XIAO_HEI_SCENE_DUMP_PATH=/exploration_logs/${scene}/${STRATEGY}/scene_live.json
 
   echo "  compose up (scene=$scene strategy=$STRATEGY max_s=$MAX_SECONDS)..."
   kill_sim

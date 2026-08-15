@@ -42,15 +42,19 @@ are required — docker-compose sets them for you, but they can be overridden.
 
 | Variable | Default | Description |
 |---|---|---|
-| `XIAO_HEI_EXPLORATION_STRATEGY` | `frontier` | Exploration algorithm to use. Only `frontier` is currently implemented; unknown values disable exploration with an error log |
+| `XIAO_HEI_EXPLORATION_STRATEGY` | `frontier` | Exploration algorithm: `frontier` (cluster the frontier, score by size/distance) or `nbv` (sample reachable poses, score by unknown-gain/path-cost). Also names the artefact subdirectory. Unknown values disable exploration with an error log — they do **not** fall back to `frontier` |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINTS` | `500` | Waypoint budget. Set to `0` to disable exploration entirely and go straight to question answering. Exploration runs to completion (budget / skips / no frontiers) even if a question arrives first — the answer is deferred until it finishes |
+| `XIAO_HEI_EXPLORATION_MAX_SECONDS` | `480` (8 min) | Wall-clock cutoff for the sweep. The clock starts on the first tick with a pose — not at node boot, since `/state_estimation` takes 90-190 s to arrive and the robot cannot explore before it does. On expiry the loop logs `DONE reason=time_limit`, saves both PNGs, and hands over to the responder. `0` disables |
 | `XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST` | `1.5` | Preferred maximum distance (metres) to a frontier target. Closer targets score higher; if all exceed this cap the nearest valid one is used as a fallback |
-| `XIAO_HEI_EXPLORATION_LOG_DIR` | `/exploration_logs` (GPU compose) | Base directory for the run's artefacts. The run lands in `<log dir>/<scene>/`, where the scene name is the basename of `XIAO_HEI_SCENE_DIR_HOST` (`default_scene` when no scene is mounted), so consecutive runs never clobber each other. The text log is always written; the two PNGs only when this variable is set |
-| `XIAO_HEI_SCENE_DIR_HOST` | (unset) | Host path of the extracted scene. Mounts the scene into the simulator, and its basename names the log dir — `.../chinese_room` → `exploration_logs/chinese_room/` |
+| `XIAO_HEI_EXPLORATION_LOG_DIR` | `/exploration_logs` (GPU compose) | Base directory for the run's artefacts. The run lands in `<log dir>/<scene>/<strategy>/` — scene from the basename of `XIAO_HEI_SCENE_DIR_HOST` (`default_scene` when no scene is mounted), strategy from `XIAO_HEI_EXPLORATION_STRATEGY` (`no_exploration` when the waypoint budget is 0). Keying on both means neither a second scene nor a second algorithm clobbers an earlier run. The text log is always written; the two PNGs only when this variable is set |
+| `XIAO_HEI_EXPLORATION_SNAPSHOT_S` | `30` | How often (seconds) `exploration.png` and `rviz.png` are re-written while the sweep is still running, so a run killed before `DONE` still leaves images. Each snapshot overwrites the last. Set to `0` to save only at the end |
+| `XIAO_HEI_EXPLORATION_MAP_LOG_S` | `10` | How often (seconds) a `MAP` heartbeat line goes into `exploration.log`: elapsed, robot pose, path length, and the grid counters (`free`, `occupied`, `frontier`, `frontier_open`, `no_target`, `free_m2`, `reachable`). This is the coverage curve — `WP_*` events alone record decisions, not how much of the scene was seen. Watch for `reachable` falling away from `free`: that is the strategy walling itself off from its own map. Set to `0` to disable |
+| `XIAO_HEI_SCENE_DIR_HOST` | (unset) | Host path of the extracted scene. Mounts the scene into the simulator, and its basename names the log dir — `.../chinese_room` → `exploration_logs/chinese_room/<strategy>/`. Passed to `ai_module` by every compose file |
 | `DISPLAY` | (unset) | X display the simulator renders RViz into. When set (and the X socket is mounted), the node screenshots the RViz window to `rviz.png` as exploration finishes. When unset — a headless host, or the challenge submission — the screenshot is skipped with an info log. Needs `xhost +local:` on the host, since the containers run as a different user |
 
-On `DONE` the exploration phase writes three artefacts into
-`exploration_logs/<scene>/`:
+The exploration phase writes three artefacts into
+`exploration_logs/<scene>/<strategy>/` — the log continuously, the two PNGs
+every `XIAO_HEI_EXPLORATION_SNAPSHOT_S` seconds and again on `DONE`:
 
 | File | What it is |
 |---|---|

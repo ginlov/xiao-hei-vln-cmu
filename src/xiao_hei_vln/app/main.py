@@ -47,6 +47,17 @@ _EXPLORATION_MAX_WAYPOINTS = int(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOI
 _EXPLORATION_STRATEGY = os.environ.get("XIAO_HEI_EXPLORATION_STRATEGY", "frontier").lower()
 _EXPLORATION_MAX_WAYPOINT_DIST = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST", "1.5"))
 _EXPLORATION_LOG_DIR = os.environ.get("XIAO_HEI_EXPLORATION_LOG_DIR", "")
+# Wall-clock budget for the sweep (8 min; 0 disables). None of the strategy's
+# own stop conditions is bounded in time, so a big scene with reachable
+# frontiers left never hands over to the responder.
+_EXPLORATION_MAX_SECONDS = float(os.environ.get("XIAO_HEI_EXPLORATION_MAX_SECONDS", "480"))
+# How often to re-write exploration.png / rviz.png mid-sweep (0 = on DONE only).
+# A run killed before DONE would otherwise leave no image at all.
+_EXPLORATION_SNAPSHOT_S = float(os.environ.get("XIAO_HEI_EXPLORATION_SNAPSHOT_S", "30"))
+# How often to log a MAP heartbeat (0 = off). WP_* events alone say nothing
+# about coverage — the objective had to be reconstructed from pose bounding
+# boxes in TASK 50 — and nothing at all about the gaps between waypoints.
+_EXPLORATION_MAP_LOG_S = float(os.environ.get("XIAO_HEI_EXPLORATION_MAP_LOG_S", "10"))
 # Scene the sim is running. Only the basename is meaningful here — the value is
 # a *host* path (compose bind-mounts it into the sim, not into this container),
 # so we never open it, we only name the log dir after it.
@@ -54,15 +65,26 @@ _EXPLORATION_SCENE = (
     os.path.basename(os.environ.get("XIAO_HEI_SCENE_DIR_HOST", "").rstrip("/"))
     or "default_scene"
 )
+# The strategy is part of the artefact path too: comparing two algorithms on one
+# scene is the common case, and a shared directory means the second run destroys
+# the first's evidence. "no_exploration" keeps a disabled run from claiming — and
+# truncating — a real strategy's directory.
+_EXPLORATION_RUN_LABEL = (
+    _EXPLORATION_STRATEGY if _EXPLORATION_MAX_WAYPOINTS > 0 else "no_exploration"
+)
 
 
 def _exploration_dir() -> Path:
-    """Where this run's log and images go: <log dir>/<scene>/.
+    """Where this run's log and images go: <log dir>/<scene>/<strategy>/.
 
-    Keeping every run under a scene name means consecutive runs never clobber
-    each other — exploration.log is opened with mode "w".
+    Keying on both means consecutive runs never clobber each other —
+    exploration.log opens with mode "w", so a collision is a deletion.
     """
-    return Path(_EXPLORATION_LOG_DIR or "/exploration_logs") / _EXPLORATION_SCENE
+    return (
+        Path(_EXPLORATION_LOG_DIR or "/exploration_logs")
+        / _EXPLORATION_SCENE
+        / _EXPLORATION_RUN_LABEL
+    )
 
 
 @dataclass(frozen=True)
@@ -279,16 +301,57 @@ def _build_explorer(node):
     return explorer
 
 
-def _maybe_save_png(explorer, node) -> None:
+def _final_map_stats(explorer, pose) -> dict:
+    """Grid counters for a DONE line, best-effort.
+
+    Every caller is on a termination path, so a failure here must never be what
+    stops the run from recording why it ended.
+    """
+    try:
+        if pose is None:
+            return explorer.get_grid().stats()
+        return explorer.get_grid().stats(pose.position.x, pose.position.y)
+    except Exception as exc:
+        return {"map_stats_error": type(exc).__name__}
+
+
+def _budget_expired(clock_start: float | None, now_s: float, budget_s: float) -> bool:
+    """Has the sweep burned its wall-clock budget?
+
+    ``clock_start`` is None until the first tick with a pose, so the 90-190 s
+    wait for /state_estimation costs nothing. ``budget_s <= 0`` disables it.
+    """
+    if budget_s <= 0 or clock_start is None:
+        return False
+    return now_s - clock_start >= budget_s
+
+
+def _publish_atomically(out_path: Path, write) -> None:
+    """Run ``write(tmp)`` then rename tmp over ``out_path``.
+
+    Snapshots are read mid-run (an `scp`, an auto-reloading viewer), so the
+    file must never be observed half-written. The temp name keeps the ``.png``
+    suffix — matplotlib and pillow both infer the format from it.
+    """
+    tmp = out_path.with_name(f".{out_path.stem}.partial{out_path.suffix}")
+    write(tmp)
+    tmp.replace(out_path)
+
+
+def _maybe_save_png(explorer, node, *, quiet: bool = False) -> None:
     """Save the debug PNG if XIAO_HEI_EXPLORATION_LOG_DIR is configured.
 
     Skipped silently when the active strategy does not expose get_grid() /
     get_visited_waypoints() (not all algorithms maintain an OccupancyGrid).
+
+    ``quiet`` demotes the routine log lines to debug — set it for the periodic
+    snapshots, which would otherwise narrate every interval.
     """
     if not _EXPLORATION_LOG_DIR:
         return
     if not (hasattr(explorer, "get_visited_waypoints") and hasattr(explorer, "get_grid")):
-        node.get_logger().info("Exploration plot skipped: strategy does not support it.")
+        if not quiet:
+            node.get_logger().info("Exploration plot skipped: strategy does not support it.")
         return
     try:
         from xiao_hei_vln.exploration import save_exploration_plot
@@ -296,36 +359,46 @@ def _maybe_save_png(explorer, node) -> None:
         out_dir = _exploration_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "exploration.png"
-        save_exploration_plot(
-            explorer.get_visited_waypoints(),
-            explorer.get_grid(),
+        _publish_atomically(
             out_path,
+            lambda tmp: save_exploration_plot(
+                explorer.get_visited_waypoints(),
+                explorer.get_grid(),
+                tmp,
+            ),
         )
-        node.get_logger().info(f"Exploration plot saved to {out_path}")
+        log = node.get_logger().debug if quiet else node.get_logger().info
+        log(f"Exploration plot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save exploration plot: {exc}")
 
 
-def _maybe_save_rviz(node) -> None:
+def _maybe_save_rviz(node, *, quiet: bool = False) -> None:
     """Screenshot the sim's RViz window if a display is available.
 
     Gated on DISPLAY, so a headless run (the challenge submission, CI) skips
     it without complaint rather than failing.  Everything is best-effort: a
     missing X server, a missing python-xlib, or an RViz that never opened
-    must not take the node down — exploration has already finished by the
-    time we get here, and a lost debug image is not worth a crash.
+    must not take the node down — a lost debug image is not worth a crash.
+
+    ``quiet`` demotes the routine log lines to debug (see `_maybe_save_png`).
+    A *failed* grab still warns either way — that is how you notice mid-run
+    that snapshots are not landing.
     """
     if not _EXPLORATION_LOG_DIR:
         return
     if not os.environ.get("DISPLAY"):
-        node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
+        if not quiet:
+            node.get_logger().info("RViz screenshot skipped: no DISPLAY set.")
         return
     try:
         from xiao_hei_vln.exploration import save_rviz_screenshot
 
         out_path = _exploration_dir() / "rviz.png"
-        save_rviz_screenshot(out_path)
-        node.get_logger().info(f"RViz screenshot saved to {out_path}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _publish_atomically(out_path, save_rviz_screenshot)
+        log = node.get_logger().debug if quiet else node.get_logger().info
+        log(f"RViz screenshot saved to {out_path}")
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warn(f"Could not save RViz screenshot: {exc}")
 
@@ -463,9 +536,14 @@ def main() -> None:
     )
 
     # Track nav stack's distance to current waypoint; best = closest approach this target.
+    # best_odom / last_progress_time mirror that in odometry, so a silent
+    # /way_point_reached cannot masquerade as "the robot has stopped".
     _wp_reached_state = {"value": float("inf"), "close_ticks": 0, "best": float("inf"),
-                         "settled_ticks": 0, "prev_best": float("inf")}
+                         "settled_ticks": 0, "prev_best": float("inf"),
+                         "best_odom": float("inf"), "last_progress_time": None}
     _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
+    _WP_ODOM_PROGRESS_M = 0.10    # closing this much on the target counts as progress
+    _WP_ODOM_STALL_S = 4.0        # no progress for this long before an early skip is allowed
 
     def _on_wp_reached(msg) -> None:
         v = float(msg.data)
@@ -481,7 +559,40 @@ def main() -> None:
         "exploration_started": False,
         "last_exploration_wp": None,
         "wp_start_time": None,
+        # Wall-clock cutoff. The strategy is never told it expired —
+        # is_complete() stays False — so the flag is what ends the sweep.
+        "exploration_clock_start": None,
+        "exploration_timed_out": False,
+        # True path length, accumulated every tick. Sampling pose only at
+        # WP_SET/WP_SKIP undercounts badly on the scenes that drive the most.
+        "path_len_m": 0.0,
+        "last_pose": None,
+        "last_map_log": None,
+        "last_no_target_log": None,
+        "last_no_target_reason": None,
+        # Set when the supervisor forces the skip, so WP_SKIP can name which of
+        # the two skip paths fired instead of us inferring it from `elapsed`.
+        "forced_skip": False,
     }
+
+    def _exploration_over() -> bool:
+        """True once the sweep has ended, for either reason."""
+        return explorer is None or explorer.is_complete() or state["exploration_timed_out"]
+
+    if _EXPLORATION_SNAPSHOT_S > 0 and explorer is not None:
+
+        def _snapshot_exploration() -> None:
+            # rclpy's default executor is single-threaded, so this never
+            # interleaves with tick() — the grid is read between ticks.
+            if _exploration_over():
+                return  # the end-of-sweep save already wrote the fullest pair
+            _maybe_save_png(explorer, node, quiet=True)
+            _maybe_save_rviz(node, quiet=True)
+
+        node.create_timer(_EXPLORATION_SNAPSHOT_S, _snapshot_exploration)
+        node.get_logger().info(
+            f"Exploration snapshots every {_EXPLORATION_SNAPSHOT_S:.0f}s → {_exploration_dir()}"
+        )
 
     def tick() -> None:
         from xiao_hei_vln.messages.outputs import WaypointPathResponse
@@ -490,11 +601,11 @@ def main() -> None:
         snapshot = cache.snapshot(state["tick_id"], Stamp(sec=now.sec, nanosec=now.nanosec))
         state["tick_id"] += 1
 
-        # Exploration phase: runs until the strategy completes. A question
-        # arriving mid-exploration does NOT interrupt it — exploration keeps
-        # going (still building the scene) and the answer is deferred to the
-        # responder block below once explorer.is_complete() is True.
-        if explorer is not None and not explorer.is_complete():
+        # Exploration phase: runs until the strategy completes or the wall-clock
+        # budget expires. A question arriving mid-exploration does NOT interrupt
+        # it — exploration keeps going (still building the scene) and the answer
+        # is deferred to the responder block below once the sweep is over.
+        if not _exploration_over():
             # Build the scene graph on the fly *while* exploring. scene.update()
             # maintains viewpoint/bounds nodes; responder.ingest() runs the
             # perception detect→lift→fuse cycle without ever emitting an
@@ -509,6 +620,7 @@ def main() -> None:
                 state["exploration_started"] = True
                 _exp_log("START",
                          max_waypoints=explorer._max_waypoints,
+                         max_seconds=(_EXPLORATION_MAX_SECONDS or "off"),
                          threshold=_WP_REACHED_THRESHOLD,
                          stuck_timeout=f"{explorer._stuck_timeout_s}s",
                          max_skips=explorer._max_consecutive_skips)
@@ -518,6 +630,82 @@ def main() -> None:
             robot_pos = (
                 f"({pose.position.x:.2f},{pose.position.y:.2f})" if pose is not None else "unknown"
             )
+
+            # Clock starts at the first pose, not at START: the node ticks for
+            # 90-190 s before /state_estimation arrives and cannot explore yet.
+            if (
+                _EXPLORATION_MAX_SECONDS > 0
+                and state["exploration_clock_start"] is None
+                and pose is not None
+            ):
+                state["exploration_clock_start"] = now_s
+                _exp_log("CLOCK_START",
+                         budget=f"{_EXPLORATION_MAX_SECONDS:.0f}s",
+                         robot=robot_pos)
+
+            if pose is not None:
+                here = (pose.position.x, pose.position.y)
+                if state["last_pose"] is not None:
+                    step = math.hypot(here[0] - state["last_pose"][0],
+                                      here[1] - state["last_pose"][1])
+                    # Ignore localisation jumps — a re-lookup can teleport the
+                    # pose metres in one tick and inflate the total.
+                    if step < 1.0:
+                        state["path_len_m"] += step
+                state["last_pose"] = here
+
+            # MAP heartbeat: the coverage curve, plus the map-health counters
+            # that show a strategy walling itself in (reachable stops tracking
+            # free) before it manifests as a run of unexplained skips.
+            if (
+                _EXPLORATION_MAP_LOG_S > 0
+                and pose is not None
+                and (
+                    state["last_map_log"] is None
+                    or now_s - state["last_map_log"] >= _EXPLORATION_MAP_LOG_S
+                )
+            ):
+                state["last_map_log"] = now_s
+                try:
+                    grid_stats = explorer.get_grid().stats(pose.position.x, pose.position.y)
+                except Exception as exc:  # a logging path must never kill the sweep
+                    grid_stats = {"error": type(exc).__name__}
+                started = state["exploration_clock_start"]
+                _exp_log("MAP",
+                         elapsed=f"{now_s - started:.0f}s" if started else "?",
+                         robot=robot_pos,
+                         path_m=f"{state['path_len_m']:.1f}",
+                         visited=len(explorer._visited),
+                         skipped=explorer.skipped_count,
+                         consecutive=explorer._consecutive_skip_count,
+                         hatch_resets=getattr(explorer, "skip_hatch_resets", 0),
+                         **grid_stats)
+
+            clock_start = state["exploration_clock_start"]
+            if _budget_expired(clock_start, now_s, _EXPLORATION_MAX_SECONDS):
+                # Same exit as the strategy's own stop conditions — DONE, then
+                # the final images — so log watchers (vla3d_eval_sim.sh greps
+                # " DONE ") see one termination event whatever the reason.
+                state["exploration_timed_out"] = True
+                elapsed = now_s - clock_start
+                _exp_log("DONE",
+                         visited=len(explorer._visited),
+                         skipped=explorer.skipped_count,
+                         reason="time_limit",
+                         elapsed=f"{elapsed:.1f}s",
+                         budget=f"{_EXPLORATION_MAX_SECONDS:.0f}s",
+                         path_m=f"{state['path_len_m']:.1f}",
+                         hatch_resets=getattr(explorer, "skip_hatch_resets", 0),
+                         robot=robot_pos,
+                         **_final_map_stats(explorer, pose))
+                node.get_logger().info(
+                    f"Exploration time limit reached ({elapsed:.1f}s of "
+                    f"{_EXPLORATION_MAX_SECONDS:.0f}s): visited={len(explorer._visited)} "
+                    f"skipped={explorer.skipped_count} — handing over to the responder"
+                )
+                _maybe_save_png(explorer, node)
+                _maybe_save_rviz(node)
+                return
 
             # Advance when nav stack has settled within threshold for 3 consecutive ticks.
             if explorer._current_target is not None:
@@ -537,6 +725,8 @@ def main() -> None:
                         _wp_reached_state["close_ticks"] = 0
                         _wp_reached_state["value"] = float("inf")
                         _wp_reached_state["best"] = float("inf")
+                        _wp_reached_state["best_odom"] = float("inf")
+                        _wp_reached_state["last_progress_time"] = None
                         state["last_exploration_wp"] = None  # force WP_SET for next target
                 else:
                     _wp_reached_state["close_ticks"] = 0
@@ -544,13 +734,39 @@ def main() -> None:
             prev_skipped = explorer.skipped_count
             prev_visited = len(explorer._visited)
 
+            # Odometry progress towards the target — the second opinion the
+            # early-skip needs. best_nav_dist stays inf whenever /way_point_reached
+            # is silent, and inf >= inf - 0.02 held, so a silent nav stack used to
+            # look "settled" and the waypoint was dropped ~6 s in. 65% of frontier's
+            # skips fired while the robot was still driving (median 2.4 m covered).
+            if pose is not None and explorer._current_target is not None:
+                odom_dist = math.hypot(
+                    explorer._current_target.x - pose.position.x,
+                    explorer._current_target.y - pose.position.y,
+                )
+                if odom_dist < _wp_reached_state["best_odom"] - _WP_ODOM_PROGRESS_M:
+                    _wp_reached_state["best_odom"] = odom_dist
+                    _wp_reached_state["last_progress_time"] = now_s
+                elif _wp_reached_state["last_progress_time"] is None:
+                    _wp_reached_state["best_odom"] = min(
+                        odom_dist, _wp_reached_state["best_odom"]
+                    )
+                    _wp_reached_state["last_progress_time"] = now_s
+
             # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
             # 4s minimum delay gives the nav stack time to respond before we start counting.
+            since_progress = (
+                now_s - _wp_reached_state["last_progress_time"]
+                if _wp_reached_state["last_progress_time"] is not None
+                else 0.0
+            )
             if (
                 explorer._current_target is not None
                 and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
                 and state["wp_start_time"] is not None
                 and now_s - state["wp_start_time"] > 4.0
+                # Never abandon a waypoint the robot is visibly closing on.
+                and since_progress > _WP_ODOM_STALL_S
             ):
                 if _wp_reached_state["best"] >= _wp_reached_state["prev_best"] - 0.02:
                     _wp_reached_state["settled_ticks"] += 1
@@ -558,6 +774,7 @@ def main() -> None:
                     _wp_reached_state["settled_ticks"] = 0
                 _wp_reached_state["prev_best"] = _wp_reached_state["best"]
                 if _wp_reached_state["settled_ticks"] >= 5:
+                    state["forced_skip"] = True
                     explorer.force_skip()
                     _wp_reached_state["settled_ticks"] = 0
                     _wp_reached_state["prev_best"] = float("inf")
@@ -578,9 +795,14 @@ def main() -> None:
                 _exp_log("WP_SKIP",
                          target=skip_target,
                          robot=robot_pos,
+                         # no_progress = the supervisor's early skip;
+                         # stuck_timeout = the strategy's own clock ran out.
+                         kind="no_progress" if state["forced_skip"] else "stuck_timeout",
                          elapsed=f"{elapsed}s",
                          best_nav_dist=f"{_wp_reached_state['best']:.2f}",
                          last_nav_dist=f"{_wp_reached_state['value']:.2f}",
+                         best_odom_dist=f"{_wp_reached_state['best_odom']:.2f}",
+                         path_m=f"{state['path_len_m']:.1f}",
                          consecutive=explorer._consecutive_skip_count)
                 node.get_logger().info(
                     f"Exploration SKIP: target={skip_target}  "
@@ -588,7 +810,31 @@ def main() -> None:
                     f"consecutive={explorer._consecutive_skip_count}"
                 )
                 state["last_exploration_wp"] = None
+                state["forced_skip"] = False
                 _wp_reached_state["best"] = float("inf")
+                _wp_reached_state["best_odom"] = float("inf")
+                _wp_reached_state["last_progress_time"] = None
+
+            # A tick that wanted a target and got none. Logged every time, not
+            # only at DONE: `no_frontiers` used to appear with no trace of what
+            # the selector had actually been looking at.
+            # Throttled to one line per reason-change or 5 s, so a long wait for
+            # terrain at startup doesn't bury the run in identical lines.
+            if wp is None and not explorer.is_complete() and pose is not None:
+                diag = (
+                    explorer.selection_diagnostics()
+                    if hasattr(explorer, "selection_diagnostics")
+                    else {}
+                )
+                why = diag.get("why")
+                last_t = state["last_no_target_log"]
+                if why != state["last_no_target_reason"] or last_t is None or now_s - last_t >= 5.0:
+                    state["last_no_target_reason"] = why
+                    state["last_no_target_log"] = now_s
+                    _exp_log("NO_TARGET",
+                             robot=robot_pos,
+                             empty_ticks=getattr(explorer, "_empty_selection_ticks", "n/a"),
+                             **diag)
 
             if wp is not None:
                 wp_key = (round(wp.x, 2), round(wp.y, 2))
@@ -597,10 +843,16 @@ def main() -> None:
                         wp.x - (pose.position.x if pose else 0.0),
                         wp.y - (pose.position.y if pose else 0.0),
                     )
+                    diag = (
+                        explorer.selection_diagnostics()
+                        if hasattr(explorer, "selection_diagnostics")
+                        else {}
+                    )
                     _exp_log("WP_SET",
                              target=f"({wp.x:.2f},{wp.y:.2f})",
                              robot=robot_pos,
-                             dist=f"{dist_to_wp:.2f}")
+                             dist=f"{dist_to_wp:.2f}",
+                             **diag)
                     state["last_exploration_wp"] = wp_key
                     state["wp_start_time"] = now_s
                     _wp_reached_state["best"] = float("inf")
@@ -608,6 +860,8 @@ def main() -> None:
                     _wp_reached_state["close_ticks"] = 0
                     _wp_reached_state["settled_ticks"] = 0
                     _wp_reached_state["prev_best"] = float("inf")
+                    _wp_reached_state["best_odom"] = float("inf")
+                    _wp_reached_state["last_progress_time"] = None
                 publisher.publish(WaypointPathResponse(waypoints=[wp]))
 
             if explorer.is_complete():
@@ -617,10 +871,22 @@ def main() -> None:
                     reason = "max_consecutive_skips"
                 else:
                     reason = "no_frontiers"
+                started = state["exploration_clock_start"]
                 _exp_log("DONE",
                          visited=len(explorer._visited),
                          skipped=explorer.skipped_count,
-                         reason=reason)
+                         reason=reason,
+                         elapsed=f"{now_s - started:.1f}s" if started else "?",
+                         path_m=f"{state['path_len_m']:.1f}",
+                         hatch_resets=getattr(explorer, "skip_hatch_resets", 0),
+                         # `no_frontiers` covers several very different states;
+                         # the selector's own last word disambiguates them.
+                         select_why=(
+                             explorer.selection_diagnostics().get("why")
+                             if hasattr(explorer, "selection_diagnostics")
+                             else "n/a"
+                         ),
+                         **_final_map_stats(explorer, pose))
                 node.get_logger().info(
                     f"Exploration complete: visited={len(explorer._visited)} "
                     f"skipped={explorer.skipped_count} reason={reason}"
