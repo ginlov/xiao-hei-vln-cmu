@@ -5,6 +5,9 @@ Two sweeps were on disk with no verdict attached: `exploration_logs_frontier/`
 480 s budget from TASK 42). The question was which strategy to invest in, and
 then to fix what the logs showed was broken.
 
+Both have since been renamed to `exploration_logs_<strategy>_exp0/` — they are
+the pre-fix baseline, and every measurement below comes from them.
+
 ## Verdict: frontier
 
 The budgets differ, so absolute totals are not comparable. Normalising by wall
