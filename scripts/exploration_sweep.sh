@@ -101,8 +101,29 @@ for scene in "${scenes[@]}"; do
   "${COMPOSE[@]}" up -d --remove-orphans \
     || { echo "$scene: compose up failed" >&2; continue; }
 
+  # `compose up -d` returns as soon as the containers are *started*, which is
+  # before the docker daemon will accept an exec into them. Firing the sim
+  # launch immediately loses it, the node then ticks with free=0 forever, and
+  # the watchdog below reads the module as not-running and tears the whole
+  # scene down within seconds — a run that dies in 3 s and reports
+  # did-not-finish, with the containers (and their logs) already gone.
+  for _ in $(seq 30); do
+    [ "$(docker inspect -f '{{.State.Running}}' iros2026_system 2>/dev/null)" = "true" ] && break
+    sleep 1
+  done
   # Detached, unlike the `docker exec -it` used by hand — that would block here.
-  docker exec -d iros2026_system "$SIM_LAUNCH"
+  if ! docker exec -d iros2026_system "$SIM_LAUNCH"; then
+    echo "  sim launch failed — skipping scene" >&2
+    "${COMPOSE[@]}" down
+    continue
+  fi
+
+  # Same race on the other side: don't start the watchdog until the module is
+  # actually up, or its first inspect decides the run is already over.
+  for _ in $(seq 30); do
+    [ "$(docker inspect -f '{{.State.Running}}' xiao_hei_ai_module 2>/dev/null)" = "true" ] && break
+    sleep 1
+  done
 
   started=$SECONDS
   while ! grep -q " DONE " "$log" 2>/dev/null; do
