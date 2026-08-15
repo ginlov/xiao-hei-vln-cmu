@@ -66,6 +66,25 @@ fi
 mkdir -p "$LOGS"
 transcript=$LOGS/ab_$LABEL.log
 
+# Refuse to start on top of an existing archive. The per-strategy archive is
+# rm -rf'd at the end of each sweep, so a re-run under the same LABEL silently
+# destroys the previous experiment's evidence — and it would do it five hours
+# in, long after the operator stopped watching. Checked up front, before the
+# first container starts.
+clashes=()
+for strategy in "${STRATEGIES[@]}"; do
+  [ -e "$REPO/exploration_logs_${strategy}_${LABEL}" ] \
+    && clashes+=("exploration_logs_${strategy}_${LABEL}")
+done
+if [ ${#clashes[@]} -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
+  {
+    echo "refusing to run: LABEL='$LABEL' would overwrite ${clashes[*]}"
+    echo "  pick a new label:   LABEL=exp2 $0 $*"
+    echo "  or overwrite:       FORCE=1 LABEL=$LABEL $0 $*"
+  } >&2
+  exit 3
+fi
+
 # Per scene: the exploration budget, plus 90-190s waiting for /state_estimation
 # before the clock even starts, plus sim boot and teardown.
 per_scene_min=$(( (XIAO_HEI_EXPLORATION_MAX_SECONDS + 300) / 60 ))
