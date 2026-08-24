@@ -131,8 +131,18 @@ def frame_pose(seen: list[dict], pose: dict, *,
 
 
 def go(ctx: Ctx, cm: ConverterModel, pose: dict, aim: np.ndarray,
-       *, why: str, min_move: float = MIN_VIEW_MOVE_M) -> dict | None:
-    """Drive at `aim` by whatever the converter will actually accept."""
+       *, why: str, min_move: float = MIN_VIEW_MOVE_M,
+       face: np.ndarray | None = None) -> dict | None:
+    """Drive at `aim` by whatever the converter will actually accept.
+
+    `face` is a map point to be looking at on arrival, and it matters more
+    than it sounds: the waypoint's heading was published as a hard 0.0, so
+    the vehicle parked facing map-east however the target lay. A target that
+    ends up behind and below sits in the wedge the vehicle body occludes --
+    all four views taken on the back face across four drives lifted zero
+    returns, against seventeen of seventeen elsewhere. Left None the drive
+    behaves exactly as it did before.
+    """
     here = np.asarray(pose["position"], float)[:2]
     best = cm.best_waypoint_toward(np.asarray(aim, float)[:2], here,
                                    min_move=min_move)
@@ -140,9 +150,14 @@ def go(ctx: Ctx, cm: ConverterModel, pose: dict, aim: np.ndarray,
     if goal is None:
         print(f"      no legal waypoint toward {why}")
         return None
-    print(f"      {why}: ({goal[0]:+.2f}, {goal[1]:+.2f})")
+    theta = None
+    if face is not None:
+        d = np.asarray(face, float)[:2] - np.asarray(goal, float)[:2]
+        theta = float(np.arctan2(d[1], d[0]))
+    print(f"      {why}: ({goal[0]:+.2f}, {goal[1]:+.2f})"
+          + ("" if theta is None else f" facing {np.degrees(theta):+.0f} deg"))
     return ctx.robot.drive_to(float(goal[0]), float(goal[1]),
-                              timeout=min(45.0, ctx.left()))
+                              timeout=min(45.0, ctx.left()), theta=theta)
 
 
 def reposition(ctx: Ctx, cm: ConverterModel, pose: dict, reply: dict,

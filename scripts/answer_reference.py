@@ -49,7 +49,8 @@ from answer_numerical import anchor_offset, go, orbit_point  # noqa: E402
 from approach_loop import Ctx, Robot, run_goto  # noqa: E402
 from faces import faces_of  # noqa: E402
 from reference_view import MAX_VIEWS, look as re_look, view_weight  # noqa: E402
-from target_box import TargetBox, lift_box, pca_heading  # noqa: E402
+from target_box import (BOX_TRIM_PCT, TargetBox,  # noqa: E402
+                        lift_box, pca_heading)
 from vlm_approach import crop_face  # noqa: E402
 from waypoint_converter_model import ConverterModel  # noqa: E402
 
@@ -59,6 +60,39 @@ from waypoint_converter_model import ConverterModel  # noqa: E402
 # buys. Returns on a target grow as 1/r^2.
 VIEW_M = 1.8
 VIEW_MIN_M = 1.2
+# How far past `VIEW_M` is worth a second drive. Under this, closing in costs a
+# park attempt and buys centimetres; the two measured shortfalls were 1.06 m
+# and 2.60 m, so the band does not have to be tight to catch them.
+CLOSE_TOL_M = 0.4
+
+# A view whose returns are this few is not an object, it is a corner of one.
+# Measured over the three driven runs: the views that landed within 0.2 m of
+# the truth carried 15, 18, 31, 34, 53 and 162 returns; the ones that missed by
+# 0.6-4.7 m carried 3, 6, 9 and 9. Dropping the 9-return view from the
+# livingroom_3 run takes it from IoU 0.458 to 0.482 with no other change.
+# Three runs is not many, so this is a flag, not a law.
+MIN_TAKE_RETURNS = 12
+
+# The model reports which face it found the target in. When the binding says
+# the target is behind the vehicle and the model says it is in front, one of
+# them is looking at something else. `off` is in quadrants, so 1 is the
+# neighbouring face -- allowed, because the faces overlap by about 10 deg and
+# an object near a seam legitimately appears in either.
+MAX_FACE_OFF = 1
+
+# Consecutive views that found nothing before the orbit gives up on this arc.
+# livingroom_3 spent four calls in a row on an arc where a cabinet stood
+# between the vehicle and the vase; the arc was standable and the object was
+# not visible from it, which are different things.
+HIDDEN_RUN = 3
+
+# The last hop before a view, driven straight at the target. `Pose2D.theta` on
+# `/way_point_with_heading` is published but not honoured -- asked to hold
+# -121 deg the vehicle arrived at +37, which is where it had been travelling.
+# Heading follows travel, so the only way to face the target is to have just
+# driven at it. Big enough that the converter will not reject it as no motion:
+# a 0.04 m goal was refused outright in an earlier drive.
+NUDGE_M = 0.5
 
 # How far round the object each orbit step goes. Larger than the numerical
 # task's 55 deg because the point here is a genuinely different face of the
@@ -106,6 +140,13 @@ def _bearing_deg(pose: dict, target_xy: np.ndarray | None) -> float | None:
     return float(np.degrees(np.arctan2(v[1], v[0])))
 
 
+def _yaw_deg(pose: dict) -> float:
+    """The vehicle's heading in map degrees, from its quaternion."""
+    x, y, z, w = (float(v) for v in pose["orientation"])
+    return float(np.degrees(np.arctan2(2 * (w * z + x * y),
+                                       1 - 2 * (y * y + z * z))))
+
+
 def _range_m(pose: dict, target_xy: np.ndarray | None) -> float | None:
     if target_xy is None:
         return None
@@ -114,20 +155,71 @@ def _range_m(pose: dict, target_xy: np.ndarray | None) -> float | None:
 
 
 def stand_off(ctx: Ctx, target_xy: np.ndarray, *, want: float = VIEW_M) -> None:
-    """Back off to `want` metres if the approach parked closer than that.
+    """Put the vehicle `want` metres from the binding, from either side.
 
-    Only ever backs off. `run_goto` stops as close as the platform allows, and
-    from 0.6 m a 0.45 m object fills the frame and the scanner sees one face of
-    it. Being too far is not a failure mode the approach produces.
+    This used to only ever back off, on the premise that "being too far is not
+    a failure mode the approach produces". Two drives falsified that: loft
+    parked 2.60 m short of its binding and chinese_room 1.06 m short, both on
+    `run_goto` failure paths that stop wherever the local planner clamps. At
+    2.60 m the target shared the frame with an identical potted plant 5.3 m
+    away and the re-look picked the wrong one in five views of eight, so the
+    distance was not a cosmetic problem.
+
+    Closing in is a separate drive from the approach's, and it can fail the
+    same way -- the caller carries on from wherever this leaves the vehicle,
+    which is what `range_m` in the record is for.
     """
     eq, scan, terrain, pose = ctx.robot.capture()
     here = np.asarray(pose["position"], float)[:2]
     gap = float(np.linalg.norm(here - target_xy))
-    if gap >= VIEW_MIN_M:
+    if VIEW_MIN_M <= gap <= want + CLOSE_TOL_M:
         return
-    print(f"  {gap:.2f} m from the binding — backing off to {want:.1f} m")
+    verb = "backing off" if gap < VIEW_MIN_M else "closing in"
+    print(f"  {gap:.2f} m from the binding — {verb} to {want:.1f} m")
     go(ctx, ConverterModel(terrain), pose,
-       anchor_offset(pose, target_xy, want), why="standoff")
+       anchor_offset(pose, target_xy, want), why="standoff", face=target_xy)
+
+
+def expected_face(pose: dict, target_xy: np.ndarray) -> int:
+    """Which of the four faces the binding falls in, from this pose.
+
+    The convention is `HEADINGS = [0, 90, 180, 270]` for front/right/back/left
+    with azimuth measured clockwise, while a bearing computed from the pose is
+    counter-clockwise -- hence the negation. Checked against all 14 views that
+    lifted successfully across the three driven runs: the face the model named
+    and the face this predicts agreed 14 times out of 14.
+    """
+    p = np.asarray(pose["position"], float)[:2]
+    d = np.asarray(target_xy, float)[:2] - p
+    brg = np.degrees(np.arctan2(d[1], d[0])) - _yaw_deg(pose)
+    return int(round(((-brg) % 360) / 90)) % 4
+
+
+def face_off(pose: dict, target_xy: np.ndarray | None, said: int | None) -> int | None:
+    """How many quadrants apart the model's face and the binding's are."""
+    if target_xy is None or said is None:
+        return None
+    want = expected_face(pose, target_xy)
+    return min((said - want) % 4, (want - said) % 4)
+
+
+def aim_at(ctx: Ctx, target_xy: np.ndarray, *, want: float = VIEW_M) -> None:
+    """Drive the last half metre straight at the target, to end up facing it.
+
+    Not cosmetic. With the vehicle facing away, the target lands on the back
+    face, and the wedge the body occludes takes the returns with it: across
+    four drives every one of the views taken on the back face lifted zero
+    points, against seventeen of seventeen on the other three. The waypoint's
+    own heading field does not do this -- see `NUDGE_M`.
+    """
+    eq, scan, terrain, pose = ctx.robot.capture()
+    here = np.asarray(pose["position"], float)[:2]
+    v = np.asarray(target_xy, float)[:2] - here
+    d = float(np.linalg.norm(v))
+    if d <= want + 0.05:
+        return                      # already there; a nudge would drive into it
+    goal = here + v / d * min(NUDGE_M, d - want)
+    go(ctx, ConverterModel(terrain), pose, goal, why="aim", min_move=0.0)
 
 
 def one_view(ctx: Ctx, phrase: str, crop: bytes | None) -> dict:
@@ -162,10 +254,12 @@ def one_view(ctx: Ctx, phrase: str, crop: bytes | None) -> dict:
 
 
 def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
-                     size_mode: str = "average",
+                     size_mode: str = "union",
                      use_extent: bool = True,
                      orbit_deg: float = ORBIT_DEG,
-                     settle: bool = True) -> dict:
+                     settle: bool = True,
+                     min_returns: int = MIN_TAKE_RETURNS,
+                     trim_pct: float = BOX_TRIM_PCT) -> dict:
     """The 3D box, and everything needed to argue with it.
 
     `settle=False` keeps looking until `max_views` even after the box has
@@ -187,10 +281,19 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
     print(f"  target {phrase!r}")
 
     out = run_goto(ctx, phrase, max_steps=6)
-    target_xy = None if out.xy is None else np.asarray(out.xy, float)[:2]
+    # `xy` is set only when the leg arrived; `bound_xy` is what it believed
+    # either way. Falling back to the binding is what keeps a drive that
+    # stopped short from also losing its anchor -- on chinese_room that
+    # binding was 0.155 m from the true object, better than the box the one
+    # unanchored view then produced, and without it there was nothing to
+    # orbit around so the orbit never ran at all.
+    reached = out.xy is not None
+    got = out.xy if reached else out.bound_xy
+    target_xy = None if got is None else np.asarray(got, float)[:2]
     print(f"  approach: {out.why}"
           + ("" if target_xy is None
-             else f" at ({target_xy[0]:+.2f}, {target_xy[1]:+.2f})"))
+             else f" at ({target_xy[0]:+.2f}, {target_xy[1]:+.2f})"
+                  + ("" if reached else " (binding kept, but it never arrived)")))
 
     if target_xy is None:
         # Nothing was bound, so there is no anchor and no standoff to take.
@@ -199,11 +302,16 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         # cluster. It is the weaker answer and the record says so.
         print("  no binding — looking from here, unanchored")
 
-    box = TargetBox(anchor=target_xy, size_mode=size_mode)
+    box = TargetBox(anchor=target_xy, size_mode=size_mode,
+                    trim_pct=trim_pct)
     crop = out.prev_crop
     if target_xy is not None:
-        stand_off(ctx, target_xy)
+        # Park a nudge further out than the viewing range, so the last hop can
+        # be spent turning the vehicle to face the object.
+        stand_off(ctx, target_xy, want=VIEW_M + NUDGE_M)
+        aim_at(ctx, target_xy)
 
+    misses = 0
     for i in range(max_views):
         if ctx.out_of_time():
             print("  out of time; committing the box so far")
@@ -212,18 +320,28 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         v = one_view(ctx, phrase, crop)
         reply, lift, pose = v["reply"], v["lift"], v["pose"]
         n = int(lift["n"])
+        off = face_off(pose, target_xy, reply.get("image_index"))
+        # Both refusals are recorded rather than silently dropped, and both
+        # leave the points on disk, so a replay can put either view back.
+        wrong_face = off is not None and off > MAX_FACE_OFF
+        too_sparse = n < min_returns
         took = False
-        if reply.get("found") and lift["points"] is not None:
+        if reply.get("found") and lift["points"] is not None \
+                and not wrong_face and not too_sparse:
             took = box.add(lift["points"],
                            weight=view_weight(reply, n, use_extent=use_extent),
                            note=f"step{ctx.step}")
             crop = reply.get("crop") or crop
+        misses = 0 if took else misses + 1
 
+        refused = ("wrong face" if wrong_face else
+                   "too sparse" if too_sparse and reply.get("found") else None)
         print(f"  view {i + 1}: "
               + (f"{reply.get('extent')}, {n} returns"
                  if reply.get("found") else
                  f"not found ({reply.get('why_not') or reply.get('error')})")
               + (f"   {'kept' if took else 'no box'}")
+              + (f" ({refused})" if refused else "")
               + (f"   thin mask ({lift['mask_px']} px)" if lift.get("thin") else "")
               + f"   {reply.get('evidence') or ''}"[:90])
 
@@ -246,11 +364,34 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
                     "coord_space_used": reply.get("coord_space_used"),
                     "n_returns": n, "mask_px": lift.get("mask_px"),
                     "thin": lift.get("thin"), "took": took,
+                    # Why a view that lifted points was still not taken. Both
+                    # refusals are recorded rather than dropped: the scan and
+                    # the box are on disk, so a replay can readmit either one
+                    # and re-score without driving.
+                    "refused": ("wrong_face" if wrong_face else
+                                "too_sparse" if too_sparse and reply.get("found")
+                                else None),
+                    "face_off": off,
+                    "expected_face": (None if target_xy is None
+                                      else expected_face(pose, target_xy)),
                     "weight": (view_weight(reply, n, use_extent=use_extent)
                                if took else 0.0),
                     "orbit_deg": _bearing_deg(pose, target_xy),
                     "range_m": _range_m(pose, target_xy),
                     "error": reply.get("error")})
+
+        if misses >= HIDDEN_RUN and settle:
+            # Standable is not the same as able to see: livingroom_3's vase sat
+            # against a cabinet, and four consecutive orbit positions on a
+            # perfectly free arc had it hidden. A corpus drive (`settle=False`)
+            # keeps going, because its whole point is to record the arc a
+            # leaner policy would skip -- the stop is then replayable.
+            #
+            # After the record, not before: the view that triggers the stop is
+            # the most interesting one in the run, and leaving it off disk
+            # would make the stop unreplayable.
+            print(f"  {misses} views in a row found nothing; committing")
+            break
 
         if settle and box.n_views and box.settled(iou=SETTLE_IOU):
             print("  box has stopped moving; committing")
@@ -260,10 +401,12 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         if target_xy is None:
             print("  nowhere to orbit around; committing")
             break
-        aim = orbit_point(pose, target_xy, orbit_deg, VIEW_M)
-        if not go(ctx, ConverterModel(v["terrain"]), pose, aim, why="orbit"):
+        aim = orbit_point(pose, target_xy, orbit_deg, VIEW_M + NUDGE_M)
+        if not go(ctx, ConverterModel(v["terrain"]), pose, aim, why="orbit",
+                  face=target_xy):
             print("  cannot orbit further; committing")
             break
+        aim_at(ctx, target_xy)
 
     # The stack holds the last waypoint for ever, so park before publishing:
     # instruction following is not what is scored here, but a vehicle still
@@ -273,17 +416,21 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         if not parked.get("ok"):
             print(f"  could not park the vehicle: {parked.get('why')}")
 
-    return commit(box, question, phrase, target_xy, ctx,
+    return commit(box, question, phrase, target_xy, ctx, reached=reached,
                   policy={"standoff_m": VIEW_M, "orbit_deg": orbit_deg,
                           "max_views": max_views, "settle": settle,
                           "settle_iou": SETTLE_IOU if settle else None,
                           "size_mode": size_mode,
-                          "extent_weights": use_extent})
+                          "extent_weights": use_extent,
+                          "min_returns": min_returns,
+                          "trim_pct": trim_pct,
+                          "max_face_off": MAX_FACE_OFF,
+                          "hidden_run": HIDDEN_RUN if settle else None})
 
 
 def commit(box: TargetBox, question: str, phrase: str,
            target_xy: np.ndarray | None, ctx: Ctx,
-           policy: dict | None = None) -> dict:
+           policy: dict | None = None, reached: bool | None = None) -> dict:
     """Turn the accumulated views into the answer, or say why there is none."""
     centre, size = box.box()
     keep = box.consensus()
@@ -302,6 +449,10 @@ def commit(box: TargetBox, question: str, phrase: str,
                calls=ctx.calls, steps=ctx.step,
                binding=None if target_xy is None else target_xy.tolist(),
                anchored=target_xy is not None,
+               # Whether that anchor is a place the vehicle stood or only a
+               # place it believed in. A replay comparing runs has to know
+               # which: the viewpoints differ in kind, not just in number.
+               reached=reached,
                heading=0.0,
                # The policy this run was driven under. A replay can only ever
                # evaluate *subsets* of it -- the viewpoints are the one thing
@@ -332,13 +483,19 @@ def main() -> int:
                     help="'local' if this machine is the sim host")
     ap.add_argument("--out", default=None)
     ap.add_argument("--views", type=int, default=MAX_VIEWS)
-    ap.add_argument("--size-mode", default="average",
+    ap.add_argument("--size-mode", default="union",
                     choices=("average", "max", "union"),
                     help="how per-view extents combine; see target_box")
     ap.add_argument("--no-extent-weights", action="store_true",
                     help="ignore the model's `extent` when weighting a view")
     ap.add_argument("--orbit-deg", type=float, default=ORBIT_DEG,
                     help="degrees round the object per step")
+    ap.add_argument("--trim-pct", type=float, default=BOX_TRIM_PCT,
+                    help="per-side percentile trimmed from each view's points "
+                         "before its box is taken (0 = full span)")
+    ap.add_argument("--min-returns", type=int, default=MIN_TAKE_RETURNS,
+                    help="a view with fewer returns than this is not taken "
+                         "into the box (0 disables the gate)")
     ap.add_argument("--corpus", action="store_true",
                     help="a superset drive: keep looking to --views even after "
                          "the box settles, so coarser policies replay as "
@@ -361,7 +518,9 @@ def main() -> int:
                                size_mode=a.size_mode,
                                use_extent=not a.no_extent_weights,
                                orbit_deg=a.orbit_deg,
-                               settle=not a.corpus)
+                               settle=not a.corpus,
+                               min_returns=a.min_returns,
+                               trim_pct=a.trim_pct)
     finally:
         ctx.close()
     (out / "answer.json").write_text(json.dumps(got, indent=1, default=str))

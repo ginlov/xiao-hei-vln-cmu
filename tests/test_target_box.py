@@ -109,20 +109,28 @@ class TestLift:
 
 
 class TestEstimator:
-    def test_the_size_does_not_inflate_with_offset_views(self):
-        """The whole reason the clouds are not unioned."""
-        tb = T.TargetBox()
+    def test_averaging_does_not_inflate_the_size_with_offset_views(self):
+        """What `average` is for -- it is no longer the default, but it works."""
+        tb = T.TargetBox(size_mode="average")
         tb.add(cloud([1.0, 2.0, 0.8], [0.4, 0.4, 0.4]))
         tb.add(cloud([1.25, 2.0, 0.8], [0.4, 0.4, 0.4]))
         _, s = tb.box()
         assert s[0] < 0.5, "averaging must not accumulate the centre scatter"
 
-    def test_the_centre_is_the_weighted_mean(self):
-        tb = T.TargetBox()
+    def test_the_centre_is_the_weighted_mean_except_under_union(self):
+        tb = T.TargetBox(size_mode="average")
         tb.add(cloud([0.0, 0.0, 0.0], [0.2, 0.2, 0.2], 100), weight=100)
         tb.add(cloud([1.0, 0.0, 0.0], [0.2, 0.2, 0.2], 900), weight=900)
         c, _ = tb.box()
         assert c[0] == pytest.approx(0.9, abs=0.08)
+
+        # `union` deliberately does not: its centre is the union box's own,
+        # which drops the weighting. Measured as the better default anyway.
+        u = T.TargetBox(size_mode="union")
+        u.add(cloud([0.0, 0.0, 0.0], [0.2, 0.2, 0.2], 100), weight=100)
+        u.add(cloud([1.0, 0.0, 0.0], [0.2, 0.2, 0.2], 900), weight=900)
+        cu, _ = u.box()
+        assert cu[0] == pytest.approx(0.5, abs=0.08)
 
     def test_weight_defaults_to_the_core_point_count(self):
         tb = T.TargetBox()
@@ -148,6 +156,43 @@ class TestEstimator:
         tb.add(cloud([1, 2, 0.8], [0.06, 0.40, 0.40]))
         _, s = tb.box()
         assert bool(s[0] > 0.30) is expect_big
+
+    def test_the_default_trim_keeps_the_full_span(self):
+        """`ObjectMap`'s 2% defends an accumulated cloud; a view is not one."""
+        tb = T.TargetBox()
+        pts = cloud([0, 0, 0], [1.0, 1.0, 1.0], 400)
+        tb.add(pts)
+        span = pts.max(axis=0) - pts.min(axis=0)
+        assert tb.extents[0][0] == pytest.approx(span[0], rel=0.02)
+
+    def test_a_trim_shrinks_the_box(self):
+        tb = T.TargetBox(trim_pct=5.0)
+        pts = cloud([0, 0, 0], [1.0, 1.0, 1.0], 400)
+        tb.add(pts)
+        span = pts.max(axis=0) - pts.min(axis=0)
+        assert tb.extents[0][0] < span[0] * 0.95
+
+    def test_the_trim_is_continuous_not_a_switch(self):
+        """It must not quietly read `object_map.BOX_PCT` for every non-zero."""
+        pts = cloud([0, 0, 0], [1.0, 1.0, 1.0], 600)
+        got = []
+        for pct in (0.0, 1.0, 5.0, 20.0):
+            tb = T.TargetBox(trim_pct=pct)
+            tb.add(pts)
+            got.append(float(tb.extents[0][0]))
+        assert got[0] > got[1] > got[2] > got[3], got
+
+    def test_too_few_points_have_no_tail_to_trim(self):
+        tb = T.TargetBox(trim_pct=20.0)
+        pts = cloud([0, 0, 0], [1.0, 1.0, 1.0], 5)
+        tb.add(pts)
+        span = pts.max(axis=0) - pts.min(axis=0)
+        assert tb.extents[0][0] == pytest.approx(span[0], rel=1e-6)
+
+    @pytest.mark.parametrize("bad", [-1.0, 50.0, 90.0])
+    def test_a_nonsense_trim_is_refused(self, bad):
+        with pytest.raises(ValueError):
+            T.TargetBox(trim_pct=bad)
 
     def test_an_unknown_size_mode_is_refused(self):
         with pytest.raises(ValueError):

@@ -218,16 +218,87 @@ class TestLookNeverRaises:
         got = RV.look([b"", b"", b"", b""], "the vase")
         assert got["found"] is False and got["why_not"] == "unparseable"
 
-    def test_the_crop_is_sent_ahead_of_the_faces(self, monkeypatch):
+    def test_the_crop_goes_through_previous_not_as_a_fifth_image(self, monkeypatch):
+        """`ask_claude` labels image i with NAMES[i], and NAMES is four long.
+
+        The first loft drive died here: the crop was prepended to `images`, so
+        the call raised IndexError on the fifth and every crop-carrying re-look
+        came back `call_failed`. Sending it as `previous` keeps the faces
+        numbered 0-3, which is what `image_index` means.
+        """
         seen = {}
 
-        def fake(prompt, images, model, **k):
+        def fake(prompt, images, model, previous=None, **k):
             seen["n"] = len(images)
-            seen["first"] = images[0]
+            seen["previous"] = previous
             return '{"found": false}'
         monkeypatch.setattr(RV, "ask_claude", fake)
         RV.look([b"f0", b"f1", b"f2", b"f3"], "the vase", crop=b"CROP")
-        assert seen["n"] == 5 and seen["first"] == b"CROP"
+        assert seen["n"] == 4, "the four faces, and only the four faces"
+        assert seen["previous"] == b"CROP"
+
+
+class TestTheRealCallAcceptsWhatLookSends:
+    """The mock above cannot catch a signature the real callee rejects.
+
+    `look` is tested against a fake `ask_claude` everywhere else, which is why
+    a five-image call passed 44 tests and then failed on the robot. This runs
+    the real `ask_claude` against a fake SDK instead, so the contract between
+    the two is exercised even though no request leaves the machine.
+    """
+
+    @pytest.fixture
+    def sdk(self, monkeypatch):
+        """A stand-in `anthropic` module that records the content block."""
+        sent = {}
+
+        class Msg:
+            stop_reason = "end_turn"
+            usage = type("U", (), {"output_tokens": 10})()
+            content = [type("B", (), {"type": "text",
+                                      "text": '{"found": false}'})()]
+
+        class Messages:
+            def create(self, *, model, max_tokens, messages):
+                sent["content"] = messages[0]["content"]
+                return Msg()
+
+        class Anthropic:
+            def __init__(self, **kw):
+                self.messages = Messages()
+
+        mod = type(sys)("anthropic")
+        mod.Anthropic = Anthropic
+        monkeypatch.setitem(sys.modules, "anthropic", mod)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+        return sent
+
+    def faces(self):
+        return [b"f0", b"f1", b"f2", b"f3"]
+
+    def test_a_re_look_with_a_crop_does_not_raise(self, sdk):
+        got = RV.look(self.faces(), "the vase", crop=b"CROP")
+        assert got.get("why_not") != "call_failed", got.get("error")
+
+    def test_the_faces_keep_their_headings_when_a_crop_is_sent(self, sdk):
+        RV.look(self.faces(), "the vase", crop=b"CROP")
+        labels = [b["text"] for b in sdk["content"] if b["type"] == "text"]
+        for i, name in enumerate(["front", "right", "back", "left"]):
+            assert any(t.startswith(f"image {i} ({name}") for t in labels), \
+                f"face {i} lost its heading label: {labels}"
+
+    def test_the_crop_arrives_before_the_faces(self, sdk):
+        RV.look(self.faces(), "the vase", crop=b"CROP")
+        kinds = [b["type"] for b in sdk["content"]]
+        first_image = kinds.index("image")
+        # the caption for the earlier view, then the earlier view itself,
+        # and only then "image 0 (front...)"
+        assert sdk["content"][first_image - 1]["text"].startswith("previous view")
+        assert kinds.count("image") == 5, "the crop plus the four faces"
+
+    def test_without_a_crop_only_the_faces_are_sent(self, sdk):
+        RV.look(self.faces(), "the vase")
+        assert [b["type"] for b in sdk["content"]].count("image") == 4
 
     def test_without_a_crop_only_the_faces_are_sent(self, monkeypatch):
         seen = {}

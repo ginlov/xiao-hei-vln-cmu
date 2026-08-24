@@ -53,7 +53,7 @@ import geometry as G  # noqa: E402
 from xiao_hei_vln.messages.common import Quaternion, Vector3  # noqa: E402
 from xiao_hei_vln.perception.lifter import PointLifter  # noqa: E402
 from xiao_hei_vln.perception.object_map import (  # noqa: E402
-    _core_points, _percentile_box, iou_3d, robust_center,
+    _core_points, iou_3d, robust_center,
 )
 
 # Inlier floor for a view to count at all. The perception default is 10; a
@@ -72,6 +72,17 @@ OUTLIER_M = 1.2
 # How `TargetBox.box` turns several views' extents into one. See its docstring:
 # the choice is not settled and the default is the one with evidence.
 SIZE_MODES = ("average", "max", "union")
+
+# Per-axis percentile trim applied to one view's core points before its box is
+# taken. `ObjectMap` uses 2.0 and is right to: its node cloud is the union of
+# every observation in a run, so one stray frame out of hundreds would set a
+# corner permanently -- measured at a 6.8x median size error and one sofa
+# stretched to 58 m. This path is not that. Each view is a single mask,
+# already cut by `_core_points`, holding 28-162 points; 2% a side is one to
+# three points per axis, and on a surface that thin the edge points ARE the
+# extent. Swept over four recorded drives through this exact class: 0.0 scored
+# 5 of 8 points against 3 of 8 at 2.0, with `size_mode="union"`.
+BOX_TRIM_PCT = 0.0
 
 
 @lru_cache(maxsize=1)
@@ -187,9 +198,9 @@ class TargetBox:
 
     Not an `ObjectMap` with one node: there is no association to do, and the
     map's entry points all take a detector label. What is kept from it is the
-    estimator -- `_core_points` to cut a mask that spans two surfaces,
-    `_percentile_box` so one stray return cannot set a corner, and the
-    inlier-weighted average over per-view boxes.
+    estimator -- `_core_points` to cut a mask that spans two surfaces, and the
+    inlier-weighted combination of per-view boxes. Its percentile trim is
+    deliberately not kept at its own default; see `BOX_TRIM_PCT`.
 
     **Outliers are settled at read time, not at add time.** The first version
     gated each incoming view against the running estimate, and a replay of
@@ -204,10 +215,14 @@ class TargetBox:
 
     def __init__(self, *, outlier_m: float = OUTLIER_M,
                  anchor: np.ndarray | None = None,
-                 size_mode: str = "average"):
+                 size_mode: str = "union",
+                 trim_pct: float = BOX_TRIM_PCT):
         if size_mode not in SIZE_MODES:
             raise ValueError(f"size_mode must be one of {SIZE_MODES}")
+        if not 0.0 <= float(trim_pct) < 50.0:
+            raise ValueError("trim_pct is a per-side percentile in [0, 50)")
         self.outlier_m = float(outlier_m)
+        self.trim_pct = float(trim_pct)
         self.anchor = None if anchor is None else np.asarray(anchor, float).ravel()
         self.size_mode = size_mode
         self.centres: list[np.ndarray] = []
@@ -215,6 +230,24 @@ class TargetBox:
         self.weights: list[float] = []
         self.views: list[dict] = []
         self.rejected: list[dict] = []
+
+    def _extent(self, core: np.ndarray):
+        """One view's box: the core points' full span, or a trimmed one.
+
+        `trim_pct=0` is the measured default and means raw min/max -- see
+        `BOX_TRIM_PCT`. Anything above it trims that percentile from each
+        side of each axis.
+        """
+        if self.trim_pct <= 0.0 or len(core) < 8:
+            # Under eight points there is no tail to trim, which is the same
+            # escape `_percentile_box` makes; taken here so a sweep over
+            # `trim_pct` is monotonic rather than jumping at the boundary.
+            return core.min(axis=0), core.max(axis=0)
+        # Not `_percentile_box`: that reads `object_map.BOX_PCT`, so every
+        # non-zero `trim_pct` would silently mean 2.0 and a sweep would be a
+        # two-valued switch wearing a continuous parameter's name.
+        return (np.percentile(core, self.trim_pct, axis=0),
+                np.percentile(core, 100.0 - self.trim_pct, axis=0))
 
     # -- building ----------------------------------------------------------
 
@@ -241,7 +274,7 @@ class TargetBox:
             # too thin to place; the median is what `ObjectMap._observe` uses
             # in the same spot.
             c = np.median(core, axis=0)
-        lo, hi = _percentile_box(core)
+        lo, hi = self._extent(core)
         self.centres.append(np.asarray(c, float))
         self.extents.append(np.asarray(hi, float) - np.asarray(lo, float))
         self.weights.append(float(weight if weight is not None else len(core)))
@@ -322,27 +355,35 @@ class TargetBox:
     def box(self, idx: list[int] | None = None) -> tuple[np.ndarray, np.ndarray]:
         """`(centre, size)` over the agreeing views.
 
-        The centre is always the inlier-weighted mean. The *extent* is the
-        unresolved half, and `size_mode` names the choice:
+        `size_mode` names how the per-view boxes combine. Under ``average``
+        and ``max`` the centre is the inlier-weighted mean; ``union`` replaces
+        it with the midpoint of the union, because a union of boxes is one
+        box and its centre is its own. That is not a detail: it drops the
+        weighting, so a light view that survived the consensus moves the
+        centre as much as a heavy one. Measured over four recorded drives it
+        is nonetheless the better default -- union with its own centre scored
+        5 of 8 points, union with the weighted-mean centre 4 of 8.
 
-        ``average``  the weighted mean of the per-view extents. This is the
-                     measured default: `ObjectMap` reports a single
-                     observation's volume ratio at 0.95 against ground truth,
-                     so averaging protects the size from each view's centre
-                     scatter rather than accumulating it.
+        ``average``  the weighted mean of the per-view extents. Was the
+                     default, on `ObjectMap`'s report of a single
+                     observation's volume ratio at 0.95 against ground truth.
+                     Orbit data disagrees: a view sees the face of the object
+                     turned towards it, so averaging averages slices and
+                     shrinks the box. Four recorded drives, 3 of 8 points.
         ``max``      the per-axis maximum over views. Right if each view sees a
                      different *slice* of the object rather than all of it --
                      replaying one recorded leg, a 25-return view from 3.7 m
                      gave a 0.06 m extent on an axis whose truth is 0.40 m, and
                      no amount of averaging recovers that.
-        ``union``    the AABB of the agreeing views' boxes. The most generous,
-                     and the one `ObjectMap` measured as worst when applied to
-                     pooled *points* (0.138 of 2 against 0.443).
+        ``union``    the AABB of the agreeing views' boxes, and the default.
+                     `ObjectMap` measured unioning as worst -- 0.138 of 2
+                     against 0.443 -- but that was a union of pooled *points*
+                     across a whole run, where every view's centre error
+                     accumulates. A union of a handful of orbit views' boxes
+                     is the opposite case: 5 of 8 points against averaging's 3.
 
-        Which is right depends on whether an orbit's views are complete looks
-        or partial slices, and that has not been measured on orbit data. The
-        default is the one with evidence behind it; the others exist so the
-        replay can settle it instead of this docstring.
+        Measured on four objects, one scene each, all replayable. Re-run the
+        sweep when more drives land rather than trusting this paragraph.
         """
         idx = self.consensus() if idx is None else idx
         if not idx:

@@ -481,6 +481,20 @@ def key(*, how: str = DIST, pad: float = PAD_M) -> list[dict]:
     return out
 
 
+def jsonable(o):
+    """VLA-3D centres and sizes are arrays; the key is read as JSON elsewhere.
+
+    Without this `--json` raises `TypeError: Object of type ndarray is not
+    JSON serializable` after printing a perfectly good report, so the failure
+    looks like the key rather than the encoder.
+    """
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, (np.floating, np.integer, np.bool_)):
+        return o.item()
+    raise TypeError(f"not JSON serialisable: {type(o).__name__}")
+
+
 def check_questions() -> list[str]:
     """Every spec's `q` must be a question the challenge actually asks."""
     f = CHALLENGE / "questions" / "questions.json"
@@ -618,7 +632,7 @@ def main() -> int:
         p.write_text(json.dumps(
             [{k: v for k, v in r.items() if k != "resolved"}
              | {"resolved": {k: v for k, v in r["resolved"].items() if k != "obj"}}
-             for r in rows], indent=1))
+             for r in rows], indent=1, default=jsonable))
         print(f"\nwritten: {p}")
     if a.check:
         return 0 if all(r["resolved"]["n"] == 1 for r in rows) else 1

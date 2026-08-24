@@ -321,9 +321,16 @@ class Robot:
         return (eq, np.load(io.BytesIO(npy)), np.load(io.BytesIO(ter)),
                 r["pose"])
 
-    def drive_to(self, x: float, y: float, timeout: float) -> dict:
-        return self._bridge(f"drive {x:.4f} {y:.4f} --timeout {timeout:.1f}",
-                            timeout + 10)
+    def drive_to(self, x: float, y: float, timeout: float,
+                 theta: float | None = None) -> dict:
+        """`theta` is the heading to hold on arrival, radians in the map frame.
+
+        Omitted, the waypoint asks for 0.0 -- which is what every drive did
+        before the argument existed, so leaving it out changes nothing.
+        """
+        arg = "" if theta is None else f" --theta {float(theta):.4f}"
+        return self._bridge(
+            f"drive {x:.4f} {y:.4f} --timeout {timeout:.1f}{arg}", timeout + 10)
 
     def stop(self) -> dict:
         """Park where we stand, so the stack stops chasing the last waypoint.
@@ -1307,6 +1314,15 @@ class Outcome:
     why: str
     xy: np.ndarray | None = None          # where the target was bound
     prev_crop: bytes | None = None        # last view of it, for the confirm call
+    # Where the leg believed the target was, whether or not it got there.
+    # `xy` is deliberately None on every failure path -- a leg that did not
+    # arrive must not be trusted to have framed anything, which is what the
+    # numerical responder reads it for. But object reference needs the
+    # binding itself: on chinese_room the drive stopped 1.06 m short with a
+    # binding 0.155 m from the true object, better than the box the single
+    # remaining view produced, and dropping it also left the orbit with
+    # nothing to circle. Same number, two questions -- so, two fields.
+    bound_xy: np.ndarray | None = None
 
 
 def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
@@ -1319,6 +1335,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
     number is unique within a run.
     """
     prev_crop, bound, arrived = None, None, False
+
+    def _out(arrived: bool, why: str, xy=None, crop=None) -> Outcome:
+        """Every exit, so `bound_xy` cannot be forgotten on a new failure path.
+
+        Reads `bound` from the enclosing scope at call time, which is the
+        point: the binding a leg dies holding is the thing worth keeping.
+        """
+        return Outcome(arrived, why, xy, crop,
+                       bound_xy=None if bound is None else bound.get("xy"))
+
     misses = stuck_explores = loops = 0
     stood: list[np.ndarray] = []
     # Nearest the vehicle has been to the binding it currently holds. Reset
@@ -1338,7 +1364,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
 
     for _ in range(max_steps):
         if ctx.out_of_time():
-            return Outcome(False, "out of time", None, prev_crop)
+            return _out(False, "out of time", None, prev_crop)
         ctx.step += 1
         step = ctx.step
         eq, scan, terrain, pose = ctx.robot.capture()
@@ -1371,7 +1397,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             ctx.record({"step": step, "clause": k, "phrase": phrase,
                         "kind": GOTO, "pose": pose, "reply": None,
                         "error": f"{type(e).__name__}: {e}"})
-            return Outcome(False, f"grounding call failed ({type(e).__name__})",
+            return _out(False, f"grounding call failed ({type(e).__name__})",
                            None, prev_crop)
         ctx.calls += 1
         rec: dict = {"step": step, "clause": k, "phrase": phrase,
@@ -1381,7 +1407,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             print(f"      tail: ...{raw[-200:]!r}")
             rec["raw"] = raw
             ctx.record(rec)
-            return Outcome(False, "unparseable reply", None, prev_crop)
+            return _out(False, "unparseable reply", None, prev_crop)
 
         o = np.asarray(pose["position"], float)
         print(f"[{step}] at ({o[0]:+.2f}, {o[1]:+.2f})  "
@@ -1438,14 +1464,14 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"target has been walked; {d:.2f} m is the floor here")
                 rec["arrived"] = f"circled back ({d:.2f} m)"
                 ctx.record(rec)
-                return Outcome(True, f"arrived, circled back ({d:.2f} m)",
+                return _out(True, f"arrived, circled back ({d:.2f} m)",
                                bound["xy"], prev_crop)
             if d is not None:
                 print(f"      back where it already stood, but the binding is "
                       f"{d:.2f} m away — that is stuck, not arrived")
                 rec["stopped"] = f"circling {d:.2f} m short of the binding"
                 ctx.record(rec)
-                return Outcome(False, f"circling {d:.2f} m short of the binding",
+                return _out(False, f"circling {d:.2f} m short of the binding",
                                None, prev_crop)
             # With nothing bound this used to end the leg, and that was wrong.
             # Backing out of a dead end and returning to the hall to try another
@@ -1476,7 +1502,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"bound — this leg is going in circles")
                 rec["stopped"] = "circling with nothing bound"
                 ctx.record(rec)
-                return Outcome(False, "circling with nothing bound", None,
+                return _out(False, "circling with nothing bound", None,
                                prev_crop)
         stood.append(o[:2].copy())
         if gap is not None:
@@ -1671,7 +1697,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             if stuck_explores >= 2:
                 print(f"      two exploration legs in a row went nowhere — the "
                       f"heading is not reachable from here; stopping")
-                return Outcome(False, "heading not reachable", None, prev_crop)
+                return _out(False, "heading not reachable", None, prev_crop)
             continue
         misses = 0
 
@@ -2015,7 +2041,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             print(f"      stuck: the lift is untrustworthy here and the "
                   f"converter has nowhere legal to move us")
             rec["stopped"] = "stuck (untrusted lift, no legal move)"
-            return Outcome(False, "stuck (untrusted lift, no legal move)",
+            return _out(False, "stuck (untrusted lift, no legal move)",
                            None, prev_crop)
 
         # Past the stop tests, so this step is going to drive — and a goal the
@@ -2031,7 +2057,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"on — boxed in {here:.2f} m from it")
                 rec["stopped"] = "boxed in (no legal move above waypointXYRadius)"
                 ctx.record(rec)
-                return Outcome(False, "boxed in (no legal move)", None, prev_crop)
+                return _out(False, "boxed in (no legal move)", None, prev_crop)
             goal, lands, reach = alt
             will_move = float(np.linalg.norm(lands - o[:2]))
             rec["converter"]["requeried_for_motion"] = {
@@ -2046,7 +2072,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
 
         if ctx.dry_run:
             ctx.record(rec)
-            return Outcome(False, "dry run", aim, prev_crop)
+            return _out(False, "dry run", aim, prev_crop)
 
         dist = float(np.linalg.norm(goal - o[:2]))
         res = ctx.robot.drive_to(goal[0], goal[1],
@@ -2058,7 +2084,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
 
         if res.get("why") == "timeout":
             print("      drive timed out; stopping")
-            return Outcome(False, "drive timed out", None, prev_crop)
+            return _out(False, "drive timed out", None, prev_crop)
         gap = res.get("dist_to_requested_m")
         moved = res.get("moved_m") or 0.0
         if committed:
@@ -2071,7 +2097,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                     print(f"      asked for {will_move:.2f} m and moved "
                           f"{moved:.2f} m, still {here:.2f} m from it — boxed "
                           f"in, not arrived")
-                    return Outcome(False, "boxed in (stack would not move us)",
+                    return _out(False, "boxed in (stack would not move us)",
                                    None, prev_crop)
                 if far:
                     # Same reasoning as the predicted stop above: the stack
@@ -2081,7 +2107,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                           f"the model still reads it as far — not arrived")
                     rec["far_veto"] = ("target_state=far, stack clamp not "
                                        "treated as arrival")
-                    return Outcome(False, "stack clamped short of a far target",
+                    return _out(False, "stack clamped short of a far target",
                                    None, prev_crop)
                 print(f"      stack will not close the last {gap:.2f} m "
                       f"(moved {moved:.2f} m) — as near as it allows")
@@ -2099,12 +2125,12 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
             # A step that went nowhere. Re-grounding from an unchanged pose
             # would ask the same question and get the same answer.
             print(f"      step made no progress ({moved:.2f} m); stopping")
-            return Outcome(False, "step made no progress", None, prev_crop)
+            return _out(False, "step made no progress", None, prev_crop)
     else:
-        return Outcome(False, f"gave up after {max_steps} steps", None, prev_crop)
+        return _out(False, f"gave up after {max_steps} steps", None, prev_crop)
 
     if not arrived:
-        return Outcome(False, "did not arrive", None, prev_crop)
+        return _out(False, "did not arrive", None, prev_crop)
 
     # One last look, purely to record whether the two new fields agree with the
     # geometry that actually decided this. They gate nothing.
@@ -2129,7 +2155,7 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                   f"conf={got.get('confidence')}")
         ctx.record({"step": "confirm", "clause": k, "pose": pose, "reply": got})
 
-    return Outcome(True, "arrived", bound_xy, prev_crop)
+    return _out(True, "arrived", bound_xy, prev_crop)
 
 
 def main() -> int:

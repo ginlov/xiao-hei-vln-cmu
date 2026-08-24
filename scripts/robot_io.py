@@ -171,9 +171,18 @@ class Driver(Node):
     development. Nothing branches on it.
     """
 
-    def __init__(self, x: float, y: float) -> None:
+    def __init__(self, x: float, y: float, theta: float = 0.0) -> None:
         super().__init__("loop_driver")
         self.goal = (x, y)
+        # `Pose2D.theta` is the heading the topic's name promises, and it was
+        # published as a hard 0.0 on every waypoint this loop has ever sent --
+        # so the vehicle was being told to face map-east regardless of where
+        # the target was. That put the target on a side or back face, and a
+        # target behind and below the vehicle falls in the wedge the body
+        # occludes: measured over four drives, every one of the four views
+        # taken on the back face lifted zero returns while all seventeen on
+        # the other faces lifted points. Radians, map frame.
+        self.theta = float(theta)
         self.reached: float | None = None
         self.pose: list[float] | None = None
         self.start: list[float] | None = None
@@ -240,7 +249,8 @@ class Driver(Node):
         for _ in range(100):                      # ~5 s of discovery
             if self.pub.get_subscription_count() > 0:
                 m = Pose2D()
-                m.x, m.y, m.theta = float(self.goal[0]), float(self.goal[1]), 0.0
+                m.x, m.y, m.theta = (float(self.goal[0]), float(self.goal[1]),
+                                     float(self.theta))
                 self.pub.publish(m)
                 return True
             rclpy.spin_once(self, timeout_sec=0.05)
@@ -298,8 +308,8 @@ def cmd_stop(timeout: float = 8.0) -> dict:
     return out
 
 
-def cmd_drive(x: float, y: float, timeout: float) -> dict:
-    n = Driver(x, y)
+def cmd_drive(x: float, y: float, timeout: float, theta: float = 0.0) -> dict:
+    n = Driver(x, y, theta)
     # Let /state_estimation arrive first, so `start` is the pose we left from
     # rather than whatever shows up after the vehicle is already moving.
     for _ in range(60):
@@ -386,6 +396,10 @@ def main() -> int:
     d.add_argument("x", type=float)
     d.add_argument("y", type=float)
     d.add_argument("--timeout", type=float, default=30.0)
+    d.add_argument("--theta", type=float, default=0.0,
+                   help="heading to hold at the waypoint, radians in the map "
+                        "frame (default 0.0, which is what every waypoint sent "
+                        "before this flag existed asked for)")
     sub.add_parser("preflight")
     st = sub.add_parser("stop", help="park the vehicle where it stands")
     st.add_argument("--timeout", type=float, default=8.0)
@@ -396,7 +410,7 @@ def main() -> int:
         if args.cmd == "capture":
             out = cmd_capture(args.timeout)
         elif args.cmd == "drive":
-            out = cmd_drive(args.x, args.y, args.timeout)
+            out = cmd_drive(args.x, args.y, args.timeout, args.theta)
         elif args.cmd == "stop":
             out = cmd_stop(args.timeout)
         else:

@@ -210,10 +210,16 @@ def look(faces: list[bytes], phrase: str, *, crop: bytes | None = None,
     A failed call must cost one view, not the question -- there are four more
     orbit positions and the box is already an average over whatever arrives.
     """
-    images = ([crop] + list(faces)) if crop is not None else list(faces)
+    # The crop goes through `previous=`, NOT prepended to `images`. `ask_claude`
+    # labels image i with NAMES[i]/HEADINGS[i], both four long, so a fifth
+    # image raises IndexError -- which is how every crop-carrying re-look
+    # failed on the first loft drive. `previous=` is the parameter built for
+    # this: it puts the earlier view ahead of the faces under its own caption
+    # and leaves the faces numbered 0-3, which is the convention `image_index`
+    # is read in.
     try:
         raw = ask_claude(build_prompt(phrase, has_crop=crop is not None),
-                         images, model)
+                         list(faces), model, previous=crop)
     except Exception as e:                    # noqa: BLE001 -- see docstring
         return {"error": f"call failed: {e!r}", "found": False,
                 "why_not": "call_failed"}
