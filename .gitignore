@@ -293,6 +293,9 @@ dataset_generator/live_frames/
 snaps/
 frames_first/
 artifacts/
+# score_if.py --json output: derived from runs/, which is ignored above,
+# so it cannot be reproduced from a clean checkout and would churn per machine.
+scores.json
 
 # RStudio leaves these next to any file it opens.
 .Rhistory
