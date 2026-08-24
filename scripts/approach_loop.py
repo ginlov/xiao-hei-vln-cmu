@@ -59,6 +59,8 @@ from vlm_probe import (DEFAULT_GEMINI_MODEL, DEFAULT_PROMPT_VER,  # noqa: E402
                        NAMES, ask_claude, ask_gemini, build_prompt, parse,
                        settle_coord_space, to_pixels)
 from faces import faces_of  # noqa: E402
+from verify_binding import (USE_VERIFY, should_verify,  # noqa: E402
+                            verify_binding)
 
 BRIDGE = Path(__file__).resolve().parent / "robot_io.py"
 CTR = os.environ.get("XIAO_HEI_SIM_CONTAINER", "iros2026_system")
@@ -104,6 +106,19 @@ PROGRESS_M = 0.25          # moved less than this toward a destination = clamped
 # How far a new reading may move the bound target before it stops being a
 # refinement and starts being a different object. See `bind_target`.
 JUMP_M = 1.0
+# A binding is a hypothesis, and driving is an experiment it did not choose.
+# From the pose the binding was made at, its position predicts the range the
+# next lift must measure; the vehicle's own odometry supplies the second
+# vantage for free. The test only has leverage once the vehicle has actually
+# moved, so below FALSIFY_MOVED_M it declines to judge rather than voting on
+# noise -- which is worth the abstention: over the recorded corpus the same
+# residual separates wrong bindings from right ones far better when the pairs
+# it cannot judge are excluded than when they are counted against it.
+# Threshold is the 95th percentile of the residual over bindings known correct,
+# so it buys a ~6% false-alarm rate by construction. Measured in TASK 54.
+FALSIFY_MOVED_M = 0.75
+FALSIFY_RESIDUAL_M = 0.93
+USE_FALSIFY = os.environ.get("XIAO_HEI_FALSIFY", "0") in ("1", "true", "yes")
 # Inside this range of the target, "the converter cannot do better" means the
 # platform's floor; outside it, it means the terrain map has not seen enough.
 # Calibrated on three scenes, where the floor sat at 1.1-1.5 m to the object
@@ -309,6 +324,17 @@ class Robot:
     def drive_to(self, x: float, y: float, timeout: float) -> dict:
         return self._bridge(f"drive {x:.4f} {y:.4f} --timeout {timeout:.1f}",
                             timeout + 10)
+
+    def stop(self) -> dict:
+        """Park where we stand, so the stack stops chasing the last waypoint.
+
+        Never raises: this runs on the way out of a question, and a question
+        that answered correctly must not fail because the parking brake did.
+        """
+        try:
+            return self._bridge("stop", 12)
+        except Exception as e:                    # noqa: BLE001 -- see docstring
+            return {"ok": False, "why": repr(e)}
 
 
 def yaw_of(pose: dict) -> float:
@@ -752,6 +778,33 @@ def corroborated(seen: np.ndarray, pending: list | None) -> bool:
             and float(np.linalg.norm(seen - pending[-1])) <= JUMP_M)
 
 
+def odometry_contradicts(bound: dict | None, origin: np.ndarray,
+                         range_m: float | None) -> tuple[bool, float]:
+    """Does driving refute the binding? `(contradicted, residual_m)`.
+
+    If the target really is where the binding says, then after the vehicle has
+    driven somewhere else the distance from here to it is arithmetic, and the
+    next lift must measure that. A disagreement is evidence about the binding
+    that no model opinion is involved in -- which matters, because the model
+    reports `same_object_as_previous: true` at higher confidence both when a
+    binding was refined and when it had jumped to a different object.
+
+    Declines when the vehicle has not moved far enough for the prediction to
+    have any leverage, and when there is no binding or no measured range to
+    compare. Abstaining is not a weakness of the test; it is most of its value.
+    """
+    if not USE_FALSIFY or bound is None or range_m is None:
+        return False, 0.0
+    was = bound.get("from_xy")
+    if was is None:
+        return False, 0.0
+    if float(np.linalg.norm(np.asarray(origin[:2], float) - was)) < FALSIFY_MOVED_M:
+        return False, 0.0
+    predicted = float(np.linalg.norm(bound["xy"] - np.asarray(origin[:2], float)))
+    residual = abs(predicted - float(range_m))
+    return residual > FALSIFY_RESIDUAL_M, residual
+
+
 def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 rec: dict, *, verified: bool = True,
                 measured: bool = False,
@@ -796,6 +849,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
             print(f"      relation still unmeasurable — keeping the binding at "
                   f"({bound['xy'][0]:+.2f}, {bound['xy'][1]:+.2f})")
             rec["binding"] = {"xy": bound["xy"].tolist(), "conf": bound["conf"],
+                              "verified": bound.get("verified", True),
                               "carried": True}
             return True, bound
         print(f"      relation unmeasurable and nothing bound yet — this is a "
@@ -808,7 +862,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
         seen = origin + (d / n if n > 1e-6 else d) * wp.range_m
         if bound is None:
             print(f"      bound the target at ({seen[0]:+.2f}, {seen[1]:+.2f})")
-            bound = {"xy": seen, "conf": conf, "verified": measured,
+            bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf, "verified": measured,
                      "range_m": wp.range_m}
             if pending is not None:
                 pending.clear()
@@ -818,7 +872,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
             if jump <= JUMP_M:
                 print(f"      binding refined {jump:.2f} m -> "
                       f"({seen[0]:+.2f}, {seen[1]:+.2f})")
-                bound = {"xy": seen, "conf": conf,
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf,
                          "verified": measured or bound.get("verified", True),
                          "range_m": wp.range_m}
                 # A reading the binding accepted ends any run of ones it did
@@ -834,7 +888,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 # jumping too far. Measurement outranks a guess at any distance.
                 print(f"      re-bound {jump:.2f} m away — this reading "
                       f"measured the phrase, the binding it replaces did not")
-                bound = {"xy": seen, "conf": conf, "verified": True,
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf, "verified": True,
                          "range_m": wp.range_m}
                 if pending is not None:
                     pending.clear()
@@ -857,7 +911,23 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                       f"{was:.2f} m")
                 rec["binding_nearer"] = {"was_m": was, "now_m": wp.range_m,
                                          "jump_m": jump}
-                bound = {"xy": seen, "conf": conf, "verified": measured,
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf, "verified": measured,
+                         "range_m": wp.range_m}
+                if pending is not None:
+                    pending.clear()
+            elif odometry_contradicts(bound, origin, wp.range_m)[0]:
+                # The vehicle drove, and from here the binding predicts a range
+                # the scan does not measure. Unlike every other way past this
+                # gate, nothing the model said is involved.
+                _, resid = odometry_contradicts(bound, origin, wp.range_m)
+                print(f"      re-bound {jump:.2f} m away — driving refutes the "
+                      f"old binding: it predicts {np.linalg.norm(bound['xy'] - origin[:2]):.2f} m "
+                      f"from here, the scan measures {wp.range_m:.2f} m "
+                      f"({resid:.2f} m out)")
+                rec["binding_falsified"] = {"residual_m": resid,
+                                            "jump_m": jump}
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float),
+                         "conf": conf, "verified": measured,
                          "range_m": wp.range_m}
                 if pending is not None:
                     pending.clear()
@@ -871,7 +941,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 # increase is a coin toss dressed as a threshold.
                 print(f"      re-bound {jump:.2f} m away — the model reports a "
                       f"different object at no less confidence")
-                bound = {"xy": seen, "conf": conf, "verified": measured,
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf, "verified": measured,
                          "range_m": wp.range_m}
                 if pending is not None:
                     pending.clear()
@@ -886,7 +956,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 print(f"      re-bound {jump:.2f} m away — two readings in a "
                       f"row landed within {JUMP_M} m of each other and this far "
                       f"from the binding")
-                bound = {"xy": seen, "conf": conf, "verified": measured,
+                bound = {"xy": seen, "from_xy": np.asarray(origin[:2], float), "conf": conf, "verified": measured,
                          "range_m": wp.range_m}
                 rec["binding_corroborated"] = True
                 pending.clear()
@@ -897,7 +967,8 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
                 rec["binding_rejected"] = {"seen": seen.tolist(), "jump_m": jump}
                 if pending is not None:
                     pending.append(seen)
-        rec["binding"] = {"xy": bound["xy"].tolist(), "conf": bound["conf"]}
+        rec["binding"] = {"xy": bound["xy"].tolist(), "conf": bound["conf"],
+                          "verified": bound.get("verified", True)}
         return True, bound
     if bound is not None:
         # The lift was refused — a blind bearing, or a size the range cannot
@@ -906,6 +977,7 @@ def bind_target(wp, origin: np.ndarray, reply: dict, bound: dict | None,
         print(f"      lift not usable, but the target is bound at "
               f"({bound['xy'][0]:+.2f}, {bound['xy'][1]:+.2f}) — driving to it")
         rec["binding"] = {"xy": bound["xy"].tolist(), "conf": bound["conf"],
+                          "verified": bound.get("verified", True),
                           "carried": True}
         return True, bound
     return False, bound
@@ -1018,8 +1090,26 @@ class Ctx:
                (self.leg_deadline is not None and time.time() >= self.leg_deadline)
 
     def left(self) -> float:
+        """Seconds remaining, never negative.
+
+        All four `drive_to` call sites pass `min(something, ctx.left())` as the
+        drive timeout, and it reaches `subprocess.run(timeout=timeout + 15)`.
+        Once a deadline had passed this went negative, `subprocess.run` raised
+        `TimeoutExpired` immediately, and nothing caught it — so a leg that ran
+        out of time did not end, it **crashed the run**, and because
+        `plan.json` is written at the end the whole question's result was lost.
+        Seen on `home_building_1` q5, which is long enough to exhaust the
+        budget: 11 steps driven, nothing scoreable kept.
+
+        Clamping at zero turns that into a drive with no time to make, which
+        the loop's own `out_of_time()` then ends cleanly on the next check.
+        Nothing depends on the value being negative — expiry is detected by
+        `out_of_time()`, and the only other reader prints it.
+        """
         ends = [d for d in (self.deadline, self.leg_deadline) if d is not None]
-        return float("inf") if not ends else min(ends) - time.time()
+        if not ends:
+            return float("inf")
+        return max(0.0, min(ends) - time.time())
 
     def whole_left(self) -> float:
         """Time left for the question, ignoring this leg's share of it."""
@@ -1071,6 +1161,7 @@ class Ctx:
                      "drop_here": self.drop_here, "standoff": self.standoff,
                      "dry_run": self.dry_run,
                      "max_tokens": os.environ.get("XIAO_HEI_CLAUDE_MAX_TOKENS"),
+                     "falsify": USE_FALSIFY, "verify": USE_VERIFY,
                      "started": time.time()})
 
     def prompt_visited_kind(self) -> str:
@@ -1240,6 +1331,10 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
     # Readings the binding refused, so that two in a row agreeing with each
     # other can overrule it. Per-leg: the next clause is a different object.
     pending: list[np.ndarray] = []
+    # Consecutive steps the leg has driven on a binding no lift could measure.
+    # This is the state the semantic verifier is gated on, and it is per-leg for
+    # the same reason `pending` is: the next clause is a different object.
+    carried_run = 0
 
     for _ in range(max_steps):
         if ctx.out_of_time():
@@ -1684,6 +1779,44 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
         # On `lr_2_0811_06` the binding jumped 5.5 m out on the step before the
         # revisit, and infinity would have excused the 9.79 m that run reported
         # as an arrival.
+        # The verifier's trigger, read off what `bind_target` just recorded
+        # rather than re-derived: `carried` means the lift was refused and the
+        # binding was driven on anyway, which is the one situation
+        # `odometry_contradicts` provably cannot reach -- it needs a measured
+        # range, and there is none.
+        b_rec = rec.get("binding")
+        if isinstance(b_rec, dict) and b_rec.get("carried"):
+            carried_run += 1
+        elif isinstance(b_rec, dict):
+            # A reading the binding accepted ends the run, exactly as it ends
+            # `pending`. Two stale steps separated by a measurement are not two
+            # stale steps.
+            carried_run = 0
+        trigger = should_verify(carried_run=carried_run,
+                                rejected="binding_rejected" in rec,
+                                arriving=False, bound=bound)
+        if USE_VERIFY and trigger is not None and bound is not None:
+            v = verify_binding(faces, phrase, bound["xy"], pose,
+                               why=trigger, model=ctx.model,
+                               carried_steps=carried_run, prev=prev_crop)
+            rec["binding_checked"] = v
+            if v.get("called"):
+                ctx.calls += 1
+            if v.get("acted"):
+                # Dropping the binding is the whole of its power. The next step
+                # grounds from scratch, which is the correct state to be in
+                # after learning that what you were driving at is not the
+                # thing -- and is strictly better than driving on.
+                print(f"      the binding does not survive a second look: "
+                      f"{v.get('what_is_there')!r} is there, not {phrase!r} "
+                      f"— dropping it and re-grounding")
+                bound, committed, carried_run = None, False, 0
+                closest = float("inf")
+                pending.clear()
+            elif "skipped" not in v:
+                print(f"      second look: {v['verdict']} "
+                      f"({v.get('confidence')}) — {v.get('reason')}")
+
         moved_binding = (bound is not None and (was_bound is None or float(
             np.linalg.norm(bound["xy"] - was_bound)) > 1e-6))
         if bound is None:

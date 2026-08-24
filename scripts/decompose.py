@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -51,7 +52,11 @@ from instruction_plan import (  # noqa: E402
 )
 from vlm_probe import ask_claude, parse  # noqa: E402
 
-CACHE = Path("artifacts/decompose_cache.json")
+# Relative to the working directory, which is fine for a sweep run from the
+# repo root and is not fine inside the ai_module container, where `ros2 launch`
+# picks the working directory and it need not be writable. See `_save`.
+CACHE = Path(os.environ.get("XIAO_HEI_DECOMPOSE_CACHE",
+                            "artifacts/decompose_cache.json"))
 MODEL = "claude-opus-5"
 # Bump whenever PROMPT changes, so a cached reply is never reused across a
 # change in what was asked.
@@ -160,6 +165,25 @@ def _clauses_from(reply: dict) -> list[Clause] | None:
     return out
 
 
+def _save(cache: dict) -> None:
+    """Persist the cache, and never let failing to do so end a run.
+
+    This used to write unguarded, immediately after the API call that produced
+    the entry. The cache is a development convenience — it saves re-asking for
+    a sentence already decomposed — but the write sits on the only code path
+    that answers a question, and it targets a relative directory. Inside the
+    ai_module container the working directory is chosen by `ros2 launch` and
+    need not be writable, so an unwritable `artifacts/` would have thrown at
+    step 0, after the call was paid for and before a single waypoint was
+    published. On the test scenes the cache can only ever miss anyway.
+    """
+    try:
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE.write_text(json.dumps(cache, indent=1))
+    except OSError as e:
+        print(f"decompose: not caching to {CACHE} ({e})", file=sys.stderr)
+
+
 def decompose(sentence: str, *, model: str = MODEL, cache: dict | None = None,
               ask=ask_claude) -> tuple[list[Clause], bool]:
     """`(clauses, from_model)`.
@@ -177,8 +201,7 @@ def decompose(sentence: str, *, model: str = MODEL, cache: dict | None = None,
         cache = {}
     if key not in cache:
         cache[key] = ask(PROMPT.replace("{sentence}", s), [], model)
-        CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE.write_text(json.dumps(cache, indent=1))
+        _save(cache)
     got = _clauses_from(parse(cache[key]) or {})
     return (got, True) if got else (parse_instruction(s), False)
 

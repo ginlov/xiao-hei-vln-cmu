@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
-                           PROGRESS_M, REVISIT_M, closing,
+                           Outcome, PROGRESS_M, REVISIT_M, closing,
                            SPENT_CONE_DEG, SPENT_PENALTY, already_tried,
                            bind_target, corroborated, explore_direction,
                            gates_from, GATE_PAD_M, lift_way, WAY_MAX_M,
@@ -30,7 +30,7 @@ from approach_loop import (JUMP_M, MAX_LOOPS, MIN_EXPLORE_M,  # noqa: E402
                            relation_holds, RELATION_MAX_M,
                            side_of, CIRCLE_ARRIVE_M, DETOUR_BEYOND_M,
                            USE_KEEPOUT)
-from execute_plan import (THROUGH_M, far_side_goal,  # noqa: E402
+from execute_plan import (THROUGH_M, execute, far_side_goal,  # noqa: E402
                           far_side_stalled, gate_point,
                           through_point, went_between, xy_of)
 from vlm_approach import (Resolved, has_relation,  # noqa: E402
@@ -1737,3 +1737,59 @@ class TestReplyParsing:
 
     def test_no_json_at_all(self):
         assert parse("sorry, I cannot") is None
+
+
+class TestExecuteKeepsWhatItDrove:
+    """A crash on a later leg used to cost the whole question.
+
+    `plan.json` is written after `execute` returns, so an exception raised on
+    leg 3 discarded the two legs before it -- `home_building_1` q5 drove eleven
+    steps and kept none of them. `execute` now appends into a list the caller
+    owns.
+    """
+
+    class FakeCtx:
+        mission = None
+        keepout_is_gate = False
+        leg_deadline = None
+        calls = 0
+
+        def whole_left(self):
+            return float("inf")
+
+        def left(self):
+            return float("inf")
+
+        def out_of_time(self):
+            return False
+
+    def _plan(self):
+        return [Clause(GOTO, "the couch"), Clause(GOTO, "the lamp")]
+
+    def test_a_crash_leaves_the_finished_legs_behind(self, monkeypatch):
+        seen = []
+
+        def boom(ctx, phrase, **kw):
+            if phrase == "the lamp":
+                raise RuntimeError("timed out after -1.35 seconds")
+            seen.append(phrase)
+            return Outcome(True, "arrived", np.array([1.0, 2.0]))
+
+        monkeypatch.setattr("execute_plan.run_goto", boom)
+        results = []
+        with pytest.raises(RuntimeError):
+            execute(self.FakeCtx(), "q", self._plan(), goto_steps=3,
+                    results=results)
+        assert seen == ["the couch"]
+        assert [r["k"] for r in results] == [1]
+        assert results[0]["ok"] is True
+
+    def test_without_a_crash_it_still_returns_the_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "execute_plan.run_goto",
+            lambda ctx, phrase, **kw: Outcome(True, "arrived", None))
+        results = []
+        out = execute(self.FakeCtx(), "q", self._plan(), goto_steps=3,
+                      results=results)
+        assert out is results
+        assert [r["k"] for r in out] == [1, 2]
