@@ -93,6 +93,26 @@ def phrase_of(question: str) -> str:
     return s
 
 
+def _bearing_deg(pose: dict, target_xy: np.ndarray | None) -> float | None:
+    """Where round the object this view was taken, in map degrees.
+
+    Recorded per view so an orbit driven at one step size can be replayed at a
+    coarser one: a policy that takes every second view is a subset of a denser
+    drive, and the bearing is what identifies the subset.
+    """
+    if target_xy is None:
+        return None
+    v = np.asarray(pose["position"], float)[:2] - np.asarray(target_xy, float)
+    return float(np.degrees(np.arctan2(v[1], v[0])))
+
+
+def _range_m(pose: dict, target_xy: np.ndarray | None) -> float | None:
+    if target_xy is None:
+        return None
+    return float(np.linalg.norm(np.asarray(pose["position"], float)[:2]
+                                - np.asarray(target_xy, float)))
+
+
 def stand_off(ctx: Ctx, target_xy: np.ndarray, *, want: float = VIEW_M) -> None:
     """Back off to `want` metres if the approach parked closer than that.
 
@@ -143,8 +163,26 @@ def one_view(ctx: Ctx, phrase: str, crop: bytes | None) -> dict:
 
 def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
                      size_mode: str = "average",
-                     use_extent: bool = True) -> dict:
-    """The 3D box, and everything needed to argue with it."""
+                     use_extent: bool = True,
+                     orbit_deg: float = ORBIT_DEG,
+                     settle: bool = True) -> dict:
+    """The 3D box, and everything needed to argue with it.
+
+    `settle=False` keeps looking until `max_views` even after the box has
+    stopped moving, and is how a **corpus** drive differs from an answering
+    one. Driving is the only part of this that cannot be replayed: the views
+    are a function of where the policy chose to stand, so a change to the
+    standoff or the orbit step needs the simulator again. What *can* be
+    replayed from a recorded run is everything downstream of the viewpoint --
+    the mask, the lift, the estimator, the stopping rule -- because the faces
+    and the scan are on disk and the model's own box is in `steps.jsonl`.
+
+    So the first drives should be supersets: more views than any policy would
+    take, at a finer orbit step than any policy would use. A policy that stops
+    at three views, or turns 75 deg instead of 40, is then a *subset* of what
+    was driven and costs nothing more to evaluate. The extra cost is model
+    calls, not simulator time.
+    """
     phrase = phrase_of(question)
     print(f"  target {phrase!r}")
 
@@ -189,6 +227,12 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
               + (f"   thin mask ({lift['mask_px']} px)" if lift.get("thin") else "")
               + f"   {reply.get('evidence') or ''}"[:90])
 
+        # `box_px` and `image_index` are recorded because without them a run
+        # cannot be re-lifted offline: the faces and the scan are on disk, so a
+        # different mask (a SAM refinement of the same box), a different
+        # `min_inliers`, or a different percentile can all be replayed for free
+        # -- but only if the box the model actually returned is here. Leaving
+        # them out would make every such experiment a fresh drive.
         ctx.record({"step": ctx.step, "kind": "reference", "pose": pose,
                     "question": question, "phrase": phrase,
                     "found": bool(reply.get("found")),
@@ -197,11 +241,18 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
                     "why_not": reply.get("why_not"),
                     "confidence": reply.get("confidence"),
                     "evidence": reply.get("evidence"),
+                    "box_px": reply.get("box_px"),
+                    "image_index": reply.get("image_index"),
+                    "coord_space_used": reply.get("coord_space_used"),
                     "n_returns": n, "mask_px": lift.get("mask_px"),
                     "thin": lift.get("thin"), "took": took,
+                    "weight": (view_weight(reply, n, use_extent=use_extent)
+                               if took else 0.0),
+                    "orbit_deg": _bearing_deg(pose, target_xy),
+                    "range_m": _range_m(pose, target_xy),
                     "error": reply.get("error")})
 
-        if box.n_views and box.settled(iou=SETTLE_IOU):
+        if settle and box.n_views and box.settled(iou=SETTLE_IOU):
             print("  box has stopped moving; committing")
             break
         if i == max_views - 1:
@@ -209,7 +260,7 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         if target_xy is None:
             print("  nowhere to orbit around; committing")
             break
-        aim = orbit_point(pose, target_xy, ORBIT_DEG, VIEW_M)
+        aim = orbit_point(pose, target_xy, orbit_deg, VIEW_M)
         if not go(ctx, ConverterModel(v["terrain"]), pose, aim, why="orbit"):
             print("  cannot orbit further; committing")
             break
@@ -222,11 +273,17 @@ def answer_reference(ctx: Ctx, question: str, *, max_views: int = MAX_VIEWS,
         if not parked.get("ok"):
             print(f"  could not park the vehicle: {parked.get('why')}")
 
-    return commit(box, question, phrase, target_xy, ctx)
+    return commit(box, question, phrase, target_xy, ctx,
+                  policy={"standoff_m": VIEW_M, "orbit_deg": orbit_deg,
+                          "max_views": max_views, "settle": settle,
+                          "settle_iou": SETTLE_IOU if settle else None,
+                          "size_mode": size_mode,
+                          "extent_weights": use_extent})
 
 
 def commit(box: TargetBox, question: str, phrase: str,
-           target_xy: np.ndarray | None, ctx: Ctx) -> dict:
+           target_xy: np.ndarray | None, ctx: Ctx,
+           policy: dict | None = None) -> dict:
     """Turn the accumulated views into the answer, or say why there is none."""
     centre, size = box.box()
     keep = box.consensus()
@@ -245,7 +302,11 @@ def commit(box: TargetBox, question: str, phrase: str,
                calls=ctx.calls, steps=ctx.step,
                binding=None if target_xy is None else target_xy.tolist(),
                anchored=target_xy is not None,
-               heading=0.0)
+               heading=0.0,
+               # The policy this run was driven under. A replay can only ever
+               # evaluate *subsets* of it -- the viewpoints are the one thing
+               # that cannot be recomputed -- so it has to travel with the data.
+               policy=policy or {})
     if ok and keep:
         pts = np.array([box.centres[i] for i in keep])
         # Only with three or more agreeing views is a PCA axis a direction
@@ -276,6 +337,12 @@ def main() -> int:
                     help="how per-view extents combine; see target_box")
     ap.add_argument("--no-extent-weights", action="store_true",
                     help="ignore the model's `extent` when weighting a view")
+    ap.add_argument("--orbit-deg", type=float, default=ORBIT_DEG,
+                    help="degrees round the object per step")
+    ap.add_argument("--corpus", action="store_true",
+                    help="a superset drive: keep looking to --views even after "
+                         "the box settles, so coarser policies replay as "
+                         "subsets. Costs model calls, not simulator time")
     ap.add_argument("--model", default=os.environ.get("XIAO_HEI_CLAUDE_MODEL",
                                                       "claude-opus-5"))
     ap.add_argument("--budget", type=float, default=540.0)
@@ -292,7 +359,9 @@ def main() -> int:
     try:
         got = answer_reference(ctx, a.question, max_views=a.views,
                                size_mode=a.size_mode,
-                               use_extent=not a.no_extent_weights)
+                               use_extent=not a.no_extent_weights,
+                               orbit_deg=a.orbit_deg,
+                               settle=not a.corpus)
     finally:
         ctx.close()
     (out / "answer.json").write_text(json.dumps(got, indent=1, default=str))

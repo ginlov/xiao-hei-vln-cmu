@@ -327,3 +327,73 @@ class TestCommit:
         assert got["n_views"] == 2 and got["n_agreeing"] == 1
         assert len(got["outliers"]) == 1
         assert got["binding"] == [0.0, 0.0]
+
+
+class TestCorpusDrive:
+    """A drive is the one thing replay cannot redo, so it must be a superset."""
+
+    def test_corpus_mode_keeps_looking_past_the_settle_point(
+            self, tmp_path, patched):
+        bot = FakeRobot()
+        patched.setattr(AR, "re_look", tracking_reply(bot))
+        ctx = make_ctx(tmp_path, bot)
+        got = AR.answer_reference(ctx, "Find the cube.", max_views=6,
+                                  settle=False)
+        ctx.close()
+        assert got["n_views"] == 6, "settle=False must not stop early"
+
+    def test_the_default_still_settles(self, tmp_path, patched):
+        bot = FakeRobot()
+        patched.setattr(AR, "re_look", tracking_reply(bot))
+        ctx = make_ctx(tmp_path, bot)
+        got = AR.answer_reference(ctx, "Find the cube.", max_views=6)
+        ctx.close()
+        assert got["n_views"] < 6
+
+    def test_the_orbit_step_is_a_parameter(self, tmp_path, patched):
+        bot = FakeRobot()
+        patched.setattr(AR, "re_look", tracking_reply(bot))
+        ctx = make_ctx(tmp_path, bot)
+        AR.answer_reference(ctx, "Find the cube.", max_views=3, settle=False,
+                            orbit_deg=30.0)
+        ctx.close()
+        # Consecutive orbit waypoints subtend the requested angle at the target.
+        t = np.array([3.0, 0.0])
+        angs = [np.degrees(np.arctan2(*(np.array(d) - t)[::-1]))
+                for d in bot.drives]
+        steps = [abs(((b - a + 180) % 360) - 180) for a, b in zip(angs, angs[1:])]
+        assert steps and all(s == pytest.approx(30.0, abs=1.0) for s in steps)
+
+    def test_the_policy_travels_with_the_answer(self, tmp_path, patched):
+        bot = FakeRobot()
+        patched.setattr(AR, "re_look", tracking_reply(bot))
+        ctx = make_ctx(tmp_path, bot)
+        got = AR.answer_reference(ctx, "Find the cube.", max_views=4,
+                                  settle=False, orbit_deg=40.0,
+                                  size_mode="max", use_extent=False)
+        ctx.close()
+        p = got["policy"]
+        assert p["orbit_deg"] == 40.0 and p["settle"] is False
+        assert p["size_mode"] == "max" and p["extent_weights"] is False
+        assert p["standoff_m"] == AR.VIEW_M
+
+    def test_a_recorded_view_can_be_re_lifted_without_the_model(
+            self, tmp_path, patched):
+        """The point of recording `box_px`: replay must not need a new call."""
+        bot = FakeRobot()
+        patched.setattr(AR, "re_look", tracking_reply(bot))
+        ctx = make_ctx(tmp_path, bot)
+        AR.answer_reference(ctx, "Find the cube.", max_views=3, settle=False)
+        ctx.close()
+
+        rows = [json.loads(l) for l in
+                (tmp_path / "steps.jsonl").read_text().splitlines() if l.strip()]
+        views = [r for r in rows if r.get("kind") == "reference" and r["took"]]
+        assert views, "no view was taken"
+        for r in views:
+            assert r["box_px"] is not None and r["image_index"] is not None
+            assert r["orbit_deg"] is not None and r["range_m"] is not None
+            scan = np.load(tmp_path / f"step{r['step']}_scan.npy")
+            again = T.lift_box(r["box_px"], r["image_index"], scan, r["pose"])
+            assert again["n"] == r["n_returns"], \
+                "a replayed lift must reproduce the driven one exactly"

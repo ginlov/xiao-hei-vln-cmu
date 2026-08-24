@@ -105,12 +105,22 @@ Ordered so each of the first runs isolates one thing:
 | 5 | `office_1` | 1 | paper cup | 0.05 m | 2 | The floor: a 0.11 m target. What does the pipeline do when the budget is impossible? |
 | 6 | `arabic_room` | 0 | pillow | 0.13 m | **11** | Both hard at once — most rivals *and* a tight budget |
 
+Drive them as **corpus** runs, not answering runs — a superset costs model
+calls but no extra simulator time, and it is the only way to get more than one
+policy out of one drive:
+
 ```bash
 scripts/sim.sh restart loft
 eval "$(grep -E '^[[:space:]]*export ANTHROPIC_API_KEY=' ~/.zshrc)"
 uv run --with anthropic python scripts/answer_reference.py \
+    --corpus --views 8 --orbit-deg 40 \
     "Find the potted plant between a vase and the cabinet with a TV on it."
 ```
+
+`--corpus` disables the settle rule so all 8 views are taken; `--orbit-deg 40`
+is finer than the shipped 75°, so both are replayable from the one drive.
+Without those flags it answers the question and stops, which is what the
+submission does.
 
 Score it against the key:
 
@@ -125,10 +135,38 @@ uv run python scripts/score_reference.py --why loft     # what the answer should
 **1. Does the orbit help, and which extent estimator is right?**
 Averaging per-view extents is right when each view sees the whole object and
 wrong when each sees a different slice. `--size-mode {average,max,union}`; the
-default is the measured one. **One run answers all three** — `answer.json`
-carries every view's centre, extent and weight, so the box can be recomputed
-offline without re-driving. *The replay tool for that is the first thing to
-write.*
+default is the measured one. All three can be recomputed from a recorded run.
+
+> ### What replay can and cannot do
+>
+> **Driving is the only part that cannot be replayed.** The views are a
+> function of where the policy chose to stand, so anything that changes a
+> viewpoint — the standoff, the orbit step, whether `run_goto` got close
+> enough — needs the simulator again. Since the box's accuracy is mostly
+> decided *by the viewpoints*, replay is a within-run re-analysis and **not**
+> the gate on 3D box accuracy.
+>
+> Everything downstream of the viewpoint is free, because each step writes its
+> four faces and its scan, and `steps.jsonl` carries the model's own `box_px`
+> and `image_index`:
+>
+> | | replayable? |
+> |---|---|
+> | `size_mode`, view weights, consensus rule | yes, from `answer.json` |
+> | **SAM refinement vs the rectangular mask** | yes — same box, new mask, re-lift |
+> | `MIN_INLIERS`, `OUTLIER_M`, percentile trim | yes — re-lift |
+> | a stopping rule that stops *earlier* | yes, if the drive took more views |
+> | a coarser orbit step | yes, if the drive used a finer one |
+> | standoff, a finer orbit step, a target never reached | **no — drive again** |
+>
+> That last row is why the first drives should be **supersets**. `--corpus`
+> keeps looking to `--views` after the box has settled, and `--orbit-deg` sets
+> the step; a policy that stops at three views or turns 75° instead of 40° is
+> then a subset of what was driven and costs nothing more to evaluate. The
+> extra cost is model calls, not simulator time.
+>
+> A test asserts the record is sufficient: a view re-lifted from
+> `steps.jsonl` + `stepN_scan.npy` reproduces the driven lift exactly.
 
 **2. Is the re-look re-identifying or drifting?**
 Run 2 (`loft` chair, 10 rivals) is the test. The signals are in `steps.jsonl`:
