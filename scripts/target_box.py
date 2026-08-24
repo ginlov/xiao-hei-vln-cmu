@@ -208,7 +208,7 @@ class TargetBox:
         if size_mode not in SIZE_MODES:
             raise ValueError(f"size_mode must be one of {SIZE_MODES}")
         self.outlier_m = float(outlier_m)
-        self.anchor = None if anchor is None else np.asarray(anchor, float)
+        self.anchor = None if anchor is None else np.asarray(anchor, float).ravel()
         self.size_mode = size_mode
         self.centres: list[np.ndarray] = []
         self.extents: list[np.ndarray] = []
@@ -304,7 +304,13 @@ class TargetBox:
         for i in range(n):
             groups.setdefault(find(i), []).append(i)
         if self.anchor is not None:
-            nearest = int(np.argmin(np.linalg.norm(C - self.anchor, axis=1)))
+            # The anchor may be 2D: `run_goto` binds a target in the plan view
+            # and has no height for it. Compare over whatever dimensions it
+            # carries -- xy alone is enough to tell one object from another
+            # here, and demanding a z the binding never had would mean
+            # inventing one.
+            k = len(self.anchor)
+            nearest = int(np.argmin(np.linalg.norm(C[:, :k] - self.anchor, axis=1)))
             return sorted(groups[find(nearest)])
         return sorted(max(groups.values(),
                           key=lambda g: (sum(self.weights[i] for i in g), len(g))))
