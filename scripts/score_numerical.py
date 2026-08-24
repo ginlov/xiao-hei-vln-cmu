@@ -215,15 +215,25 @@ def holds(rel: str, t: dict, a: dict, pad: float = PAD_M) -> bool:
     raise ValueError(f"unknown relation {rel!r}")
 
 
-def is_colour(o: dict, want: str) -> bool:
+def is_colour(o: dict, want: str, min_pct: float = 0.0) -> bool:
     """Would a person call this object that colour?
 
     The dominant scheme only. A pillow whose *second* colour is maroon is a
     grey pillow with a pattern, and the question is about the pillow.
+
+    `min_pct` is the share of the object's points the dominant scheme must
+    cover before its name is worth believing, as a fraction. It defaults to 0
+    so that nothing already keyed to this function moves; `score_reference`
+    passes 0.5. The reason it exists: `loft`'s eleven chairs all carry a
+    dominant scheme at **0.01** -- one percent of their points -- so the names
+    `gray` and `brown` there are noise, and the scene's own question asks for
+    the *blue* chair. A colour read off 1% of an object is not a colour.
     """
     if not o["colours"]:
         return False
     top = o["colours"][0]
+    if top["pct"] < min_pct:
+        return False
     if top["name"] in COLOUR_FAMILY.get(want, set()):
         return True
     # `gray` covers everything from darkslategray to darkgray; only its dark
