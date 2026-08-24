@@ -9,6 +9,8 @@ knows about the VLM, so this file stays debuggable on its own:
       'source /opt/ros/jazzy/setup.bash && python3 /tmp/robot_io.py capture'
     docker exec iros2026_system bash -lc \\
       'source /opt/ros/jazzy/setup.bash && python3 /tmp/robot_io.py drive -- -0.01 -1.55'
+    docker exec iros2026_system bash -lc \\
+      'source /opt/ros/jazzy/setup.bash && python3 /tmp/robot_io.py stop'
 
 Both subcommands print one JSON object on stdout and write nothing else there,
 so the caller can parse without stripping ROS log noise.
@@ -260,6 +262,42 @@ def cmd_capture(timeout: float) -> dict:
     return out
 
 
+def cmd_stop(timeout: float = 8.0) -> dict:
+    """Park the vehicle where it stands.
+
+    `cmd_drive` publishes its waypoint **once** and returns. Nothing retracts
+    it, so when the process exits the local planner still holds that goal and
+    keeps driving at it -- and when the goal is unreachable, which is exactly
+    the case a timeout reports, the vehicle oscillates in place until the stack
+    is restarted. Seen on `studio`: the loop gave up 2.58 m short, printed its
+    answer, exited, and the robot went on twitching at a waypoint nobody was
+    waiting for any more.
+
+    Publishing the current pose as the waypoint is the retraction: it is a goal
+    the vehicle is already at, so the planner settles instead of hunting. It
+    matters beyond tidiness -- instruction following is scored on the driven
+    trajectory, and a vehicle still moving after the run has ended is still
+    writing to the thing being marked.
+    """
+    n = Driver(0.0, 0.0)
+    for _ in range(120):                          # wait for /state_estimation
+        rclpy.spin_once(n, timeout_sec=0.05)
+        if n.pose is not None:
+            break
+    if n.pose is None:
+        n.destroy_node()
+        return {"ok": False, "why": "no /state_estimation — nothing to park at"}
+    n.goal = np.array(n.pose[:2], float)
+    sent = n.send()
+    deadline = time.time() + timeout
+    while time.time() < deadline and not n.stalled():
+        rclpy.spin_once(n, timeout_sec=0.05)
+    out = {"ok": bool(sent), "why": "parked" if sent else "nobody subscribed",
+           "pose": n.pose, "goal": list(n.goal)}
+    n.destroy_node()
+    return out
+
+
 def cmd_drive(x: float, y: float, timeout: float) -> dict:
     n = Driver(x, y)
     # Let /state_estimation arrive first, so `start` is the pose we left from
@@ -349,6 +387,8 @@ def main() -> int:
     d.add_argument("y", type=float)
     d.add_argument("--timeout", type=float, default=30.0)
     sub.add_parser("preflight")
+    st = sub.add_parser("stop", help="park the vehicle where it stands")
+    st.add_argument("--timeout", type=float, default=8.0)
     args = ap.parse_args()
 
     rclpy.init()
@@ -357,6 +397,8 @@ def main() -> int:
             out = cmd_capture(args.timeout)
         elif args.cmd == "drive":
             out = cmd_drive(args.x, args.y, args.timeout)
+        elif args.cmd == "stop":
+            out = cmd_stop(args.timeout)
         else:
             out = cmd_preflight()
     finally:
