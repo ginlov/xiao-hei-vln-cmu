@@ -35,7 +35,7 @@ are required — docker-compose sets them for you, but they can be overridden.
 | `XIAO_HEI_PERCEPTION_BASE_URL` | `http://localhost:8001` | Sidecar URL the responder talks to |
 | `XIAO_HEI_PERCEPTION_SCORE_THRESHOLD` | `0.25` | YOLO-World detection score gate. Lower → more detections, more noise |
 | `XIAO_HEI_PERCEPTION_MIN_INLIERS` | `10` | LiDAR-return count below which a detection mask is dropped |
-| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Sweeps accumulated to densify the sparse single sweep before lifting. One per tick, so this is a window in *ticks* — 10 ≈ 5 s at the 2 Hz default |
+| `XIAO_HEI_SCAN_KEYFRAMES` | `10` | Sweeps accumulated to densify the sparse single sweep before lifting. One per tick, so this is a window in *ticks* — 10 ≈ 5 s at the 2 Hz default. TASK 21 measured `0` as better on both corpora it has (box size error 2.28x → 1.28x, mean 3D IoU 0.166 → 0.214); the default is still 10 and that disagreement is open |
 | `XIAO_HEI_SCAN_VOXEL_M` | `0.05` | Voxel size (m) for downsampling the accumulated scan |
 
 ## Exploration
