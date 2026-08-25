@@ -88,6 +88,7 @@ Every row below links to a distinct document.
 | 50 | [Why both explorers stall, and which one to keep](TASK%2050%20-%20Why%20both%20explorers%20stall,%20and%20which%20one%20to%20keep.md) | Frontier picked; 6 fixes landed + 13 tests — validated by the exp1 sweep: frontier 2516 m2 over 13 scenes, +59% median coverage |
 | 51 | [Three exploration changes that were tried and reverted](TASK%2051%20-%20Three%20exploration%20changes%20that%20were%20tried%20and%20reverted.md) | Reverted — none beat exp1. Kept as the record of what not to retry |
 | 52 | [A 100-label detector prior covering all 15 scenes](TASK%2052%20-%20A%20100-label%20detector%20prior%20covering%20all%2015%20scenes.md) | Done — `--max-labels` cap (ranked by cross-scene generality); 100 labels, 81% GT coverage, every scene 68–96% |
+| 53 | [Ablation knobs for LLM-MCP navigation](TASK%2053%20-%20Ablation%20knobs%20for%20LLM-MCP%20navigation.md) | Done — env-gated: `XIAO_HEI_NAV_RAW_REASONING=1` (truly-naive: no MCP tool for nav+answer, no snapping/reach-skip machinery, fixed-cadence re-plan, vision-steering kept), `XIAO_HEI_NAV_PERCEPTION_STEER=0` (no in-loop perception steering); auto-tagged output; both gated so baseline is byte-identical |
 
 The task *definitions* these reports answer to stay at the repo root in
 `TASK.md`.

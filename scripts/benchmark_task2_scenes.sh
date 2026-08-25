@@ -34,7 +34,12 @@ HIT=${HIT:-1.0}
 SEED=${SEED:-0}
 SCENES_DIR=${XIAO_HEI_SCENES_DIR:-/home/long/Projects/dataset/unity_scenes_extracted}
 REF=${XIAO_HEI_REF_JSONL:-/home/long/Projects/dataset/xiao-hei-vln-cmu/dataset/vla3d_ref.jsonl}
-OUT=${OUT:-artifacts/bench_task2_scenes.jsonl}
+# Ablation runs write to a distinct file so they never clobber the baseline.
+# Derive a tag from the ablation env flags unless OUT is set explicitly.
+_TAG=""
+case "${XIAO_HEI_NAV_RAW_REASONING:-}" in 1|true|yes|True) _TAG="${_TAG}_rawreason" ;; esac
+case "${XIAO_HEI_NAV_PERCEPTION_STEER:-}" in 0|false|no|False) _TAG="${_TAG}_nopercsteer" ;; esac
+OUT=${OUT:-artifacts/bench_task2_scenes${_TAG}.jsonl}
 ROS='source /opt/ros/jazzy/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'
 SIM_DIR=/home/docker/autonomy_stack_mecanum_wheel_platform
 

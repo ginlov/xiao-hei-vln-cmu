@@ -437,6 +437,17 @@ def _build_explorer(node, scene: SceneRepresentation, dynamic_vocab: set[str] | 
             default_score_threshold=float(
                 os.environ.get("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD") or "0.4"
             ),
+            # Ablation B: "0"/"false" disables the navigator's in-loop control
+            # of perception (verify_objects + visible-object vocab priming).
+            perception_steer=(
+                os.environ.get("XIAO_HEI_NAV_PERCEPTION_STEER", "1").strip().lower()
+                not in ("0", "false", "no")
+            ),
+            # Ablation A ("truly naive") re-plan cadence, seconds. Only used when
+            # the engine's raw_reasoning flag is on; ignored otherwise.
+            naive_replan_s=float(
+                os.environ.get("XIAO_HEI_NAV_NAIVE_REPLAN_S") or "5.0"
+            ),
         )
     else:
         node.get_logger().error(

@@ -117,6 +117,101 @@ def test_call_tool_forces_injected_tool_and_returns_input() -> None:
     assert kw["system"] == "answer sys"
 
 
+class _TextBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+def _raw_cfg() -> NavVLMConfig:
+    return NavVLMConfig(api_key="sk-test", raw_reasoning=True)
+
+
+def test_raw_reasoning_parses_fenced_json_and_sends_no_tool() -> None:
+    reply = (
+        "I can see a doorway to the north; heading through it reveals the room.\n"
+        '```json\n{"done": false, "x": 1.5, "y": -2.0, "rationale": "toward doorway"}\n```'
+    )
+    client = _Client(_Response([_TextBlock(reply)]))
+    eng = AnthropicNavEngine(_raw_cfg(), client=client)
+
+    out = eng.propose(user_text="go", panorama_jpg=b"jpg", occupancy_png=b"png")
+
+    assert (out.done, out.x, out.y) == (False, 1.5, -2.0)
+    assert out.rationale == "toward doorway"
+    kw = client.messages.last_kwargs
+    # The ablation must NOT force (or even offer) a tool call.
+    assert "tools" not in kw and "tool_choice" not in kw
+    # The requested field names still come from the tool schema, so both arms
+    # ask for the same thing.
+    sent_text = kw["messages"][0]["content"][-1]["text"]
+    assert '"done"' in sent_text and '"rationale"' in sent_text
+
+
+def test_raw_reasoning_falls_back_to_unfenced_json() -> None:
+    client = _Client(_Response([_TextBlock('sure: {"done": true, "rationale": "arrived"}')]))
+    eng = AnthropicNavEngine(_raw_cfg(), client=client)
+
+    out = eng.propose(user_text="go", panorama_jpg=None, occupancy_png=b"png")
+
+    assert out.done is True and out.rationale == "arrived"
+
+
+def test_raw_reasoning_raises_on_unparseable_reply() -> None:
+    client = _Client(_Response([_TextBlock("I am not sure where to go next.")]))
+    eng = AnthropicNavEngine(_raw_cfg(), client=client)
+
+    with pytest.raises(ValueError, match="parseable waypoint"):
+        eng.propose(user_text="go", panorama_jpg=None, occupancy_png=b"png")
+
+
+def test_raw_reasoning_flag_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("XIAO_HEI_NAV_RAW_REASONING", raising=False)
+    assert NavVLMConfig.from_env().raw_reasoning is False
+    monkeypatch.setenv("XIAO_HEI_NAV_RAW_REASONING", "1")
+    assert NavVLMConfig.from_env().raw_reasoning is True
+    monkeypatch.setenv("XIAO_HEI_NAV_RAW_REASONING", "0")
+    assert NavVLMConfig.from_env().raw_reasoning is False
+
+
+_ANSWER_TOOL = {
+    "name": "answer",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "object_id": {"type": "integer", "description": "the id"},
+            "rationale": {"type": "string", "description": "why"},
+        },
+        "required": ["object_id"],
+    },
+}
+
+
+def test_call_dispatches_to_raw_when_flag_on() -> None:
+    client = _Client(_Response([_TextBlock('pick: {"object_id": 7, "rationale": "x"}')]))
+    eng = AnthropicNavEngine(_raw_cfg(), client=client)
+
+    out = eng.call(system="s", tool=_ANSWER_TOOL, user_text="u",
+                   images=[(b"png", "image/png")])
+
+    assert out == {"object_id": 7, "rationale": "x"}
+    assert "tools" not in client.messages.last_kwargs        # no tool offered
+    assert "tool_choice" not in client.messages.last_kwargs
+
+
+def test_call_dispatches_to_tool_when_flag_off() -> None:
+    client = _Client(_Response([_Block("tool_use", name="answer",
+                                       input={"object_id": 3})]))
+    eng = AnthropicNavEngine(_cfg(), client=client)  # raw_reasoning False
+
+    out = eng.call(system="s", tool=_ANSWER_TOOL, user_text="u",
+                   images=[(b"png", "image/png")])
+
+    assert out == {"object_id": 3}
+    assert client.messages.last_kwargs["tool_choice"] == {"type": "tool", "name": "answer"}
+
+
 def test_render_grid_png_smoke() -> None:
     """The occupancy render produces a non-trivial PNG (needs matplotlib)."""
     pytest.importorskip("matplotlib")

@@ -37,6 +37,11 @@ class FakeEngine:
             raise RuntimeError("boom")
         return self._result
 
+    # scene_claude dispatches through call(); with raw_reasoning off it is
+    # exactly call_tool, which is what this fake models.
+    def call(self, *, system, tool, user_text, images):
+        return self.call_tool(system=system, tool=tool, user_text=user_text, images=images)
+
 
 class FakePerception:
     def __init__(self) -> None:

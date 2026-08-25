@@ -50,6 +50,13 @@ class NavVLMConfig:
     request_timeout_s: float = 60.0
     max_retries: int = 2
 
+    # --- ablation --------------------------------------------------------
+    # When true the navigator does NOT emit a forced tool call: the model
+    # reasons in free text and the waypoint is parsed from a fenced JSON block.
+    # Isolates the contribution of the MCP tool-call structure itself (paper
+    # ablation A). The baseline is False (structured tool use).
+    raw_reasoning: bool = False
+
     @classmethod
     def from_env(cls) -> NavVLMConfig:
         """Build a config from ``ANTHROPIC_API_KEY`` + ``XIAO_HEI_NAV_VLM_*``.
@@ -95,4 +102,7 @@ class NavVLMConfig:
             max_retries=int(
                 env("XIAO_HEI_NAV_VLM_MAX_RETRIES", str(cls.max_retries)),
             ),
+            # Empty/unset/"0"/"false" → baseline (structured tool use).
+            raw_reasoning=(env("XIAO_HEI_NAV_RAW_REASONING", "").strip().lower()
+                           not in ("", "0", "false", "no")),
         )

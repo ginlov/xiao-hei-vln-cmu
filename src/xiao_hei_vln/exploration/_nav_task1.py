@@ -28,6 +28,7 @@ it unchanged — that is the "call the model only on reach or skip" trigger.
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING
 
 from xiao_hei_vln.exploration._nav_vlm import NavVLMExplorer
@@ -92,11 +93,19 @@ class NavTask1Explorer(NavVLMExplorer):
         default_score_threshold: float = 0.4,
         verify_threshold_step: float = 0.1,
         verify_threshold_floor: float = 0.15,
+        perception_steer: bool = True,
+        naive_replan_s: float = 5.0,
         **kwargs,
     ) -> None:
         super().__init__(engine, config=config, **kwargs)
         self._scene = scene
         self._question_text: str | None = None
+        # Ablation B: the navigator's in-loop control of perception — priming
+        # the detector's vocab with the objects it reports seeing
+        # (visible_objects) and lowering thresholds for objects it says are
+        # present but undetected (verify_objects). False disables both channels
+        # so perception runs on the static prior + question nouns only.
+        self._perception_steer = perception_steer
         # Shared with the perception Vocabulary: the objects the model reports
         # seeing (+ synonyms) get added here so the open-vocab detector is
         # primed to find rare items its default prompt would miss (#1).
@@ -133,6 +142,17 @@ class NavTask1Explorer(NavVLMExplorer):
         # that lacks the very object being asked about (fresh-graph runs stopped
         # at ~10 waypoints before reaching a target across the room).
         self._question_classes: set[str] = set()
+        # Ablation A ("truly naive"): tied to the engine's raw_reasoning flag.
+        # When on, the navigator drops ALL the scaffolding — reachability
+        # snapping, the reach/skip trigger machinery, the stuck watchdog, the
+        # reach↔explore mode switch and the coverage-plateau backstop — and
+        # simply re-asks the model on a fixed cadence, driving its raw waypoint
+        # straight to the planner. Vision steering (verify/visible objects) is
+        # deliberately KEPT. With the flag off none of this runs, so the
+        # baseline and Ablation B paths are byte-for-byte the original code.
+        self._naive = bool(config is not None and getattr(config, "raw_reasoning", False))
+        self._naive_replan_s = naive_replan_s
+        self._naive_last_trigger: float | None = None
 
     # ------------------------------------------------------------------
     # Strategy interface
@@ -149,6 +169,9 @@ class NavTask1Explorer(NavVLMExplorer):
         now = snapshot.tick_time.to_seconds()
         if snapshot.question.text != self._question_text:
             self._on_new_question(snapshot.question.text, now)
+
+        if self._naive:
+            return self._update_naive(now)
 
         # Navigation deadline: stop driving in time for the answer to still land
         # inside the total per-question budget (this cap is total - answer
@@ -171,6 +194,47 @@ class NavTask1Explorer(NavVLMExplorer):
             return None
         return self._step(now)
 
+    def _update_naive(self, now: float) -> Waypoint | None:
+        """Ablation A tick: fixed-cadence re-plan, raw waypoint, no scaffolding.
+
+        No reach/skip events, no stuck watchdog, no snapping, no mode switch,
+        no coverage plateau. The only stops are the model saying ARRIVED
+        (handled in ``_apply_proposal``), the per-question nav budget, and the
+        re-plan/waypoint cap. Vision steering still runs (in ``_apply_proposal``).
+        """
+        if (
+            self._question_start is not None
+            and now - self._question_start > self._max_question_seconds
+        ):
+            if not self._done:
+                log.info(
+                    "nav_task1[naive]: nav budget (%.0fs) reached — stopping to answer",
+                    self._max_question_seconds,
+                )
+            self._done = True
+            return None
+
+        # Resolve an in-flight async proposal; hold the last target while thinking.
+        if self._pending is not None:
+            if self._pending.done():
+                self._resolve_pending(now)
+            else:
+                return self._current_target
+
+        if len(self._visited) >= self._max_waypoints:
+            self._done = True
+            return None
+
+        # Re-ask on a fixed cadence — not on reach/skip (those triggers are gone).
+        if not self._done and self._pending is None and (
+            self._naive_last_trigger is None
+            or now - self._naive_last_trigger >= self._naive_replan_s
+        ):
+            self._naive_last_trigger = now
+            self._trigger(now)
+
+        return self._current_target
+
     def reset(self) -> None:
         super().reset()
         self._question_text = None
@@ -180,6 +244,20 @@ class NavTask1Explorer(NavVLMExplorer):
         self._last_novelty = 0
         self._last_novelty_time = None
         self._question_classes = set()
+        self._naive_last_trigger = None
+
+    def advance(self) -> None:
+        # Ablation A: reach events do not drive the naive loop (it re-plans on a
+        # fixed cadence), so swallow them rather than clearing the target.
+        if self._naive:
+            return
+        super().advance()
+
+    def force_skip(self) -> None:
+        # Ablation A: the skip machinery (blacklist + failure feedback) is gone.
+        if self._naive:
+            return
+        super().force_skip()
 
     # ------------------------------------------------------------------
     # reach ↔ explore state machine
@@ -429,8 +507,9 @@ class NavTask1Explorer(NavVLMExplorer):
         )
 
     def _apply_proposal(self, proposal: WaypointProposal, now: float) -> None:
-        self._absorb_visible_objects(proposal)
-        self._absorb_verify_objects(proposal)
+        if self._perception_steer:
+            self._absorb_visible_objects(proposal)
+            self._absorb_verify_objects(proposal)
         if proposal.done:
             log.info(
                 "nav_task1: model signalled ARRIVED at target object (%s)",
@@ -439,4 +518,32 @@ class NavTask1Explorer(NavVLMExplorer):
             self._last_rationale = proposal.rationale
             self._done = True
             return
+        if self._naive:
+            self._apply_proposal_naive(proposal, now)
+            return
         super()._apply_proposal(proposal, now)
+
+    def _apply_proposal_naive(self, proposal: WaypointProposal, now: float) -> None:
+        """Drive the model's raw waypoint straight to the planner — no snapping.
+
+        A pick with no reachable free path (the snapping guard's job) is exactly
+        the kind of failure the naive baseline is meant to exhibit; the fixed
+        cadence re-plans past it rather than a watchdog rescuing it.
+        """
+        if proposal.x is None or proposal.y is None:
+            self._on_propose_error(ValueError("naive proposal missing x/y"))
+            return
+        x, y = float(proposal.x), float(proposal.y)
+        heading = proposal.heading
+        if heading is None and self._robot_xy is not None:
+            heading = math.atan2(y - self._robot_xy[1], x - self._robot_xy[0])
+        wp = Waypoint(x=x, y=y, heading=float(heading) if heading is not None else 0.0)
+        self._propose_failures = 0
+        self._current_target = wp
+        self._target_set_time = now
+        self._last_rationale = proposal.rationale
+        # Count re-plans toward the waypoint budget and the trajectory report.
+        self._visited.append(wp)
+        log.info(
+            "nav_task1[naive]: raw target (%.2f,%.2f) [%s]", x, y, proposal.rationale,
+        )

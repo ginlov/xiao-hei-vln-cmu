@@ -221,3 +221,108 @@ def test_force_skip_feeds_failure_into_next_prompt() -> None:
     _reseed(exp)
     exp.update(_snapshot(1.0))
     assert "FAILED" in eng.calls[-1]["user_text"]
+
+
+def test_perception_steer_off_skips_vocab_and_threshold_updates() -> None:
+    """Ablation B: with steering off the navigator makes no perception edits."""
+    dyn: set[str] = set()
+    thr: dict[str, float] = {}
+    exp = _make(
+        FakeEngine([]), FakeScene([]),
+        dynamic_vocab=dyn, class_thresholds=thr, perception_steer=False,
+    )
+    proposal = WaypointProposal(
+        done=True, rationale="arrived",
+        visible_objects=("teapot",), verify_objects=("teapot",),
+    )
+    exp._apply_proposal(proposal, now=1.0)
+
+    assert dyn == set(), "visible-object vocab priming must be disabled"
+    assert thr == {}, "verify threshold-lowering must be disabled"
+
+
+def test_perception_steer_on_updates_vocab_and_thresholds() -> None:
+    """Baseline: the navigator primes the detector vocab and lowers thresholds."""
+    dyn: set[str] = set()
+    thr: dict[str, float] = {}
+    exp = _make(
+        FakeEngine([]), FakeScene([]),
+        dynamic_vocab=dyn, class_thresholds=thr, perception_steer=True,
+        default_score_threshold=0.4, verify_threshold_step=0.1,
+    )
+    proposal = WaypointProposal(
+        done=True, rationale="arrived",
+        visible_objects=("teapot",), verify_objects=("teapot",),
+    )
+    exp._apply_proposal(proposal, now=1.0)
+
+    assert "teapot" in dyn
+    assert thr.get("teapot") == pytest.approx(0.3)  # 0.4 - one 0.1 step
+
+
+# --- Ablation A: truly-naive navigation (raw_reasoning) ----------------------
+
+def _naive_cfg():
+    from xiao_hei_vln.nav_vlm.config import NavVLMConfig
+    return NavVLMConfig(api_key="sk-test", raw_reasoning=True)
+
+
+def test_naive_drives_raw_waypoint_without_snapping() -> None:
+    """The model's pick goes straight through — no BFS-snap to a grid cell."""
+    eng = FakeEngine([WaypointProposal(done=False, x=9.9, y=-8.8, rationale="go")])
+    exp = _make(eng, FakeScene([]), config=_naive_cfg(), max_waypoints=5)
+    assert exp._naive is True
+
+    exp.update(_snapshot(0.0))  # sync engine → _apply_proposal_naive
+
+    t = exp._current_target
+    assert t is not None
+    assert (round(t.x, 1), round(t.y, 1)) == (9.9, -8.8)  # raw, unsnapped
+
+
+def test_naive_ignores_reach_and_skip_events() -> None:
+    """advance()/force_skip() are inert — the naive loop re-plans on a cadence."""
+    eng = FakeEngine([WaypointProposal(done=False, x=1.0, y=1.0, rationale="go")])
+    exp = _make(eng, FakeScene([]), config=_naive_cfg(), max_waypoints=5)
+    exp.update(_snapshot(0.0))
+    tgt = exp._current_target
+    assert tgt is not None
+
+    exp.force_skip()
+    assert exp.skipped_count == 0
+    assert exp._current_target is tgt      # skip did not clear the target
+
+    exp.advance()
+    assert exp._current_target is tgt      # reach did not clear the target
+
+
+def test_naive_replans_only_after_the_cadence() -> None:
+    eng = FakeEngine([
+        WaypointProposal(done=False, x=1.0, y=1.0, rationale="a"),
+        WaypointProposal(done=False, x=2.0, y=2.0, rationale="b"),
+    ])
+    exp = _make(eng, FakeScene([]), config=_naive_cfg(), max_waypoints=5,
+                naive_replan_s=5.0)
+    exp.update(_snapshot(0.0))
+    assert len(eng.calls) == 1
+    exp.update(_snapshot(2.0))             # < 5s since last trigger → no re-plan
+    assert len(eng.calls) == 1
+    exp.update(_snapshot(6.0))             # >= 5s → re-plan
+    assert len(eng.calls) == 2
+
+
+def test_baseline_is_not_naive_and_snaps_off_grid_picks() -> None:
+    """Guard: without raw_reasoning the explorer keeps the snapping path.
+
+    The raw pick sits far outside the reseeded free region, so the snapping
+    path must move the published target back onto reachable free space (i.e.
+    NOT the raw coordinates the naive path would drive verbatim).
+    """
+    eng = FakeEngine([WaypointProposal(done=False, x=50.0, y=50.0, rationale="go")])
+    exp = _make(eng, FakeScene([]), max_waypoints=5)  # no config → _naive False
+    assert exp._naive is False
+    _reseed(exp)
+    exp.update(_snapshot(0.0))
+    t = exp._current_target
+    assert t is not None
+    assert (t.x, t.y) != (50.0, 50.0), "snapping must not pass the raw pick through"

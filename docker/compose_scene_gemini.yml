@@ -155,6 +155,14 @@ services:
       # Empty = code defaults (600 total, 60 reserve → nav stops at 540s).
       - XIAO_HEI_NAV_TASK1_MAX_QUESTION_S=${XIAO_HEI_NAV_TASK1_MAX_QUESTION_S:-}
       - XIAO_HEI_NAV_TASK1_ANSWER_RESERVE_S=${XIAO_HEI_NAV_TASK1_ANSWER_RESERVE_S:-}
+      # Paper ablations (empty = baseline). RAW_REASONING=1 drops the MCP
+      # waypoint tool call (waypoint parsed from a fenced JSON block instead);
+      # PERCEPTION_STEER=0 disables the navigator's in-loop perception control
+      # (verify_objects + visible-object vocab priming).
+      - XIAO_HEI_NAV_RAW_REASONING=${XIAO_HEI_NAV_RAW_REASONING:-}
+      - XIAO_HEI_NAV_PERCEPTION_STEER=${XIAO_HEI_NAV_PERCEPTION_STEER:-}
+      # Ablation A re-plan cadence (s); only used when RAW_REASONING=1.
+      - XIAO_HEI_NAV_NAIVE_REPLAN_S=${XIAO_HEI_NAV_NAIVE_REPLAN_S:-}
     volumes:
       - ../src:/opt/xiao_hei_vln/src:ro
       - ../vlm_logs:/vlm_logs

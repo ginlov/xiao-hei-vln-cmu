@@ -198,7 +198,10 @@ class SceneClaudeResponder:
         t0 = time.perf_counter()
         tool_input: dict | None = None
         try:
-            tool_input = self._engine.call_tool(
+            # call() (not call_tool) so Ablation A's raw-reasoning flag makes the
+            # answer naive too — free-text reply, object_id parsed from JSON.
+            # With the flag off this is exactly the structured tool call.
+            tool_input = self._engine.call(
                 system=ANSWER_SYSTEM_PROMPT,
                 tool=ANSWER_OBJECT_REFERENCE_TOOL,
                 user_text=user_text,
