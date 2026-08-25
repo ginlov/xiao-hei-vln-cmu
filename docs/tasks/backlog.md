@@ -4,7 +4,7 @@ Known gaps that are understood and reproducible but not yet fixed. Each entry
 records the evidence, so picking one up does not mean re-deriving the diagnosis.
 
 Items here are scoped to the offline
-[perception benchmark](../../perception_benchmark/README.md), which replays
+perception benchmark (`perception_benchmark/README.md`), which replays
 frozen captures — every one can be implemented and measured without the
 simulator.
 

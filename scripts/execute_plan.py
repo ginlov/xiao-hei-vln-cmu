@@ -47,6 +47,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -576,8 +577,14 @@ def run_pass(ctx: Ctx, clause: Clause, k: int, *,
 
 
 def execute(ctx: Ctx, question: str, plan: list[Clause], *,
-            goto_steps: int) -> list[dict]:
-    """Walk the plan. The cursor only moves forward."""
+            goto_steps: int, results: list[dict] | None = None) -> list[dict]:
+    """Walk the plan. The cursor only moves forward.
+
+    `results` may be supplied by the caller so that the legs already walked
+    survive an exception raised part way through -- `main` writes `plan.json`
+    from it either way. Returning the list is not enough: a run that crashed on
+    leg 3 of 3 had driven eleven steps and kept none of them.
+    """
     todo, keep = steps(plan), keepouts(plan)
     ctx.mission = {"question": question,
                    "plan": [str(c) for c in todo],
@@ -586,7 +593,8 @@ def execute(ctx: Ctx, question: str, plan: list[Clause], *,
     # the stool" forbids a place. The plan already knows which, and the shape of
     # the keep-out follows from it — see `ConverterModel`.
     ctx.keepout_is_gate = any(c.relation == "between" for c in keep)
-    results: list[dict] = []
+    if results is None:
+        results = []
 
     for k, clause in enumerate(todo, 1):
         # Everything still unspent, less a floor held back for each leg after
@@ -696,7 +704,23 @@ def main() -> int:
           f"{'  (here not requested)' if ctx.drop_here else ''}")
     ctx.note_settings()
     t0 = time.time()
-    results = execute(ctx, args.question, plan, goto_steps=args.goto_steps)
+    # `plan.json` is the only durable record of what a question achieved, and it
+    # was written last, so a crash anywhere in the drive threw away the whole
+    # question. Whatever the legs managed is now written no matter how the walk
+    # ends -- including a Ctrl-C, which is how a run gets stopped by hand.
+    results: list[dict] = []
+    crash: str | None = None
+    try:
+        execute(ctx, args.question, plan, goto_steps=args.goto_steps,
+                results=results)
+    except KeyboardInterrupt:
+        crash = "interrupted"
+        print("\n  !! interrupted — keeping the legs already driven",
+              file=sys.stderr)
+    except Exception:
+        crash = traceback.format_exc()
+        print(f"\n  !! run crashed — keeping the legs already driven\n{crash}",
+              file=sys.stderr)
     ctx.leg_deadline = None
     ctx.close()
 
@@ -710,7 +734,10 @@ def main() -> int:
           f"{args.budget:.0f}   log: {out}/steps.jsonl")
     (out / "plan.json").write_text(json.dumps(
         {"question": args.question, "from_model": from_model,
-         "plan": [str(c) for c in plan], "results": results}, indent=1))
+         "plan": [str(c) for c in plan], "results": results,
+         **({"crash": crash} if crash else {})}, indent=1))
+    if crash:
+        return 2
     return 0 if done == len(results) else 1
 
 

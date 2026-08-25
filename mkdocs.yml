@@ -63,6 +63,7 @@ nav:
   - Home: index.md
   - Architecture: architecture.md
   - VLM Drive Strategy: vlm_drive_strategy.md
+  - Pipeline Sequence: pipeline-sequence.md
   - Getting Started:
       - Quickstart: getting-started/quickstart.md
       - Docker: getting-started/docker.md
