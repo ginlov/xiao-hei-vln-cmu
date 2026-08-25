@@ -109,6 +109,7 @@ class PerceptionResponder:
         logger: VLMLogger | None = None,
         object_map: ObjectMap,
         scan_accumulator: ScanAccumulator,
+        class_thresholds: dict[str, float] | None = None,
     ) -> None:
         """
         Args:
@@ -159,6 +160,9 @@ class PerceptionResponder:
         self._score_threshold = float(score_threshold)
         self._iou_threshold = float(iou_threshold)
         self._sam_threshold = float(sam_threshold)
+        # Shared per-class threshold overrides (VLM verify-recall). None/empty =
+        # the normal single-threshold behaviour.
+        self._class_thresholds = class_thresholds if class_thresholds is not None else {}
         # Viewpoint-novelty gate state: xy of every viewpoint we have actually
         # perceived from. A new tick perceives only if it is farther than
         # `_novel_viewpoint_m` from ALL of these (nearest-neighbour over all
@@ -374,12 +378,27 @@ class PerceptionResponder:
             log.exception("failed to decode image frame; skipping tick")
             return
 
+        # Per-class threshold overrides (VLM-requested "verify" recall boost):
+        # detect at the LOWEST active floor so low-confidence candidates for a
+        # relaxed class come back, then re-apply the threshold per class — every
+        # class the model has not relaxed keeps the normal floor, so global
+        # precision is unchanged. With no overrides this is exactly the old path.
+        detect_floor = self._score_threshold
+        if self._class_thresholds:
+            detect_floor = min(detect_floor, min(self._class_thresholds.values()))
         detections = self._client.detect(
             bgr,
             classes=None,                # rely on the cached set
-            score_threshold=self._score_threshold,
+            score_threshold=detect_floor,
             iou_threshold=self._iou_threshold,
         )
+        if detect_floor < self._score_threshold:
+            detections = [
+                d for d in detections
+                if d.score >= self._class_thresholds.get(
+                    d.label.strip().lower(), self._score_threshold
+                )
+            ]
         if self._sam_threshold > 0.0:                # B5 mask-quality gate
             detections = [d for d in detections
                           if d.sam_score >= self._sam_threshold]

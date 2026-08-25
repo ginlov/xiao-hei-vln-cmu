@@ -32,7 +32,11 @@ from xiao_hei_vln.perception.geometry import EQUIRECT_H, EQUIRECT_W
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL: str = "http://localhost:8001"
-DEFAULT_REQUEST_TIMEOUT_S: float = 2.0
+# Open-vocab /detect time scales with the class count: with the question nouns
+# plus the navigator's Claude-observed vocab it runs ~2-3s and grows from there.
+# 2.0s (the old value) timed out on every such call, silently dropping ALL
+# detections so the scene graph never populated. 10s leaves real headroom.
+DEFAULT_REQUEST_TIMEOUT_S: float = 10.0
 DEFAULT_HEALTH_TIMEOUT_S: float = 60.0
 
 

@@ -23,6 +23,19 @@ nbv
     belief map and picks the pose with highest unknown-gain / path-cost.
     Select with ``XIAO_HEI_EXPLORATION_STRATEGY=nbv``.
 
+nav_vlm
+    ``NavVLMExplorer`` — asks a vision-language model (Opus 5) for the next
+    waypoint on each reach / cannot-reach event, snapping the pick to a
+    grid-reachable free cell. Select with
+    ``XIAO_HEI_EXPLORATION_STRATEGY=nav_vlm`` (needs an Anthropic key).
+
+nav_task1
+    ``NavTask1Explorer`` — a question-directed variant of ``nav_vlm``: it
+    drives the robot toward the object named in an OBJECT_REFERENCE question
+    (feeding the model the question + scene graph each call) and completes when
+    the model declares arrival, at which point the ``scene_claude`` responder
+    answers. Select with ``XIAO_HEI_EXPLORATION_STRATEGY=nav_task1``.
+
 Visualisation
 -------------
 save_exploration_plot(visited_waypoints, grid, output_path)
@@ -62,6 +75,8 @@ from xiao_hei_vln.exploration._capture import (
     save_rviz_screenshot,
 )
 from xiao_hei_vln.exploration._frontier import FrontierExplorer
+from xiao_hei_vln.exploration._nav_task1 import NavTask1Explorer
+from xiao_hei_vln.exploration._nav_vlm import NavVLMExplorer
 from xiao_hei_vln.exploration._nbv import NextBestViewExplorer
 from xiao_hei_vln.exploration._visualize import save_exploration_plot
 
@@ -69,6 +84,8 @@ __all__ = [
     "CaptureError",
     "ExplorationStrategy",
     "FrontierExplorer",
+    "NavTask1Explorer",
+    "NavVLMExplorer",
     "NextBestViewExplorer",
     "list_windows",
     "save_exploration_plot",

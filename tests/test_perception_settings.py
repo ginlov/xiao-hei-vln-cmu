@@ -116,6 +116,7 @@ def test_log_config_is_json_safe_and_complete(clean_env: None) -> None:
         "sam_threshold",
         "min_inliers",
         "novel_viewpoint_m",
+        "request_timeout_s",
     }
     json.loads(json.dumps(cfg))  # raises if a value isn't JSON-native
 
@@ -130,6 +131,15 @@ def test_log_config_reflects_overrides(
 
     assert cfg["score_threshold"] == pytest.approx(0.75)
     assert cfg["min_inliers"] == 25
+
+
+def test_request_timeout_env_override(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The /detect client timeout must be tunable: too-low a value silently
+    drops every slow open-vocab detection, leaving the scene graph empty."""
+    monkeypatch.setenv("XIAO_HEI_PERCEPTION_REQUEST_TIMEOUT_S", "12.5")
+    assert _PerceptionSettings.from_env().request_timeout_s == pytest.approx(12.5)
 
 
 def test_api_key_never_reachable_through_log_config(clean_env: None) -> None:
