@@ -22,7 +22,7 @@ def _add_detect(sub) -> None:
     p = sub.add_parser("detect", help="stage A — cache sidecar detections")
     p.add_argument("--frames", type=Path, required=True, help="recorded corpus dir")
     p.add_argument("--base-url", default="http://localhost:8001")
-    p.add_argument("--score-threshold", type=float, default=0.25)
+    p.add_argument("--score-threshold", type=float, default=0.6)
     p.add_argument("--iou-threshold", type=float, default=0.5)
     p.add_argument("--limit", type=int, default=None, help="only the first N frames")
     p.add_argument(

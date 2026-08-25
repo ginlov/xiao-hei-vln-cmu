@@ -66,10 +66,12 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import Pose2D
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
+from std_msgs.msg import Float32
 
 # Share the wire-format decoders with the viewpoint harness rather than
 # re-deriving them: the intensity-column handling in cloud_to_array is subtle
@@ -130,6 +132,15 @@ class NavRecorder(Node):
         self._sub(Image, "/camera/image", "image", sensor_qos)
         for key, topic in CLOUD_TOPICS.items():
             self._sub(PointCloud2, topic, key, sensor_qos)
+        # Waypoint debug topics — NOT capture inputs, recorded per frame into
+        # meta.json so the advance/skip behaviour (app/main.py) can be replayed
+        # offline. The commanded waypoint is published RELIABLE (publishers.py);
+        # /way_point_reached (the nav stack's distance) is BEST_EFFORT, same as
+        # the app's own subscription.
+        reliable_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                                  history=HistoryPolicy.KEEP_LAST, depth=5)
+        self._sub(Pose2D, "/way_point_with_heading", "waypoint", reliable_qos)
+        self._sub(Float32, "/way_point_reached", "wp_reached", sensor_qos)
 
         self.frames: list[dict] = []
         self.last_img_seq = -1
@@ -233,6 +244,14 @@ class NavRecorder(Node):
             "speed": round(spd, 3) if spd is not None else None,
             "image_shape": list(img.shape),
             "image_encoding": img_msg.encoding,
+            # Waypoint debug (latest-value): the commanded waypoint [x, y, theta]
+            # and the nav stack's reported distance to it, so the advance/skip
+            # decision can be reconstructed offline. None before exploration
+            # issues its first waypoint / the nav stack reports.
+            "waypoint": ([round(wp.x, 3), round(wp.y, 3), round(wp.theta, 4)]
+                         if (wp := self.latest.get("waypoint")) is not None else None),
+            "wp_reached_dist": (round(float(wpr.data), 3)
+                                if (wpr := self.latest.get("wp_reached")) is not None else None),
             "source": "navigation",
         }
         json.dump(meta, open(vp_dir / "meta.json", "w"), indent=2)

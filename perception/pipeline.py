@@ -18,12 +18,12 @@ by:
 Step 7 replaces the original v1 plan, which had no cross-face NMS at all
 and leaned on the responder-side ``SceneRepresentation.merge_radius``
 (1.5 m) to absorb duplicates. That path no longer exists — fusion is now
-``ObjectMap``, whose ``MERGE_DIST`` is 0.4 m — and measurement showed the
-seams are a real source of fragmentation: over one 316-frame scene, 88% of
-same-label detection pairs lying <1 m apart *within a single frame* fell in
-a 30° band around a seam bearing (uniform would be 11% per 10° bin). A
-carpet split at a seam surfaced as two nodes 0.48 m apart, just wide enough
-to escape ``MERGE_DIST``.
+``ObjectMap``, whose same-label merge gate is IoU-or-surface-gap — and
+measurement showed the seams are a real source of fragmentation: over one
+316-frame scene, 88% of same-label detection pairs lying <1 m apart *within a
+single frame* fell in a 30° band around a seam bearing (uniform would be 11%
+per 10° bin). A carpet split at a seam surfaced as two nodes 0.48 m apart, just
+wide enough to escape the fusion merge gate.
 """
 
 from __future__ import annotations
@@ -338,7 +338,7 @@ class PerceptionPipeline:
         equirect_bgr: NDArray[np.uint8],
         *,
         classes: list[str] | None = None,
-        score_threshold: float = 0.25,
+        score_threshold: float = 0.6,
         iou_threshold: float = 0.5,
     ) -> list[DetectionRecord]:
         """Detect + segment objects in an equirectangular frame.

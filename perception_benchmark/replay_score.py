@@ -114,6 +114,7 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
                     image_lag_s: float = 0.0,
                     range_cap_m: float | None = None,
                     sam_thresh: float = 0.0,
+                    novel_viewpoint_m: float = 0.0,
                     verbose: bool = True):
     np.random.seed(seed)                                # ObjectMap PTS_CAP subsample
     vp_dirs = sorted(glob.glob(str(CAP_DIR / scene / "vp_*")))
@@ -172,9 +173,22 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
     deskew = PoseDeskew(image_lag_s)
 
     n_det = n_lift = n_frozen = 0
+    kept_xy: list[tuple[float, float]] = []       # viewpoint-novelty gate (TASK 33)
+    n_perceived = 0
     for vp_dir in vp_dirs:
         img, scan, pos, ori = load_capture(Path(vp_dir))
+        # Accumulator ingests EVERY tick (all ticks stay recorded); the novelty
+        # gate below only decides which ticks *trigger* lift + fusion — the
+        # offline mirror of the live responder gate.
         cloud = accum.update(scan, pos, ori) if accum is not None else scan
+        if novel_viewpoint_m > 0.0 and kept_xy:
+            nearest = min((pos.x - kx) ** 2 + (pos.y - ky) ** 2
+                          for kx, ky in kept_xy) ** 0.5
+            if nearest <= novel_viewpoint_m:
+                continue                          # not a novel viewpoint -> skip perception
+        if novel_viewpoint_m > 0.0:
+            kept_xy.append((pos.x, pos.y))
+        n_perceived += 1
         ori_lift = deskew.update(ori, capture_time(Path(vp_dir)))
         dets = _frozen_detections(Path(vp_dir)) if use_frozen else None
         if dets is None:
@@ -210,7 +224,9 @@ def build_and_score(scene: str, *, base_url: str, score_threshold: float,
         cached = (f" | {n_frozen}/{len(vp_dirs)} frames from frozen masks"
                   if n_frozen else "")
         gt_tag = "GT(all-vocab)" if keep_arch else "GT(scoreable)"
-        print(f"\n[{scene}] viewpoints={len(vp_dirs)} detections={n_det} "
+        gated = (f" perceived={n_perceived}/{len(vp_dirs)} (novel>{novel_viewpoint_m}m)"
+                 if novel_viewpoint_m > 0.0 else "")
+        print(f"\n[{scene}] viewpoints={len(vp_dirs)}{gated} detections={n_det} "
               f"lifts={n_lift} | {gt_tag}={report['n_gt']} "
               f"pred={report['n_pred']}{cached}")
         m, op = report["mAP"], report["operating_point"].get(f"dist@{primary}m", {})
@@ -286,7 +302,7 @@ def main() -> int:
     ap.add_argument("--scene", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--base-url", default=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--score-threshold", type=float, default=0.25)
+    ap.add_argument("--score-threshold", type=float, default=0.6)
     ap.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS)
     # Default: score every class in the query vocab (incl. wall/floor/ceiling),
     # matching what the detector is asked to find. --scoreable-only restores the
@@ -330,6 +346,11 @@ def main() -> int:
     ap.add_argument("--sam-thresh", type=float, default=0.0,
                     help="B5: drop detections whose SAM mask-quality score is "
                          "below this (0-1). Default 0 = keep all.")
+    ap.add_argument("--novel-viewpoint-m", type=float, default=0.0,
+                    help="TASK 33: viewpoint-novelty gate. Accumulator still runs "
+                         "every tick, but lift+fusion only fires when the pose is "
+                         "farther than this (m) from ALL previously perceived "
+                         "viewpoints. 0 = off (score every tick, current default).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--timeout", type=float, default=60.0, help="per-request HTTP timeout (s)")
     ap.add_argument("--out", type=Path, default=Path("perception_benchmark/scores"))
@@ -357,6 +378,7 @@ def main() -> int:
             scan_keyframes=args.scan_keyframes, scan_voxel_m=args.scan_voxel,
             use_frozen=args.use_frozen, image_lag_s=args.image_lag,
             range_cap_m=args.range_cap, sam_thresh=args.sam_thresh,
+            novel_viewpoint_m=args.novel_viewpoint_m,
             range_gap_m=args.range_gap, cluster_voxel_m=args.cluster_voxel,
             inlier_filter=ifilter, nms_dist=args.nms_dist, nms_gap=args.nms_gap,
             request_timeout_s=args.timeout)

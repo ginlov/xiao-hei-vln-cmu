@@ -296,7 +296,8 @@ be re-dumped for a fair A/B.
 
 ## B6 — Large flat objects fragment into many nodes
 
-**Status:** diagnosed (end-to-end `arabic_room` eval) — not started
+**Status:** addressed on `arabic_room` (TASK 32, carpet 9→2) — multi-scene sweep
+of the new gate still pending
 **Files:** `src/xiao_hei_vln/perception/object_map.py`
 
 Large planar objects (carpet, floor, ceiling) shatter into many nodes instead
@@ -314,6 +315,27 @@ precision down (arabic_room pred 188 vs GT 81).
 export (voxel-adjacent or plane-fit union), and add the horizontal (ceiling)
 analogue of `_is_wall_sheet`. Fixes the Task-1 carpet miss *and* the benchmark
 precision drop at once. Relates to B2 (box shape) and B3 (dedup).
+
+**Fixed (TASK 32):** the `add()` gate is now `IoU ≥ 0.3 OR surface_gap ≤
+0.15·max_footprint`, with `IoU` falling back to xy-footprint (BEV) IoU when both
+boxes are flat. On arabic_room this cut carpet nodes 9 → 2 (one per GT carpet)
+and total nodes 46 → 30, with no distinct-instance collapse (pillows stayed 2,
+potted plants 5/5). Remaining work: sweep `MERGE_GAP_FRAC`/`FLAT_Z_M` across the
+14-scene corpus (dense-scene recall is the historical risk — see the constant's
+comment) and add the horizontal (ceiling) analogue of `_is_wall_sheet`.
+
+**Why the old merge gates missed it** (measured, arabic_room, TASK 31).
+`add()` merges a same-label detection into a node when `iou_3d >= MERGE_IOU
+(0.3)` **or** centre `dist <= MERGE_DIST (0.4 m)`. For flat carpet fragments
+*both* structurally fail: (1) the boxes have ~0 z-thickness, so volumetric
+`iou_3d` collapses to **0.000** even when the footprints overlap; (2) partial
+views produce offset centroids, so centres sit >0.4 m apart. Concrete case:
+the fragment created at `vp_015` (centre `[-2.9, -0.55]`, box `0.58×1.26`)
+against node #0 gave **IoU 0.000, dist 0.565 m, surface-gap 0.000 m** — the
+boxes *touch* but neither gate fires. `finalize()`'s suppression path
+(`nms_dist=0.4 m` AND `gap<=0.05 m`) also misses because 0.565 > 0.4. So the fix
+must key on **footprint overlap / surface-gap for flat labels**, not volumetric
+IoU, and use a distance gate larger than 0.4 m (or grow it with object size).
 
 ---
 
@@ -360,6 +382,66 @@ the graph — the score is gated by perception label fidelity, not reasoning.
 fed to Gemini as synonym groups), and/or resolve confusable pairs in the
 cross-label suppression of B3. Partly responder-side, so unlike B1–B7 it is not
 purely a perception-benchmark item.
+
+---
+
+## B10 — Viewpoint redundancy degrades the box (dwell bias)
+
+**Status:** both halves shipped (TASK 33); multi-scene sweep of the two knobs
+pending, centre-drift only partly addressed
+**Files:** `src/xiao_hei_vln/perception/object_map.py`,
+`src/xiao_hei_vln/perception/responder.py`, `src/xiao_hei_vln/app/main.py`
+
+When the robot dwells at one pose it produces many near-identical partial views;
+each carries its point-count weight, so a single vantage can own the majority of
+a node's box weight (measured: 228/240 obs = 88% of node #13's weight from one
+0.5 m cell), collapsing the box to that thin slice and drifting its centre.
+
+**Shipped (both levers):**
+- *Estimator* — flat nodes size from the **max** per-view extent, not the mean,
+  recovering the reach of the best view (arabic_room carpet GT-coverage 20→56%,
+  64→87%; volumetric untouched).
+- *Capture-time novelty gate* — `responder._inject_visible`: the accumulator
+  runs every tick while detect/lift/fuse fires only when the pose is farther
+  than `novel_viewpoint_m` (env `XIAO_HEI_NOVEL_VIEWPOINT_M`) from ALL kept
+  `(x,y)` (360° camera, so no heading term). Reproducible offline via
+  `replay_score.py --novel-viewpoint-m`. **Default OFF (0.0):** measured on
+  arabic_room, a 0.3 m gate cuts compute ~15× and raises box IoU@0.25
+  (0.051→0.073) but drops centre-distance mAP@0.5 (0.195→0.173) — it costs
+  detection recall, so it stays opt-in until a corpus sweep justifies it.
+
+**Next:** get the gate's box-quality/compute gain WITHOUT the recall cost —
+gate the *fusion weight* per viewpoint (perceive every frame, down-weight
+redundant poses in `_recompute`) rather than skipping the observation entirely.
+Then sweep `novel_viewpoint_m` and `max` vs a high percentile together against
+the real metric. See TASK 33.
+
+---
+
+## B9 — Node box centre and extent use inconsistent estimators (points fall outside the box)
+
+**Status:** diagnosed (arabic_room node #0, TASK 31) — deferred, revisit later
+**Files:** `src/xiao_hei_vln/perception/object_map.py`
+(`_Node._observe` / `_recompute`)
+
+A per-observation box takes its **size** from the raw AABB span of the core
+points (`hi - lo`) but its **position** from `robust_center` (a median-gated
+*mean*), not from the midpoint `(min+max)/2`. When the cloud is asymmetric the
+mean ≠ midpoint, so a size-correct box is re-centred off the extremes and the
+sparse tail on the far side falls **outside** the box. Observed directly on
+carpet node #0 at `vp_000`: box dims `1.38×2.02` correct, but the box is shifted
+so boundary points spill out (IoU 0.834 vs 0.896 for a raw extreme-centred box
+of the same size — the whole gap is position, not size).
+
+This is a deliberate trade, not a plain bug: `robust_center` is chosen because
+the **primary challenge metric is centre-distance**, and the mean tracks the
+true centre far better than `(min+max)/2`, which is set by the two most fragile
+points and moves half-way toward any single outlier. Extent only affects
+secondary IoU. The open question is whether a **containment-consistent** box
+(e.g. centre on the robust centroid but expand the extent symmetrically to
+enclose the core points, or clip the size to what the robust centre can
+contain) improves IoU without regressing centre-distance. Relates to B2 (box
+shape) and the flat-object sizing finding in TASK 31.
 
 ---
 

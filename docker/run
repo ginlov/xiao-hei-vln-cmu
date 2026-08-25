@@ -11,6 +11,7 @@
 #   docker/run dummy        up -d     # sim + ai_module          (no sidecar, no GPU)
 #   docker/run perception   up -d     # + YOLO-World/SAM sidecar (GPU)
 #   docker/run scene_gemini up -d     # + sidecar + Gemini       (submission stack)
+#   docker/run scene_claude up -d     # + sidecar + Claude nav   (TASK 39: nav_task1)
 #
 #   docker/run scene_gemini logs -f ai_module
 #   docker/run dummy build ai_module
@@ -34,7 +35,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 RESPONDER=""
 case "${1:-}" in
-  dummy|perception|scene_gemini)
+  dummy|perception|scene_gemini|scene_claude)
     RESPONDER="$1"; shift
     ;;
   -h|--help|help)
@@ -81,6 +82,38 @@ case "$RESPONDER" in
     if [ -z "${XIAO_HEI_GEMINI_API_KEY:-}" ] && ! grep -qs '^XIAO_HEI_GEMINI_API_KEY=.' .env; then
       echo "error: scene_gemini needs a Gemini API key." >&2
       echo "       put XIAO_HEI_GEMINI_API_KEY=<key> in ./.env, or export it." >&2
+      exit 2
+    fi
+    ;;
+
+  scene_claude)
+    # Question-directed VLM navigation (TASK 39): the nav_task1 explorer drives
+    # to the object named in the question, then the scene_claude responder
+    # answers from the scene-graph dump. Reuses the submission compose (sim +
+    # sidecar + ai_module) but with the Claude responder + strategy, and adds
+    # the `nav-vlm` extra to the image so the `anthropic` SDK is present.
+    COMPOSE_FILES=(-f docker/compose_scene_gemini.yml)
+    _need_gpu=1
+    [ -f .env ] && ENV_FILE_ARGS=(--env-file .env)
+    export XIAO_HEI_RESPONDER=scene_claude
+    export XIAO_HEI_EXPLORATION_STRATEGY="${XIAO_HEI_EXPLORATION_STRATEGY:-nav_task1}"
+    # Ensure the anthropic SDK is baked into the image (default build arg omits it).
+    export XIAO_HEI_EXTRA="${XIAO_HEI_EXTRA:-perception,gemini,exploration,nav-vlm}"
+    # nav_task1 governs termination per-question (reach/explore mode machine +
+    # a 10-min per-question cap), so disable the app-level run budget and let
+    # the per-question cap be the hard stop.
+    export XIAO_HEI_EXPLORATION_MAX_SECONDS="${XIAO_HEI_EXPLORATION_MAX_SECONDS:-0}"
+    export XIAO_HEI_NAV_TASK1_MAX_QUESTION_S="${XIAO_HEI_NAV_TASK1_MAX_QUESTION_S:-600}"
+    # Larger hop per waypoint so goal-directed proposals spread out and reach
+    # newer vantages (the snapped waypoint is capped to this distance).
+    export XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST="${XIAO_HEI_EXPLORATION_MAX_WAYPOINT_DIST:-3.0}"
+    # The answerer calls Claude at boot (and per question); a missing key shows
+    # up as an ai_module crash-loop otherwise.
+    if [ -z "${XIAO_HEI_ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+       && ! grep -qs '^XIAO_HEI_ANTHROPIC_API_KEY=.' .env \
+       && ! grep -qs '^ANTHROPIC_API_KEY=.' .env; then
+      echo "error: scene_claude needs an Anthropic API key." >&2
+      echo "       put XIAO_HEI_ANTHROPIC_API_KEY=<key> in ./.env, or export it." >&2
       exit 2
     fi
     ;;

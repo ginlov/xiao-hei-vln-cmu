@@ -33,10 +33,11 @@ from xiao_hei_vln.messages.common import Stamp
 from xiao_hei_vln.scene import SceneRepresentation
 from xiao_hei_vln.sync import LatestCache
 
-# 1 Hz default (was 2 Hz): the OWLv2 + SAM-large stack needs ~0.5–0.8 s per
-# tick, so a 1 s period keeps ticks from overlapping. Override with
-# XIAO_HEI_VLM_TICK_HZ.
-TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "1.0"))
+# 2 Hz default: the viewpoint-novelty gate (TASK 36) now runs detect→lift→fuse
+# only on position-novel ticks, so a faster tick no longer floods the pipeline —
+# it just samples poses more finely without extra perception work when the robot
+# dwells. Override with XIAO_HEI_VLM_TICK_HZ.
+TICK_HZ = float(os.environ.get("XIAO_HEI_VLM_TICK_HZ", "2.0"))
 RESPONDER_NAME = os.environ.get("XIAO_HEI_RESPONDER", "dummy").lower()
 
 # Exploration phase — set XIAO_HEI_EXPLORATION_MAX_WAYPOINTS=0 to disable.
@@ -100,28 +101,55 @@ class _PerceptionSettings:
 
     base_url: str
     score_threshold: float
+    sam_threshold: float
     min_inliers: int
     scan_keyframes: int
     scan_voxel_m: float
+    novel_viewpoint_m: float
+    request_timeout_s: float
 
     @classmethod
     def from_env(cls) -> _PerceptionSettings:
         # Imported lazily: these modules pull in httpx/pycocotools (the
         # `perception` extra), and the package must stay importable without it.
-        from xiao_hei_vln.perception.client import DEFAULT_BASE_URL
+        from xiao_hei_vln.perception.client import (
+            DEFAULT_BASE_URL,
+            DEFAULT_REQUEST_TIMEOUT_S,
+        )
         from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS
-        from xiao_hei_vln.perception.responder import DEFAULT_SCORE_THRESHOLD
+        from xiao_hei_vln.perception.responder import (
+            DEFAULT_NOVEL_VIEWPOINT_M,
+            DEFAULT_SAM_THRESHOLD,
+            DEFAULT_SCORE_THRESHOLD,
+        )
 
         return cls(
             base_url=os.environ.get("XIAO_HEI_PERCEPTION_BASE_URL", DEFAULT_BASE_URL),
             score_threshold=float(os.environ.get(
                 "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD", str(DEFAULT_SCORE_THRESHOLD),
             )),
+            sam_threshold=float(os.environ.get(
+                "XIAO_HEI_PERCEPTION_SAM_THRESHOLD", str(DEFAULT_SAM_THRESHOLD),
+            )),
             min_inliers=int(os.environ.get(
                 "XIAO_HEI_PERCEPTION_MIN_INLIERS", str(DEFAULT_MIN_INLIERS),
             )),
-            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "10")),
+            # 2, not the accumulator's own 10: the offline perception sweeps
+            # (score/SAM/novelty-gate/box-estimator tuning) were all measured at
+            # 2 keyframes, so the live default matches what those numbers reflect.
+            scan_keyframes=int(os.environ.get("XIAO_HEI_SCAN_KEYFRAMES", "2")),
             scan_voxel_m=float(os.environ.get("XIAO_HEI_SCAN_VOXEL_M", "0.05")),
+            novel_viewpoint_m=float(os.environ.get(
+                "XIAO_HEI_NOVEL_VIEWPOINT_M", str(DEFAULT_NOVEL_VIEWPOINT_M),
+            )),
+            # Open-vocab /detect scales with the class count; with the question
+            # nouns + Claude's observed-object vocab it runs ~2-3s (and grows as
+            # the vocab does). The old 2.0s client default timed out on every
+            # such call, so NO detections reached the scene graph. Give it real
+            # headroom (env-overridable).
+            request_timeout_s=float(os.environ.get(
+                "XIAO_HEI_PERCEPTION_REQUEST_TIMEOUT_S", str(DEFAULT_REQUEST_TIMEOUT_S),
+            )),
         )
 
     def as_log_config(self) -> dict[str, object]:
@@ -132,7 +160,10 @@ class _PerceptionSettings:
         return {
             "perception_base_url": self.base_url,
             "score_threshold": self.score_threshold,
+            "sam_threshold": self.sam_threshold,
             "min_inliers": self.min_inliers,
+            "novel_viewpoint_m": self.novel_viewpoint_m,
+            "request_timeout_s": self.request_timeout_s,
         }
 
 
@@ -143,6 +174,8 @@ def _build_perception_responder(
     trajectory_path: Path | None = None,
     take_waypoint_reached_signals: Callable[[], int] | None = None,
     logger=None,
+    dynamic_vocab: set[str] | None = None,
+    class_thresholds: dict[str, float] | None = None,
 ):
     """Build the sidecar-backed `PerceptionResponder`.
 
@@ -156,7 +189,10 @@ def _build_perception_responder(
     from xiao_hei_vln.perception.scan_accumulator import ScanAccumulator
     from xiao_hei_vln.perception.vocab import Vocabulary
 
-    client = HTTPPerceptionClient(base_url=settings.base_url)
+    client = HTTPPerceptionClient(
+        base_url=settings.base_url,
+        request_timeout_s=settings.request_timeout_s,
+    )
     client.wait_until_ready()       # blocks until /healthz is green
 
     # The z-buffer occlusion gate is always on: a camera can't see through a
@@ -175,13 +211,16 @@ def _build_perception_responder(
         scene,
         client=client,
         lifter=lifter,
-        vocabulary=Vocabulary(),
+        vocabulary=Vocabulary(dynamic=dynamic_vocab),
         score_threshold=settings.score_threshold,
+        sam_threshold=settings.sam_threshold,
+        novel_viewpoint_m=settings.novel_viewpoint_m,
         trajectory_path=trajectory_path,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
         logger=logger,
         object_map=ObjectMap(),
         scan_accumulator=scan_accum,
+        class_thresholds=class_thresholds,
     )
 
 
@@ -190,6 +229,8 @@ def _build_responder(
     scene: SceneRepresentation,
     *,
     take_waypoint_reached_signals: Callable[[], int] | None = None,
+    dynamic_vocab: set[str] | None = None,
+    class_thresholds: dict[str, float] | None = None,
 ):
     if name == "dummy":
         from xiao_hei_vln.dummy import DummyResponder
@@ -257,17 +298,56 @@ def _build_responder(
             engine, config, scene, perception=perception, logger=logger,
         )
         return responder, logger
+    if name == "scene_claude":
+        from dataclasses import asdict
+
+        from xiao_hei_vln.logger import VLMLogger
+        from xiao_hei_vln.nav_vlm.config import NavVLMConfig
+        from xiao_hei_vln.nav_vlm.engine import AnthropicNavEngine
+        from xiao_hei_vln.scene_claude import SceneClaudeResponder
+
+        # --- Perception sidecar → scene-graph building (via ingest()) --------
+        # Driven by the app tick loop's exploration branch while the
+        # question-directed nav_task1 explorer approaches the target object.
+        settings = _PerceptionSettings.from_env()
+        perception = _build_perception_responder(
+            scene, settings, dynamic_vocab=dynamic_vocab,
+            class_thresholds=class_thresholds,
+        )
+
+        # --- Claude answering (needs the Anthropic key) ----------------------
+        cfg = NavVLMConfig.from_env()   # raises if no key — the answerer needs it
+        engine = AnthropicNavEngine(cfg)  # generic call_tool used for answering
+
+        logger = None
+        log_dir = os.environ.get("XIAO_HEI_VLM_LOG_DIR", "")
+        if log_dir:
+            # Never persist the API key into session.json.
+            safe_cfg = {k: v for k, v in asdict(cfg).items() if k != "api_key"}
+            logger = VLMLogger(
+                log_dir,
+                config={**safe_cfg, **settings.as_log_config()},
+                responder_name="scene_claude",
+                tick_hz=TICK_HZ,
+            )
+        responder = SceneClaudeResponder(
+            engine, cfg, scene, perception=perception, logger=logger,
+        )
+        return responder, logger
     raise ValueError(
         f"Unknown XIAO_HEI_RESPONDER={name!r}; "
-        "expected one of: dummy, perception, scene_gemini",
+        "expected one of: dummy, perception, scene_gemini, scene_claude",
     )
 
 
-def _build_explorer(node):
+def _build_explorer(node, scene: SceneRepresentation, dynamic_vocab: set[str] | None = None,
+                    class_thresholds: dict[str, float] | None = None):
     """Instantiate the configured exploration strategy, or None if disabled.
 
     Select the strategy with XIAO_HEI_EXPLORATION_STRATEGY (default: frontier).
-    Add new strategies here as additional elif branches.
+    Add new strategies here as additional elif branches. ``scene`` is the shared
+    scene graph, needed by question-directed strategies (nav_task1) that reason
+    over the objects detected so far.
     """
     if _EXPLORATION_MAX_WAYPOINTS <= 0:
         return None
@@ -286,6 +366,77 @@ def _build_explorer(node):
         explorer = NextBestViewExplorer(
             max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
             waypoint_reach_dist=0.3,
+        )
+    elif _EXPLORATION_STRATEGY == "nav_vlm":
+        # VLM waypoint proposer (Opus 5). Fails soft: a missing Anthropic key
+        # disables exploration rather than crashing the whole node at boot.
+        from xiao_hei_vln.exploration import NavVLMExplorer
+        from xiao_hei_vln.nav_vlm import AnthropicNavEngine, NavVLMConfig
+
+        try:
+            cfg = NavVLMConfig.from_env()
+        except ValueError as exc:
+            node.get_logger().error(
+                f"nav_vlm strategy selected but {exc} — disabling exploration."
+            )
+            return None
+        explorer = NavVLMExplorer(
+            AnthropicNavEngine(cfg),
+            config=cfg,
+            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
+            waypoint_reach_dist=0.3,
+            max_hop_m=_EXPLORATION_MAX_WAYPOINT_DIST,
+        )
+    elif _EXPLORATION_STRATEGY == "nav_task1":
+        # Question-directed VLM navigation: drive to the object named in an
+        # OBJECT_REFERENCE question, then hand over to the scene_claude
+        # responder to answer. Fails soft on a missing key like nav_vlm.
+        from xiao_hei_vln.exploration import NavTask1Explorer
+        from xiao_hei_vln.nav_vlm import AnthropicNavEngine, NavVLMConfig
+        from xiao_hei_vln.nav_vlm.task1_prompts import (
+            NAV_SYSTEM_PROMPT,
+            PROPOSE_OR_ARRIVE_TOOL,
+        )
+
+        try:
+            cfg = NavVLMConfig.from_env()
+        except ValueError as exc:
+            node.get_logger().error(
+                f"nav_task1 strategy selected but {exc} — disabling exploration."
+            )
+            return None
+        engine = AnthropicNavEngine(
+            cfg, system_prompt=NAV_SYSTEM_PROMPT, tool=PROPOSE_OR_ARRIVE_TOOL,
+        )
+        # The 10-min budget is TOTAL (navigation + answering). Navigation must
+        # therefore stop early enough that the final Claude answer still lands
+        # inside the budget, so the nav deadline = total - answer reserve.
+        _t1_total_s = float(os.environ.get("XIAO_HEI_NAV_TASK1_MAX_QUESTION_S") or "600")
+        _t1_answer_reserve_s = float(
+            os.environ.get("XIAO_HEI_NAV_TASK1_ANSWER_RESERVE_S") or "60"
+        )
+        explorer = NavTask1Explorer(
+            engine,
+            scene=scene,
+            config=cfg,
+            max_waypoints=_EXPLORATION_MAX_WAYPOINTS,
+            waypoint_reach_dist=0.3,
+            max_hop_m=_EXPLORATION_MAX_WAYPOINT_DIST,
+            # Skip-cap termination is disabled: the reach/explore mode machine
+            # falls back to exploring when reach stalls, and the per-question
+            # time budget is the only hard stop.
+            max_consecutive_skips=1_000_000,
+            max_question_seconds=max(30.0, _t1_total_s - _t1_answer_reserve_s),
+            # Arrive once the scene graph stops gaining new views for this long
+            # (it has seen every reachable angle) instead of running to the cap.
+            coverage_plateau_s=float(
+                os.environ.get("XIAO_HEI_NAV_TASK1_COVERAGE_PLATEAU_S") or "45"
+            ),
+            dynamic_vocab=dynamic_vocab,
+            class_thresholds=class_thresholds,
+            default_score_threshold=float(
+                os.environ.get("XIAO_HEI_PERCEPTION_SCORE_THRESHOLD") or "0.4"
+            ),
         )
     else:
         node.get_logger().error(
@@ -415,6 +566,7 @@ def main() -> None:
     node_name = {
         "perception": "xiao_hei_perception_vlm",
         "scene_gemini": "xiao_hei_scene_gemini_vlm",
+        "scene_claude": "xiao_hei_scene_claude_vlm",
     }.get(RESPONDER_NAME, "xiao_hei_dummy_vlm")
     node: Node = rclpy.create_node(node_name)
 
@@ -452,9 +604,19 @@ def main() -> None:
     # session. Built before the responder so a scene-aware responder (e.g.
     # PerceptionResponder) can take the same reference at construction time.
     scene = SceneRepresentation()
+    # Shared VLM-observed detector vocabulary: the nav_task1 navigator adds the
+    # objects Claude sees in the panorama (+ synonyms) and the perception
+    # Vocabulary reads them, so rare objects the fixed prior misses get detected.
+    dynamic_vocab: set[str] = set()
+    # Shared per-class detector thresholds: the navigator lowers a class's floor
+    # when it sees an object perception missed (verify_objects), for that class
+    # only. Empty = normal single-threshold behaviour.
+    class_thresholds: dict[str, float] = {}
     responder, logger = _build_responder(
         RESPONDER_NAME, scene,
         take_waypoint_reached_signals=take_waypoint_reached_signals,
+        dynamic_vocab=dynamic_vocab,
+        class_thresholds=class_thresholds,
     )
     if logger is not None:
         logger.attach_scene(scene)
@@ -463,7 +625,7 @@ def main() -> None:
     # /perception/objects), so the perception map can be watched while
     # driving. Perception-backed responders only — the scene is empty
     # otherwise. Opt out with XIAO_HEI_PUBLISH_MARKERS=0.
-    if RESPONDER_NAME in ("perception", "scene_gemini") and os.environ.get(
+    if RESPONDER_NAME in ("perception", "scene_gemini", "scene_claude") and os.environ.get(
         "XIAO_HEI_PUBLISH_MARKERS", "1",
     ).lower() not in ("0", "false", "no", "off"):
         from xiao_hei_vln.app.scene_markers import ScenePublisher, Scoreboard
@@ -512,7 +674,8 @@ def main() -> None:
 
         node.create_timer(2.0, _dump_scene)
 
-    explorer = _build_explorer(node)
+    explorer = _build_explorer(node, scene, dynamic_vocab=dynamic_vocab,
+                               class_thresholds=class_thresholds)
 
     # Structured exploration log — survives the container via the mounted volume.
     # Create the dir if it doesn't exist so a run without a bind-mounted
@@ -543,7 +706,7 @@ def main() -> None:
                          "best_odom": float("inf"), "last_progress_time": None}
     _WP_REACHED_THRESHOLD = 0.92  # nav stack settles between 0.25-0.90m depending on obstacles
     _WP_ODOM_PROGRESS_M = 0.10    # closing this much on the target counts as progress
-    _WP_ODOM_STALL_S = 4.0        # no progress for this long before an early skip is allowed
+    _WP_ODOM_STALL_S = 8.0        # no progress for this long before an early skip is allowed
 
     def _on_wp_reached(msg) -> None:
         v = float(msg.data)
@@ -707,7 +870,11 @@ def main() -> None:
                 _maybe_save_rviz(node)
                 return
 
-            # Advance when nav stack has settled within threshold for 3 consecutive ticks.
+            # Advance when the nav stack signals it reached the waypoint:
+            # /way_point_reached fires (a small distance) only on an actual
+            # reach, so value < threshold for 3 consecutive ticks IS the reach.
+            # When it never fires the waypoint was not reached — the early-skip
+            # below handles that, so the model re-routes around the obstacle.
             if explorer._current_target is not None:
                 if _wp_reached_state["value"] < _WP_REACHED_THRESHOLD:
                     _wp_reached_state["close_ticks"] += 1
@@ -753,8 +920,8 @@ def main() -> None:
                     )
                     _wp_reached_state["last_progress_time"] = now_s
 
-            # Early skip: nav stack settled above threshold with no improvement for 5 ticks (2.5s).
-            # 4s minimum delay gives the nav stack time to respond before we start counting.
+            # Early skip: nav stack settled above threshold with no improvement for 16 ticks (8s).
+            # 8s minimum delay gives the nav stack time to respond before we start counting.
             since_progress = (
                 now_s - _wp_reached_state["last_progress_time"]
                 if _wp_reached_state["last_progress_time"] is not None
@@ -764,7 +931,7 @@ def main() -> None:
                 explorer._current_target is not None
                 and _wp_reached_state["best"] > _WP_REACHED_THRESHOLD
                 and state["wp_start_time"] is not None
-                and now_s - state["wp_start_time"] > 4.0
+                and now_s - state["wp_start_time"] > 8.0
                 # Never abandon a waypoint the robot is visibly closing on.
                 and since_progress > _WP_ODOM_STALL_S
             ):
@@ -773,7 +940,7 @@ def main() -> None:
                 else:
                     _wp_reached_state["settled_ticks"] = 0
                 _wp_reached_state["prev_best"] = _wp_reached_state["best"]
-                if _wp_reached_state["settled_ticks"] >= 5:
+                if _wp_reached_state["settled_ticks"] >= 16:
                     state["forced_skip"] = True
                     explorer.force_skip()
                     _wp_reached_state["settled_ticks"] = 0
@@ -852,6 +1019,7 @@ def main() -> None:
                              target=f"({wp.x:.2f},{wp.y:.2f})",
                              robot=robot_pos,
                              dist=f"{dist_to_wp:.2f}",
+                             why=(getattr(explorer, "_last_rationale", "") or "")[:160],
                              **diag)
                     state["last_exploration_wp"] = wp_key
                     state["wp_start_time"] = now_s

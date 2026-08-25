@@ -34,18 +34,29 @@ from __future__ import annotations
 import numpy as np
 
 # ── merge / prune tuning (identical to the offline objectmap) ──────────────────
-MERGE_IOU = 0.3        # same-label nodes merge if 3D IoU exceeds this ...
-MERGE_DIST = 0.4       # ... or centres are within this many metres
+MERGE_IOU = 0.3        # same-label nodes merge if box IoU exceeds this ...
+MERGE_GAP_FRAC = 0.15  # ... or their surfaces are closer than this * max footprint size
+FLAT_Z_M = 0.10        # a box this thin (m) in z is "flat" -> IoU falls back to 2D (BEV)
 #
-# Two further merge criteria were tried and rejected on measurement: growing
-# the distance gate with the object's diagonal, and consolidating same-label
-# nodes whose boxes nest (intersection-over-smaller, which IoU cannot see
-# across a size gap). Both raised precision — livingroom_3 0.169 to 0.265 —
-# by merging duplicates, but they also merged genuinely distinct instances in
-# dense scenes: chinese_room recall fell 0.500 to 0.402 and mAP 0.415 to
-# 0.332, and no setting of the two thresholds was neutral on both corpora.
-# Whatever fixes duplication has to distinguish "two views of one couch" from
-# "two chairs at one table", which box overlap alone does not.
+# The merge gate is `IoU >= MERGE_IOU OR surface_gap <= MERGE_GAP_FRAC * size`.
+# Two design choices, both measured (TASK 31, arabic_room):
+#   * IoU is 3D by default but falls back to the xy-footprint (BEV) IoU when
+#     BOTH boxes are flat. Volumetric IoU collapses to 0 for a carpet (~0 m
+#     thick), so the flat fragments a carpet shatters into could never satisfy
+#     the IoU path; BEV IoU restores it without touching the volumetric path.
+#   * The old distance gate (`centre_dist <= 0.4 m`) is replaced by a
+#     surface-gap gate scaled by object size. A fixed centre radius merges two
+#     genuinely distinct small same-label objects (two pillows 0.4 m apart) yet
+#     is too tight for the loose, non-touching fragments of a large object. The
+#     surface gap is ~0 for two views of one object and positive for two
+#     objects; scaling the tolerance by the larger footprint lets a big carpet
+#     absorb a nearby fragment while keeping small neighbours apart.
+# `size` = max of the two footprint diagonals. FRAC is a starting value and
+# should be swept end-to-end. An earlier size-scaled *distance* gate and a
+# nested intersection-over-smaller rule were both rejected for merging distinct
+# instances in dense scenes (chinese_room recall 0.500 -> 0.402); this gate is
+# gap-based rather than centre-based precisely to avoid that, but the dense-scene
+# regression is the thing to re-check when sweeping FRAC.
 NMS_IOU = 0.5          # cross-label: suppress the weaker of two boxes above this
 # IoU alone cannot catch cross-label duplicates once boxes are tight. Measured
 # over 14 scenes, node pairs whose centres are within 0.5 m have median IoU
@@ -57,10 +68,10 @@ NMS_IOU = 0.5          # cross-label: suppress the weaker of two boxes above thi
 # Restricted to IDENTICAL labels for now — across labels it would also
 # collapse genuinely touching distinct objects and hide detector label
 # instability. 0.0 on either disables the path. See docs/tasks/backlog.md B3.
-# 0.4 m matches MERGE_DIST deliberately: `add` already merges same-label nodes
-# within that radius, but a node's centre MOVES as it accumulates points, so
-# two nodes created further apart can drift inside the radius with nothing
-# re-checking. This is that check, deferred until the centres have settled.
+# This is the deferred twin of the add()-time gate: `add` merges same-label
+# nodes on the way in (IoU or surface-gap), but a node's centre and box MOVE as
+# it accumulates points, so two nodes created apart can drift together with
+# nothing re-checking. This is that re-check, deferred until they have settled.
 # Measured over 14 scenes: 216 -> 204 redundant nodes, counting MAE
 # 2.836 -> 2.813 (6 scenes better, 1 worse). Dropping to 0.3 m removes the
 # effect entirely. The gap is not binding at this radius (0.05 and 0.15 give
@@ -239,6 +250,31 @@ def iou_3d(a_min, a_max, b_min, b_max) -> float:
     return float(inter / (va + vb - inter + 1e-9))
 
 
+def iou_2d(a_min, a_max, b_min, b_max) -> float:
+    """xy-footprint (bird's-eye) IoU — the flat-object fallback for ``iou_3d``.
+
+    A carpet's box is ~0 m thick, so volumetric IoU is 0 even when two
+    footprints fully overlap. Dropping z and comparing floor areas restores a
+    meaningful overlap for planar objects."""
+    lo = np.maximum(a_min[:2], b_min[:2])
+    hi = np.minimum(a_max[:2], b_max[:2])
+    inter = np.prod(np.clip(hi - lo, 0, None))
+    if inter <= 0:
+        return 0.0
+    aa = np.prod(a_max[:2] - a_min[:2]); ab = np.prod(b_max[:2] - b_min[:2])
+    return float(inter / (aa + ab - inter + 1e-9))
+
+
+def _is_flat(bmin, bmax, thr: float = FLAT_Z_M) -> bool:
+    """True when a box is thin enough in z to be treated as planar."""
+    return float(bmax[2] - bmin[2]) <= thr
+
+
+def _footprint_diag(bmin, bmax) -> float:
+    """Diagonal of a box's xy footprint — the size scale for the gap gate."""
+    return float(np.linalg.norm((np.asarray(bmax) - np.asarray(bmin))[:2]))
+
+
 class _Node:
     __slots__ = ("node_id", "label", "score", "n_obs", "pts", "cmin", "cmax",
                  "center", "color_rgb", "color_name", "is_structure",
@@ -311,8 +347,45 @@ class _Node:
         # rather than a better estimator over the same points.
         w = np.asarray(self.obs_weights, dtype=np.float64)
         w = w / w.sum()
-        self.center = (np.array(self.obs_centers) * w[:, None]).sum(axis=0)
-        half = (np.array(self.obs_extents) * w[:, None]).sum(axis=0) / 2.0
+        ext = np.array(self.obs_extents)
+        ctrs = np.array(self.obs_centers)
+        self.center = (ctrs * w[:, None]).sum(axis=0)
+        # Extent estimator. The weighted MEAN of per-view boxes is right for
+        # volumetric objects — it cancels the ~6x inflation of pooling near-face
+        # LiDAR slabs. But it destroys FLAT objects: a carpet is coplanar, so
+        # there is no inflation to cancel, and when the robot dwells at one pose
+        # the many redundant partial views (each a thin slice) swamp the weighted
+        # mean and the box shrinks below the object (measured: right carpet
+        # width 1.44 -> 0.53, GT coverage 20%). For flat nodes we instead take
+        # the MAX per-view extent in x/y — the reach of the single best view that
+        # saw the whole object — which recovered coverage 20% -> 56% offline
+        # (TASK 33). z stays the weighted mean (it is ~0 either way). `max` is
+        # safe here because flat clouds are coplanar and _core_points already
+        # rejects spill; a redundancy-aware gate + high-percentile is the more
+        # robust eventual target (see the capture-time novelty gate, TASK 33).
+        if np.median(ext[:, 2]) <= FLAT_Z_M:
+            half_xy = ext[:, :2].max(axis=0) / 2.0
+            half_z = float((ext[:, 2] * w).sum()) / 2.0
+            half = np.array([half_xy[0], half_xy[1], half_z])
+            # Flat CENTRE from the union midpoint of the per-view boxes, not the
+            # weighted centroid. When navigation can only reach part of a large
+            # carpet, every view's centroid clusters on the seen part, so the
+            # centroid mean is biased toward it and — since the box is
+            # centre ± max_half — the box is misplaced. The union midpoint
+            # centres on the span the box actually covers, cancelling that bias
+            # (measured, gate on: right carpet centre error 0.52 -> 0.24 m,
+            # coverage 69 -> 82%; left 0.30 -> 0.12 m, 77 -> 84%). z keeps the
+            # weighted centroid. xy only, so a spill-free coplanar cloud is
+            # assumed — same regime the max-extent already relies on.
+            lo_xy = (ctrs[:, :2] - ext[:, :2] / 2.0).min(axis=0)
+            hi_xy = (ctrs[:, :2] + ext[:, :2] / 2.0).max(axis=0)
+            self.center = np.array([
+                (lo_xy[0] + hi_xy[0]) / 2.0,
+                (lo_xy[1] + hi_xy[1]) / 2.0,
+                self.center[2],
+            ])
+        else:
+            half = (ext * w[:, None]).sum(axis=0) / 2.0
         self.cmin, self.cmax = self.center - half, self.center + half
 
     def merge(self, label, score, pts, color_rgb=None, color_name=None):
@@ -330,10 +403,10 @@ class _Node:
 
 
 class ObjectMap:
-    def __init__(self, merge_iou=MERGE_IOU, merge_dist=MERGE_DIST, nms_iou=NMS_IOU,
-                 nms_dist=NMS_DIST, nms_gap=NMS_GAP):
+    def __init__(self, merge_iou=MERGE_IOU, merge_gap_frac=MERGE_GAP_FRAC,
+                 nms_iou=NMS_IOU, nms_dist=NMS_DIST, nms_gap=NMS_GAP):
         self.nodes: list[_Node] = []
-        self.merge_iou, self.merge_dist, self.nms_iou = merge_iou, merge_dist, nms_iou
+        self.merge_iou, self.merge_gap_frac, self.nms_iou = merge_iou, merge_gap_frac, nms_iou
         self.nms_dist, self.nms_gap = nms_dist, nms_gap
         # node_id -> labels suppressed onto it, filled by finalize(). Kept off
         # the nodes themselves so export()'s throwaway view cannot leak into
@@ -354,16 +427,21 @@ class ObjectMap:
         if pts.ndim != 2 or pts.shape[0] == 0:
             return None
         pmin, pmax = _aabb(pts)
-        pc, _ = robust_center(pts)
-        pcenter = np.array(pc) if pc is not None else np.median(pts, axis=0)
+        p_flat = _is_flat(pmin, pmax)
+        p_diag = _footprint_diag(pmin, pmax)
         best, best_key = None, 0.0
         for nd in self.nodes:
             if nd.label != label:
                 continue
-            iou = iou_3d(nd.cmin, nd.cmax, pmin, pmax)
-            dist = float(np.linalg.norm(nd.center - pcenter))
-            if iou >= self.merge_iou or dist <= self.merge_dist:
-                key = iou + 1.0 / (dist + 1e-3)            # prefer the closest/most-overlapping
+            # Flat-object fallback: BEV IoU when both boxes are planar, else 3D.
+            if p_flat and _is_flat(nd.cmin, nd.cmax):
+                iou = iou_2d(nd.cmin, nd.cmax, pmin, pmax)
+            else:
+                iou = iou_3d(nd.cmin, nd.cmax, pmin, pmax)
+            gap = box_gap(nd.cmin, nd.cmax, pmin, pmax)
+            gap_tol = self.merge_gap_frac * max(p_diag, _footprint_diag(nd.cmin, nd.cmax))
+            if iou >= self.merge_iou or gap <= gap_tol:
+                key = iou + 1.0 / (gap + 1e-3)             # prefer the closest/most-overlapping
                 if key > best_key:
                     best, best_key = nd, key
         if best is not None:
@@ -385,8 +463,8 @@ class ObjectMap:
 
         The gap/distance path is deliberately restricted to **identical
         labels**: it collapses fragments of one object that ``add`` could not
-        merge because their tight boxes miss both ``merge_iou`` and
-        ``merge_dist``. Applying it across labels would also collapse genuinely
+        merge because their tight boxes miss both ``merge_iou`` and the
+        surface-gap gate. Applying it across labels would also collapse genuinely
         distinct touching objects (a pillow on a sofa) and would paper over
         detector label instability — that case is deferred; see backlog B3.
         """
@@ -439,7 +517,7 @@ class ObjectMap:
         """Non-destructive snapshot: NMS + prune on a copy of the node LIST so a
         live map can be summarized each tick without losing accumulating nodes.
         Returns a list of dicts (see :meth:`to_list`)."""
-        view = ObjectMap(self.merge_iou, self.merge_dist, self.nms_iou,
+        view = ObjectMap(self.merge_iou, self.merge_gap_frac, self.nms_iou,
                          self.nms_dist, self.nms_gap)
         view.nodes = list(self.nodes)              # shared node objs, separate list
         view.finalize().prune(min_obs=min_obs, min_pts=min_pts)

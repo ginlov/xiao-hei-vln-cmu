@@ -155,7 +155,7 @@ async def detect(
             "list from the last /reload_classes call."
         ),
     ),
-    score_threshold: float = Form(0.25),
+    score_threshold: float = Form(0.6),
     iou_threshold: float = Form(0.5),
 ) -> DetectResponse:
     if _pipeline is None:

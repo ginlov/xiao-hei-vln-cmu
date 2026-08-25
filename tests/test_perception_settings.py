@@ -15,11 +15,15 @@ import pytest
 from xiao_hei_vln.app.main import _PerceptionSettings
 from xiao_hei_vln.perception.client import DEFAULT_BASE_URL
 from xiao_hei_vln.perception.lifter import DEFAULT_MIN_INLIERS
-from xiao_hei_vln.perception.responder import DEFAULT_SCORE_THRESHOLD
+from xiao_hei_vln.perception.responder import (
+    DEFAULT_SAM_THRESHOLD,
+    DEFAULT_SCORE_THRESHOLD,
+)
 
 _ALL_VARS = (
     "XIAO_HEI_PERCEPTION_BASE_URL",
     "XIAO_HEI_PERCEPTION_SCORE_THRESHOLD",
+    "XIAO_HEI_PERCEPTION_SAM_THRESHOLD",
     "XIAO_HEI_PERCEPTION_MIN_INLIERS",
     "XIAO_HEI_SCAN_KEYFRAMES",
     "XIAO_HEI_SCAN_VOXEL_M",
@@ -46,16 +50,17 @@ def test_defaults_track_the_source_constants(clean_env: None) -> None:
 
     assert s.base_url == DEFAULT_BASE_URL
     assert s.score_threshold == DEFAULT_SCORE_THRESHOLD
+    assert s.sam_threshold == DEFAULT_SAM_THRESHOLD
     assert s.min_inliers == DEFAULT_MIN_INLIERS
 
 
 def test_scan_accumulator_defaults(clean_env: None) -> None:
     s = _PerceptionSettings.from_env()
 
-    # Accumulation is on by default at main's value. This branch measured 0 as
-    # better on the two scenes it has corpora for; see the note in
-    # `app/main.py`, where that disagreement is recorded rather than settled.
-    assert s.scan_keyframes == 10
+    # 2 keyframes: the live default matches what the offline perception sweeps
+    # (score/SAM/novelty/box tuning) were measured at; see the note in
+    # `app/main.py`.
+    assert s.scan_keyframes == 2
     assert s.scan_voxel_m == pytest.approx(0.05)
 
 
@@ -108,7 +113,10 @@ def test_log_config_is_json_safe_and_complete(clean_env: None) -> None:
     assert set(cfg) == {
         "perception_base_url",
         "score_threshold",
+        "sam_threshold",
         "min_inliers",
+        "novel_viewpoint_m",
+        "request_timeout_s",
     }
     json.loads(json.dumps(cfg))  # raises if a value isn't JSON-native
 
@@ -123,6 +131,15 @@ def test_log_config_reflects_overrides(
 
     assert cfg["score_threshold"] == pytest.approx(0.75)
     assert cfg["min_inliers"] == 25
+
+
+def test_request_timeout_env_override(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The /detect client timeout must be tunable: too-low a value silently
+    drops every slow open-vocab detection, leaving the scene graph empty."""
+    monkeypatch.setenv("XIAO_HEI_PERCEPTION_REQUEST_TIMEOUT_S", "12.5")
+    assert _PerceptionSettings.from_env().request_timeout_s == pytest.approx(12.5)
 
 
 def test_api_key_never_reachable_through_log_config(clean_env: None) -> None:

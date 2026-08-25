@@ -53,10 +53,41 @@ log = logging.getLogger(__name__)
 # tail is mostly labels that never fire confidently at all — `photo` lands
 # below 0.35 in 98% of its detections. Swept offline over 3 recorded scenes,
 # 0.35 cut the object count by a third and the counting error by 26% while
-# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325). Raising it further
-# trades recall for precision, which needs end-to-end scoring to judge.
-DEFAULT_SCORE_THRESHOLD = 0.35
+# recall and mAP held (0.463 -> 0.459, 0.316 -> 0.325).
+#
+# Was raised to 0.6 to keep low-confidence fragments out of the sidecar's
+# face-seam merge (a 0.9 detection could otherwise be unioned with a 0.3
+# fragment) — but a per-class confidence audit (TASK 34) showed 0.6 silently
+# drops real objects whose YOLO score peaks below it (door 0.52, table 0.60,
+# door frame 0.59), while noise-floor classes never clear it anyway. Lowered to
+# 0.4 and paired with the SAM mask-quality gate below, which removes the weak
+# masks the lower floor lets in. Net effect measured on arabic_room: see
+# DEFAULT_SAM_THRESHOLD. Override with XIAO_HEI_PERCEPTION_SCORE_THRESHOLD.
+DEFAULT_SCORE_THRESHOLD = 0.4
 DEFAULT_IOU_THRESHOLD = 0.5
+# SAM mask-quality gate (B5). Detections whose SAM confidence is below this are
+# dropped before lifting. Pairs with the lowered 0.4 score floor: 0.4 alone adds
+# recall but also weak/bleeding masks, and the SAM gate keeps the extra
+# detections clean. Measured on arabic_room (gate on 0.3 m, live sidecar):
+# 0.4 + SAM 0.8 vs the old 0.6 raised mAP@1.0 0.235 -> 0.337 (+43%), recall
+# 0.235 -> 0.383, IoU@0.25 0.091 -> 0.134, at a precision cost (0.79 -> 0.62).
+# Override with XIAO_HEI_PERCEPTION_SAM_THRESHOLD (0.0 = off).
+DEFAULT_SAM_THRESHOLD = 0.8
+# Capture-time viewpoint-novelty gate (TASK 33). Perception (detect -> lift ->
+# fuse) runs only when the robot has moved farther than this from every
+# previously perceived viewpoint; the scan accumulator still ingests every tick.
+# A 360 panorama makes frame content position-only, so novelty is pure
+# translation. Stops a dwelling robot from flooding a node with redundant
+# partial views (which shrinks + biases its box).
+#
+# DEFAULT 0.3 m (ON). Measured offline on arabic_room (TASK 33, flat estimator
+# on): a 0.3 m gate cuts perceived frames 397 -> 36 (~11x less compute) and
+# raises box IoU@0.25 (0.051 -> 0.091). It costs some centre-distance mAP@0.5
+# (0.221 -> 0.199) because a few objects only cleared the score/inlier gates from
+# a now-skipped closer pose, but on the live robot the accumulator still ingests
+# LiDAR every tick (so the cloud stays dense) and the compute headroom + box
+# quality win the tradeoff. Override with XIAO_HEI_NOVEL_VIEWPOINT_M (0.0 = off).
+DEFAULT_NOVEL_VIEWPOINT_M = 0.3
 
 
 class PerceptionResponder:
@@ -72,10 +103,13 @@ class PerceptionResponder:
         trajectory_path: Path | None = None,
         score_threshold: float = DEFAULT_SCORE_THRESHOLD,
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
+        sam_threshold: float = DEFAULT_SAM_THRESHOLD,
+        novel_viewpoint_m: float = DEFAULT_NOVEL_VIEWPOINT_M,
         take_waypoint_reached_signals: Callable[[], int] | None = None,
         logger: VLMLogger | None = None,
         object_map: ObjectMap,
         scan_accumulator: ScanAccumulator,
+        class_thresholds: dict[str, float] | None = None,
     ) -> None:
         """
         Args:
@@ -125,6 +159,16 @@ class PerceptionResponder:
         self._vocab = vocabulary
         self._score_threshold = float(score_threshold)
         self._iou_threshold = float(iou_threshold)
+        self._sam_threshold = float(sam_threshold)
+        # Shared per-class threshold overrides (VLM verify-recall). None/empty =
+        # the normal single-threshold behaviour.
+        self._class_thresholds = class_thresholds if class_thresholds is not None else {}
+        # Viewpoint-novelty gate state: xy of every viewpoint we have actually
+        # perceived from. A new tick perceives only if it is farther than
+        # `_novel_viewpoint_m` from ALL of these (nearest-neighbour over all
+        # kept, so a revisit/loop does not re-admit an already-covered pose).
+        self._novel_viewpoint_m = float(novel_viewpoint_m)
+        self._kept_xy: list[tuple[float, float]] = []
 
         self._waypoints: list[Waypoint] = (
             _load_waypoints(trajectory_path) if trajectory_path is not None else []
@@ -259,6 +303,18 @@ class PerceptionResponder:
     # Scene maintenance — detect → lift → fuse
     # ------------------------------------------------------------------
 
+    def _viewpoint_is_novel(self, position) -> bool:
+        """True when ``position`` is farther than ``_novel_viewpoint_m`` from
+        every viewpoint we have already perceived from (nearest-neighbour over
+        all kept). ``<= 0`` disables the gate — always novel."""
+        if self._novel_viewpoint_m <= 0.0 or not self._kept_xy:
+            return True
+        px, py = float(position.x), float(position.y)
+        nearest = min(
+            math.hypot(px - kx, py - ky) for kx, ky in self._kept_xy
+        )
+        return nearest > self._novel_viewpoint_m
+
     def _inject_visible(self, snapshot: VLMInput) -> None:
         """Run a detect → lift → fuse cycle for this tick.
 
@@ -268,30 +324,6 @@ class PerceptionResponder:
         unchanged this tick.
         """
         if snapshot.image is None or snapshot.pose is None or snapshot.registered_scan is None:
-            return
-
-        classes = self._vocab.current_classes(
-            snapshot.question.text if snapshot.question is not None else None,
-        )
-        if not classes:
-            return
-        # set_classes() is dedup-cached; only fires a network call when
-        # the list actually changes.
-        self._client.set_classes(classes)
-
-        try:
-            bgr = _image_frame_to_bgr(snapshot.image)
-        except Exception:
-            log.exception("failed to decode image frame; skipping tick")
-            return
-
-        detections = self._client.detect(
-            bgr,
-            classes=None,                # rely on the cached set
-            score_threshold=self._score_threshold,
-            iou_threshold=self._iou_threshold,
-        )
-        if not detections:
             return
 
         # Project with the pose as it was when this *image* was captured, not
@@ -308,6 +340,10 @@ class PerceptionResponder:
         # viewpoints metres apart into one cloud, which inflates every box
         # (livingroom_3 size error 2.28x accumulated vs 1.28x from the single
         # sweep; chinese_room 1.52x vs 0.87x) and drops precision.
+        #
+        # This runs EVERY tick — including ticks the novelty gate skips
+        # perception on — so the cloud stays dense/registered regardless of
+        # whether we detect this frame (TASK 33).
         scan_points = (
             self._scan_accum.update(
                 snapshot.registered_scan.points,
@@ -317,6 +353,57 @@ class PerceptionResponder:
             if self._scan_accum is not None
             else snapshot.registered_scan.points
         )
+
+        classes = self._vocab.current_classes(
+            snapshot.question.text if snapshot.question is not None else None,
+        )
+        if not classes:
+            return
+
+        # Viewpoint-novelty gate: skip the expensive detect → lift → fuse when
+        # the robot has not moved far enough from every viewpoint already
+        # perceived. A dwelling robot otherwise floods a node with redundant
+        # near-identical partial views, shrinking and biasing its box (TASK 33).
+        if not self._viewpoint_is_novel(lift_pose.position):
+            return
+        self._kept_xy.append((float(lift_pose.position.x), float(lift_pose.position.y)))
+
+        # set_classes() is dedup-cached; only fires a network call when
+        # the list actually changes.
+        self._client.set_classes(classes)
+
+        try:
+            bgr = _image_frame_to_bgr(snapshot.image)
+        except Exception:
+            log.exception("failed to decode image frame; skipping tick")
+            return
+
+        # Per-class threshold overrides (VLM-requested "verify" recall boost):
+        # detect at the LOWEST active floor so low-confidence candidates for a
+        # relaxed class come back, then re-apply the threshold per class — every
+        # class the model has not relaxed keeps the normal floor, so global
+        # precision is unchanged. With no overrides this is exactly the old path.
+        detect_floor = self._score_threshold
+        if self._class_thresholds:
+            detect_floor = min(detect_floor, min(self._class_thresholds.values()))
+        detections = self._client.detect(
+            bgr,
+            classes=None,                # rely on the cached set
+            score_threshold=detect_floor,
+            iou_threshold=self._iou_threshold,
+        )
+        if detect_floor < self._score_threshold:
+            detections = [
+                d for d in detections
+                if d.score >= self._class_thresholds.get(
+                    d.label.strip().lower(), self._score_threshold
+                )
+            ]
+        if self._sam_threshold > 0.0:                # B5 mask-quality gate
+            detections = [d for d in detections
+                          if d.sam_score >= self._sam_threshold]
+        if not detections:
+            return
         # The pose here is already matched to the image's stamp by LatestCache
         # (TASK 27), so it is the pose the camera had when the frame was taken —
         # no per-lift time-skew correction is needed.
