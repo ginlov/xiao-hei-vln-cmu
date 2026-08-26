@@ -41,6 +41,7 @@ every claim made with this tool is conditional on it.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import re
 import sys
@@ -490,6 +491,11 @@ def main() -> int:
                     help="score the organisers' own trajectories (validation)")
     ap.add_argument("--negative", action="store_true",
                     help="score deliberately wrong trajectories (discrimination)")
+    ap.add_argument("--glob", default="*",
+                    help="only score run directories whose name matches this "
+                         "(e.g. 'cv_*' or 'nv_*'). runs/ now holds more than "
+                         "one arm, and scoring them together silently averages "
+                         "an ablation with the system it ablates.")
     ap.add_argument("--tau", type=float, default=TAU)
     ap.add_argument("--json", default=None, help="write full results here")
     ap.add_argument("--verbose", action="store_true")
@@ -576,7 +582,7 @@ def main() -> int:
 
     if args.runs:
         for run in sorted(Path(args.runs).iterdir()):
-            if not run.is_dir():
+            if not run.is_dir() or not fnmatch.fnmatch(run.name, args.glob):
                 continue
             q = run_question(run)
             if q is None or q not in qmap:
