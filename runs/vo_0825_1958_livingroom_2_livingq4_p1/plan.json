@@ -1,0 +1,32 @@
+{
+ "question": "Go to the microwave on the kitchen counter and then go to the crystal ball decoration on the shelf near the TV.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the microwave on the kitchen counter",
+  "GOTO  the crystal ball decoration on the shelf near the TV"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the microwave on the kitchen counter",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    0.5424217831599701,
+    4.320699909584605
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the crystal ball decoration on the shelf near the TV",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.58983157349528,
+    -0.9019492155077762
+   ]
+  }
+ ]
+}

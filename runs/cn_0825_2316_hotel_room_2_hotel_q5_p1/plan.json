@@ -1,0 +1,41 @@
+{
+ "question": "First, go to the picture closest to the door, then take the path between the TV cabinet and the bed, and stop by the curtain closest to the TV.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the picture closest to the door",
+  "PASS  between the TV cabinet + the bed",
+  "GOTO  the curtain closest to the TV"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the picture closest to the door",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.570236623825362,
+    -1.3088339891425071
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the TV cabinet + the bed",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (between 'TV cabinet' and 'bed', 1.83 m apart)",
+   "xy": [
+    -1.2274494277006993,
+    0.11743702243237714
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the curtain closest to the TV",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "boxed in (stack would not move us)",
+   "xy": null
+  }
+ ]
+}

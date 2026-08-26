@@ -1,0 +1,32 @@
+{
+ "question": "Go to the potted plant closest to the pyramid candle holder and stop at the vase between the TV and the door.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant closest to the pyramid candle holder",
+  "GOTO  the vase between the TV and the door"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant closest to the pyramid candle holder",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    1.828109329661194,
+    -4.482822617046072
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the vase between the TV and the door",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.2230683156656643,
+    -0.8859868976704207
+   ]
+  }
+ ]
+}

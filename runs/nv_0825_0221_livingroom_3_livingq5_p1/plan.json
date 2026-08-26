@@ -1,0 +1,41 @@
+{
+ "question": "First, go near the stool, then take the path near the cabinet, and stop at the bowl on the table.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the stool",
+  "PASS  near the cabinet",
+  "GOTO  the bowl on the table"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the stool",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.52808483233505,
+    0.6072784209219549
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  near the cabinet",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (alongside 'cabinet')",
+   "xy": [
+    4.455837706302074,
+    0.04046200620050133
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the bowl on the table",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 4.29 m short of the binding",
+   "xy": null
+  }
+ ]
+}

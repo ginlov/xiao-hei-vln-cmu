@@ -1,0 +1,41 @@
+{
+ "question": "First, go to the potted plant furthest from the hookah, then take the path between the two columns, and stop at the tray on the table.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant furthest from the hookah",
+  "PASS  between the two columns",
+  "GOTO  the tray on the table"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant furthest from the hookah",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling with nothing bound",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the two columns",
+   "kind": "PASS",
+   "ok": false,
+   "why": "gap not drivable by the stack",
+   "xy": [
+    -1.0641183111989914,
+    0.034763511010380777
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the tray on the table",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    1.47368380179869,
+    -0.5750767324167365
+   ]
+  }
+ ]
+}

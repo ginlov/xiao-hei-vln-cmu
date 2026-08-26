@@ -1,0 +1,29 @@
+{
+ "question": "Go near the stool under the picture and stop at the small table farthest from the columns.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the stool under the picture",
+  "GOTO  the small table farthest from the columns"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the stool under the picture",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (2.25 m)",
+   "xy": [
+    -4.307768121089672,
+    -2.028895060923479
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the small table farthest from the columns",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "boxed in (stack would not move us)",
+   "xy": null
+  }
+ ]
+}

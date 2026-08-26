@@ -1,0 +1,29 @@
+{
+ "question": "Go between the bench and the bed and stop at the lamp closest to the fireplace.",
+ "from_model": true,
+ "plan": [
+  "PASS  between the bench + the bed",
+  "GOTO  the lamp closest to the fireplace"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "PASS  between the bench + the bed",
+   "kind": "PASS",
+   "ok": false,
+   "why": "gap not drivable by the stack",
+   "xy": [
+    -0.5000899093500292,
+    1.6659323269068593
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the lamp closest to the fireplace",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "stack clamped short of a far target",
+   "xy": null
+  }
+ ]
+}

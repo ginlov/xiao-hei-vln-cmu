@@ -1,0 +1,41 @@
+{
+ "question": "First, go to the trash can near the cabinet, then go to the folder on the cabinet closest to the whiteboard, and finally, to the door near the exit sign.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the trash can near the cabinet",
+  "GOTO  the folder on the cabinet closest to the whiteboard",
+  "GOTO  the door near the exit sign"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the trash can near the cabinet",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    5.808899037817648,
+    -2.4185638540209795
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the folder on the cabinet closest to the whiteboard",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling with nothing bound",
+   "xy": null
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the door near the exit sign",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    6.0198328195146065,
+    -1.7880696942449708
+   ]
+  }
+ ]
+}

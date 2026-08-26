@@ -1,0 +1,44 @@
+{
+ "question": "First, go near the potted plant on the shelf, then take the path between the two tables, and stop at the bench closest to the map wall decal.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant on the shelf",
+  "PASS  between the two tables",
+  "GOTO  the bench closest to the map wall decal"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant on the shelf",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -0.39185166913892927,
+    1.3070413557293992
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the two tables",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (between 'white desk run with monitors (right/front-right wall)' and 'white conference table under the projector screen (back-left)', 6.65 m apart)",
+   "xy": [
+    -0.9900124177598117,
+    -2.622303406397502
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the bench closest to the map wall decal",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.272964146499499,
+    -4.294932653977908
+   ]
+  }
+ ]
+}

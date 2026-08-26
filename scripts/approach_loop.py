@@ -119,6 +119,36 @@ JUMP_M = 1.0
 FALSIFY_MOVED_M = 0.75
 FALSIFY_RESIDUAL_M = 0.93
 USE_FALSIFY = os.environ.get("XIAO_HEI_FALSIFY", "0") in ("1", "true", "yes")
+# Naive-arm ablation for the paper's Sec. V-F. "lidar" is the shipped system;
+# "model" replaces the range channel with the model's own `distance_m` and
+# changes nothing else. See vlm_approach.next_waypoint on why the lift's gates
+# necessarily go with the lift.
+RANGE_FROM = os.environ.get("XIAO_HEI_RANGE_FROM", "lidar")
+# The second ablation, and the one that turns the pair into a 2x2. The shipped
+# system reimplements `waypointConverter.cpp` 196-245 and publishes a legal
+# point scored by where the vehicle would SETTLE. Skipping that is what a team
+# writes before it reads the converter's source, which is why it is an honest
+# baseline rather than a broken version of ours:
+#
+#   "free"  publish the aim, clamped back along the ray to where the terrain
+#           map still says there is floor. Three lines, no model of the
+#           platform. This is the steel-manned baseline.
+#   "raw"   publish the aim verbatim. Reported only to say what the free-space
+#           check is worth: publishing raw is how `livingroom_2` q5 drove
+#           through the middle of a forbidden gap.
+#   "off"   model the converter (shipped).
+#
+# What CANNOT be skipped is the converter itself -- it runs on the robot and
+# re-snaps whatever we publish. This ablates our PREDICTION of it, never its
+# behaviour, and the paper has to say so.
+SKIP_CONVERTER = os.environ.get("XIAO_HEI_SKIP_CONVERTER", "off")
+# Below this, `reach_along` is reporting "I cannot see any floor that way",
+# which is a statement about the map's coverage and not about the aim.
+SKIP_FREE_MIN_M = 0.3
+
+
+class _SkipConverter(Exception):
+    """Internal: leave the converter block once the baseline arm has published."""
 # Inside this range of the target, "the converter cannot do better" means the
 # platform's floor; outside it, it means the terrain map has not seen enough.
 # Calibrated on three scenes, where the floor sat at 1.1-1.5 m to the object
@@ -1038,6 +1068,8 @@ class Ctx:
     model: str = "claude-opus-5"
     prompt_version: str = DEFAULT_PROMPT_VER
     standoff: float = STANDOFF_M
+    range_from: str = RANGE_FROM
+    skip_converter: str = SKIP_CONVERTER
     dry_run: bool = False
     # `{"xy": [x, y] | None, "text": str}` per place already searched. Both
     # halves are kept because the style is a run-time choice: `prose` renders
@@ -1159,6 +1191,8 @@ class Ctx:
                      "model": self.model, "prompt_version": self.prompt_version,
                      "visited_style": self.visited_style,
                      "drop_here": self.drop_here, "standoff": self.standoff,
+                     "range_from": self.range_from,
+                     "skip_converter": self.skip_converter,
                      "dry_run": self.dry_run,
                      "max_tokens": os.environ.get("XIAO_HEI_CLAUDE_MAX_TOKENS"),
                      "falsify": USE_FALSIFY, "verify": USE_VERIFY,
@@ -1729,8 +1763,16 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
               f"bearing {az:+.0f}°/{el:+.0f}° "
               f"({'BLIND' if blind else 'covered'}, floor {floor:+.0f}°)")
 
+        naive_m = None
+        if ctx.range_from == "model":
+            try:
+                naive_m = float(reply.get("distance_m"))
+            except (TypeError, ValueError):
+                naive_m = None
+            if naive_m is not None and naive_m <= 0:
+                naive_m = None
         wp = next_waypoint(box, i, scan, pose, phrase=phrase,
-                           standoff=ctx.standoff)
+                           standoff=ctx.standoff, model_range=naive_m)
         rec["waypoint"] = {"xy": wp.xy.tolist(), "committed": wp.committed,
                            "range_m": wp.range_m, "reason": wp.reason,
                            "blind": blind, "az": az, "el": el}
@@ -1894,6 +1936,34 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                       f"of the {d:.2f} m, not all of it")
         try:
             cm = ConverterModel(terrain, keepout=keepout, gates=gates)
+            if ctx.skip_converter != "off":
+                # Baseline arm: no settle modelling. `reach_along` is a
+                # free-space query, not a model of the converter's
+                # re-minimisation -- the distinction the ablation rests on.
+                goal = np.asarray(steer, float)
+                if ctx.skip_converter == "free":
+                    u = goal - o[:2]
+                    d = float(np.linalg.norm(u))
+                    if d > 1e-6:
+                        u = u / d
+                        free = float(cm.reach_along(o[:2], u))
+                        # An UNINFORMATIVE check is not a stop signal. On the
+                        # first frame after a spawn the terrain map holds a
+                        # handful of points -- 3, on arabic_room -- and
+                        # `reach_along` then returns 0 for every direction.
+                        # Clamping to that publishes the vehicle's own
+                        # position, which is a refusal to move rather than a
+                        # cautious waypoint: it killed 22% of steps and 15 of
+                        # 26 runs in the first arm-C sweep. A naive team's
+                        # free-space check finds no free space and publishes
+                        # the aim anyway, so that is what this does.
+                        if SKIP_FREE_MIN_M <= free < d:
+                            goal = o[:2] + u * free
+                rec["converter"] = {"aim": steer.tolist(), "goal": goal.tolist(),
+                                    "skipped": ctx.skip_converter}
+                print(f"      publish ({goal[0]:+.2f}, {goal[1]:+.2f}) "
+                      f"[converter not modelled: {ctx.skip_converter}]")
+                raise _SkipConverter
             # Aim at the target itself, not at a standoff from it: the standoff
             # is what the converter's inflation is *for*, and asking for a point
             # inside it gets the waypoint discarded rather than clamped. Once
@@ -1949,6 +2019,8 @@ def run_goto(ctx: Ctx, phrase: str, *, max_steps: int = 6, k: int = 1,
                     print(f"      no legal waypoint toward the aim clears the "
                           f"keep-out; stepping to ({goal[0]:+.2f}, "
                           f"{goal[1]:+.2f}) instead")
+        except _SkipConverter:
+            pass
         except ValueError as e:
             # A terrain frame we cannot read is a reason to fly blind, not to
             # abort a run that would otherwise work.
@@ -2147,6 +2219,16 @@ def main() -> int:
     ap.add_argument("--prompt-version", default=DEFAULT_PROMPT_VER,
                     help="v3-occlusion-distance to reproduce TASK 26/28")
     ap.add_argument("--standoff", type=float, default=STANDOFF_M)
+    ap.add_argument("--skip-converter", choices=["off", "free", "raw"],
+                    default=SKIP_CONVERTER,
+                    help="do not model what waypointConverter will do with the "
+                         "waypoint. 'free' clamps to floor the terrain map can "
+                         "see (the steel-manned baseline); 'raw' publishes the "
+                         "aim verbatim.")
+    ap.add_argument("--range-from", choices=["lidar", "model"], default=RANGE_FROM,
+                    help="where the waypoint's metres come from. 'model' is the "
+                         "naive-arm ablation: the model's own distance_m instead "
+                         "of the lidar lift, everything else held identical.")
     ap.add_argument("--visited", choices=VISITED_STYLES, default=VISITED_STYLE,
                     help="how 'places already searched' is written: prose (the "
                          "original, and the rollback), bearing, xy, or off. "
@@ -2176,6 +2258,8 @@ def main() -> int:
     print(f"\ntarget: {args.phrase!r}   model={model}   out={out}\n")
     ctx = Ctx(robot=robot, out=out, log=log, backend=args.backend, model=model,
               prompt_version=args.prompt_version, standoff=args.standoff,
+              range_from=args.range_from,
+              skip_converter=args.skip_converter,
               visited_style=args.visited, drop_here=args.drop_here,
               dry_run=args.dry_run)
     print(f"visited style: {ctx.visited_style}"

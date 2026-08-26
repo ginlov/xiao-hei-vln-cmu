@@ -1,0 +1,44 @@
+{
+ "question": "First, go to the potted plant furthest from the hookah, then take the path between the two columns, and stop at the tray on the table.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant furthest from the hookah",
+  "PASS  between the two columns",
+  "GOTO  the tray on the table"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant furthest from the hookah",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -3.762471453518141,
+    2.090873117667916
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the two columns",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (between 'near stone column (left edge of left view)' and 'second stone column with carved capital, further into the hall', 2.11 m apart)",
+   "xy": [
+    -1.076937640255147,
+    0.014611229300498296
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the tray on the table",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    1.500561345235377,
+    -0.5141871192715404
+   ]
+  }
+ ]
+}

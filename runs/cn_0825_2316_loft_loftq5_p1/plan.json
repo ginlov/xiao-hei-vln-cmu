@@ -1,0 +1,38 @@
+{
+ "question": "Go near the fireplace, pass by the stairs, then stop at the sphere decoration on the cabinet.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the fireplace",
+  "PASS  near the stairs",
+  "GOTO  the sphere decoration on the cabinet"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the fireplace",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -1.6478746698945794,
+    0.9395550683383067
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  near the stairs",
+   "kind": "PASS",
+   "ok": false,
+   "why": "passage not reached",
+   "xy": null
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the sphere decoration on the cabinet",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 3.85 m short of the binding",
+   "xy": null
+  }
+ ]
+}

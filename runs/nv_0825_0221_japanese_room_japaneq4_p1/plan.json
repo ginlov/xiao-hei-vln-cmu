@@ -1,0 +1,32 @@
+{
+ "question": "Go near the small table with a vase on it and then to the flowers near the jar.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the small table with a vase on it",
+  "GOTO  the flowers near the jar"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the small table with a vase on it",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (2.43 m)",
+   "xy": [
+    2.5775565401088323,
+    -0.9688816151164654
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the flowers near the jar",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (1.81 m)",
+   "xy": [
+    2.2293910186365493,
+    4.260291451929108
+   ]
+  }
+ ]
+}

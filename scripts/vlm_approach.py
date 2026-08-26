@@ -313,8 +313,23 @@ def aim_box(reply: dict, size: int, scan_map: np.ndarray,
 
 def next_waypoint(box_px, face_idx: int, scan_map: np.ndarray, pose: dict, *,
                   phrase: str | None = None, standoff: float = STANDOFF_M,
-                  max_step: float = MAX_STEP_M) -> Waypoint:
-    """Destination if the lift is believable, otherwise a bounded step toward it."""
+                  max_step: float = MAX_STEP_M,
+                  model_range: float | None = None) -> Waypoint:
+    """Destination if the lift is believable, otherwise a bounded step toward it.
+
+    `model_range` is the naive-arm ablation and is normally None. When set, the
+    range comes from the model's own `distance_m` instead of the lidar, and the
+    bearing, the standoff, the converter prediction and everything downstream
+    are held identical -- the only thing that differs between the two arms is
+    where the metres came from.
+
+    The lift's refusals go with the lift, necessarily: the elevation-floor test
+    and the implied-size gate are both properties of a scan measurement and
+    have nothing to judge when the number is a model's guess. So the naive arm
+    never abstains. That is part of the effect being measured rather than a
+    confound to control away -- a system that takes metres from a model has no
+    second sensor to disagree with it.
+    """
     origin = np.asarray(pose["position"], float)
     d_cam = ray_from_box(box_px, face_idx)
     d_map = cam_dir_to_map(d_cam, pose)
@@ -326,6 +341,13 @@ def next_waypoint(box_px, face_idx: int, scan_map: np.ndarray, pose: dict, *,
         # closes on it, and the robot is already under it.
         return Waypoint(origin[:2].copy(), True, None, "target is overhead")
     ray_xy = ray_xy / n
+
+    if model_range is not None:
+        # Naive arm: commit on the model's metres. No gate can fire here.
+        reach = max(float(model_range) - standoff, MIN_ADVANCE_M)
+        return Waypoint(origin[:2] + ray_xy * reach, True, float(model_range),
+                        f"model range {float(model_range):.2f} m taken as given "
+                        f"(naive arm; no lift, no gate)")
 
     w_deg, h_deg = box_angular_size(box_px, face_idx)
     # A cone inside the box's inner quarter: wide enough to catch returns,

@@ -1,0 +1,33 @@
+{
+ "question": "First, go near the tea table with the elephant figurine on it, then stop at the table with the horse figurine on it, avoiding the path between the chair and the folding screen.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the tea table with the elephant figurine on it",
+  "AVOID  between the chair + the folding screen",
+  "GOTO  the table with the horse figurine on it"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the tea table with the elephant figurine on it",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -0.03231246688487965,
+    -2.1690703236424564
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the table with the horse figurine on it",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.3821029429960454,
+    -0.6970173027334052
+   ]
+  }
+ ]
+}

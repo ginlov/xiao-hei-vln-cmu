@@ -112,3 +112,6 @@ Kept for their recorded rationale; they describe code that no longer exists.
   retired in TASK 17
 - [Task 3 Phase 3: Qwen numerical prompt design](../task3_phase3_prompt.md) —
   retired in TASK 17
+- [TASK 59: Which half of the stack the score actually depends on](TASK%2059%20-%20Which%20half%20of%20the%20stack%20the%20score%20actually%20depends%20on.md) —
+  five arms over 26 instruction-following questions; only the platform model is
+  resolved on the score, and a control prices a week of commits at zero

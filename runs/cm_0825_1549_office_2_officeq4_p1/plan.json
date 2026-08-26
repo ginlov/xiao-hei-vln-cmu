@@ -1,0 +1,26 @@
+{
+ "question": "Go near the potted plant on the cabinet and stop at the window closest to the clock.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant on the cabinet",
+  "GOTO  the window closest to the clock"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant on the cabinet",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "stack clamped short of a far target",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the window closest to the clock",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "stack clamped short of a far target",
+   "xy": null
+  }
+ ]
+}

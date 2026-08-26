@@ -1,0 +1,44 @@
+{
+ "question": "Take the path between the sofa and the coffee table and go to the kettle on the dining table, then go to the potted plant between the curtain and the TV.",
+ "from_model": true,
+ "plan": [
+  "PASS  between the sofa + the coffee table",
+  "GOTO  the kettle on the dining table",
+  "GOTO  the potted plant between the curtain and the TV"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "PASS  between the sofa + the coffee table",
+   "kind": "PASS",
+   "ok": false,
+   "why": "gap not drivable by the stack",
+   "xy": [
+    2.8984473382509672,
+    1.9805674518071688
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the kettle on the dining table",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    1.1267479516288696,
+    1.3946366305690459
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the potted plant between the curtain and the TV",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -2.5600346687046738,
+    -0.2576631766251038
+   ]
+  }
+ ]
+}
