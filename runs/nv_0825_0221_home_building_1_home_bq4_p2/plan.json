@@ -1,0 +1,32 @@
+{
+ "question": "Go to the coffee table with the kettle on it and stop at the dining table near the big picture.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the coffee table with the kettle on it",
+  "GOTO  the dining table near the big picture"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the coffee table with the kettle on it",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    6.20116972485665,
+    0.1937523647498114
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the dining table near the big picture",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -0.6314848997863859,
+    -4.641315291727746
+   ]
+  }
+ ]
+}

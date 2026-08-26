@@ -1,0 +1,41 @@
+{
+ "question": "First, go to the vase closest to the easel, then, take the path between the couch and the table and stop at the window closest to the couch.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the vase closest to the easel",
+  "PASS  between the couch + the table",
+  "GOTO  the window closest to the couch"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the vase closest to the easel",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    1.3901037161050098,
+    2.6361492905701795
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the couch + the table",
+   "kind": "PASS",
+   "ok": false,
+   "why": "passage not reached",
+   "xy": null
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the window closest to the couch",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    4.122316890905457,
+    -5.590014723151045
+   ]
+  }
+ ]
+}

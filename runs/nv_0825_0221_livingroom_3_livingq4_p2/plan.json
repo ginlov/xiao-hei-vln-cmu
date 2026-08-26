@@ -1,0 +1,29 @@
+{
+ "question": "Take the path near the TV and go to the pillow farthest from the lamp.",
+ "from_model": true,
+ "plan": [
+  "PASS  near the TV",
+  "GOTO  the pillow farthest from the lamp"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "PASS  near the TV",
+   "kind": "PASS",
+   "ok": false,
+   "why": "passage not reached",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the pillow farthest from the lamp",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    5.610380010445539,
+    -1.0450845877997361
+   ]
+  }
+ ]
+}

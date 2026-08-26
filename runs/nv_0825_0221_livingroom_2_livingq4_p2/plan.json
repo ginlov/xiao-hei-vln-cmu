@@ -1,0 +1,29 @@
+{
+ "question": "Go to the microwave on the kitchen counter and then go to the crystal ball decoration on the shelf near the TV.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the microwave on the kitchen counter",
+  "GOTO  the crystal ball decoration on the shelf near the TV"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the microwave on the kitchen counter",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 3.21 m short of the binding",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the crystal ball decoration on the shelf near the TV",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (1.93 m)",
+   "xy": [
+    2.879361276300497,
+    -1.6289089658103615
+   ]
+  }
+ ]
+}

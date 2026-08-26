@@ -1,0 +1,38 @@
+{
+ "question": "First, go near the lamp closest to the black chair, then take the path between the sofa and the round tables, and stop at the cabinet with a picture above it.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the lamp closest to the black chair",
+  "PASS  between the sofa + the round tables",
+  "GOTO  the cabinet with a picture above it"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the lamp closest to the black chair",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 4.21 m short of the binding",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the sofa + the round tables",
+   "kind": "PASS",
+   "ok": false,
+   "why": "gap not drivable by the stack",
+   "xy": [
+    -0.7233874447580078,
+    -1.756741259852026
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the cabinet with a picture above it",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 3.53 m short of the binding",
+   "xy": null
+  }
+ ]
+}

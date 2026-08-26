@@ -1,0 +1,29 @@
+{
+ "question": "Go to the vases on the cabinet below the TV and stop at the guitar near the couch.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the vases on the cabinet below the TV",
+  "GOTO  the guitar near the couch"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the vases on the cabinet below the TV",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (1.84 m)",
+   "xy": [
+    3.816893806935764,
+    2.768808581544598
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the guitar near the couch",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "drive timed out",
+   "xy": null
+  }
+ ]
+}

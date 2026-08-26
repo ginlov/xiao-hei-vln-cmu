@@ -1,0 +1,29 @@
+{
+ "question": "Go near the potted plant on the table and stop at the painting near the TV.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant on the table",
+  "GOTO  the painting near the TV"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant on the table",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "stack clamped short of a far target",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the painting near the TV",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -2.6180698104068068,
+    -5.015515906310484
+   ]
+  }
+ ]
+}

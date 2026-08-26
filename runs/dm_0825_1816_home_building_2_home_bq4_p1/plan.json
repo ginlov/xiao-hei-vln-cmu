@@ -1,0 +1,32 @@
+{
+ "question": "Go near the magazine on the ottoman, then go to the potted plant on the dressing table.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the magazine on the ottoman",
+  "GOTO  the potted plant on the dressing table"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the magazine on the ottoman",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.0999825633705154,
+    3.957216661661311
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the potted plant on the dressing table",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -2.941070425083907,
+    -0.6159308272852766
+   ]
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "question": "Go to the cup near the TV remote and avoid the path near the cabinet.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the cup near the TV remote",
+  "AVOID  near the cabinet"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the cup near the TV remote",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "step made no progress",
+   "xy": null
+  }
+ ]
+}

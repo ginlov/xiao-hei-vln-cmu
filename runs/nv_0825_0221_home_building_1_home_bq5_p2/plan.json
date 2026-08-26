@@ -1,0 +1,38 @@
+{
+ "question": "First, go to the nightstand with a clock on it, then take the path between the dining table and the picture, and stop at the trash can closest to the refridgerator.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the nightstand with a clock on it",
+  "PASS  between the dining table + the picture",
+  "GOTO  the trash can closest to the refridgerator"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the nightstand with a clock on it",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "drive timed out",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "PASS  between the dining table + the picture",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (alongside 'dining table (with pale upholstered chairs, under pendant light)')",
+   "xy": [
+    4.487076971266003,
+    -4.935905403561061
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the trash can closest to the refridgerator",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "out of time",
+   "xy": null
+  }
+ ]
+}

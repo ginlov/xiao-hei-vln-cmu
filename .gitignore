@@ -280,7 +280,16 @@ debug_*/
 samples*.jsonl
 *report*.html
 
-runs/
+# Run directories hold images, scans and terrain maps and stay out of git.
+# Written as runs/* rather than runs/ so the two small text files that make a
+# run re-scorable can be negated below -- git cannot re-include a file whose
+# parent directory is itself excluded.
+runs/*
+!runs/README.md
+!runs/*/
+runs/*/*
+!runs/*/steps.jsonl
+!runs/*/plan.json
 # Model weights — auto-downloaded by ultralytics on first run (too big for GitHub)
 *.pt
 weights/

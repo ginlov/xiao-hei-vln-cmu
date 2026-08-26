@@ -1,0 +1,26 @@
+{
+ "question": "Go near the stool under the picture and stop at the small table farthest from the columns.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the stool under the picture",
+  "GOTO  the small table farthest from the columns"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the stool under the picture",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "step made no progress",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the small table farthest from the columns",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "stack clamped short of a far target",
+   "xy": null
+  }
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "question": "Go to the potted plant furthest from the projector screen then stop at the water cooler near the window.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the potted plant furthest from the projector screen",
+  "GOTO  the water cooler near the window"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the potted plant furthest from the projector screen",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived, circled back (1.87 m)",
+   "xy": [
+    5.881019868029688,
+    1.6528521725952585
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the water cooler near the window",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -3.0330388806217514,
+    -5.039092730365739
+   ]
+  }
+ ]
+}

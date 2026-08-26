@@ -1,0 +1,33 @@
+{
+ "question": "First, go to the chair near the window, then stop at the soccer ball near the couch, avoiding the path between the TV and the tea table.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the chair near the window",
+  "AVOID  between the TV + the tea table",
+  "GOTO  the soccer ball near the couch"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the chair near the window",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    -1.6885912283019575,
+    2.205222115374802
+   ]
+  },
+  {
+   "k": 2,
+   "clause": "GOTO  the soccer ball near the couch",
+   "kind": "GOTO",
+   "ok": true,
+   "why": "arrived",
+   "xy": [
+    2.8787774642281367,
+    -6.793620282322548
+   ]
+  }
+ ]
+}

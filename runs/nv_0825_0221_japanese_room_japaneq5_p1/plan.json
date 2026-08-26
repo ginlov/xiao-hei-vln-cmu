@@ -1,0 +1,38 @@
+{
+ "question": "Go to the lantern closest to the fan decoration, then take the path near the wardrobe doors to the flowers on the display ledge.",
+ "from_model": true,
+ "plan": [
+  "GOTO  the lantern closest to the fan decoration",
+  "PASS  near the wardrobe doors",
+  "GOTO  the flowers on the display ledge"
+ ],
+ "results": [
+  {
+   "k": 1,
+   "clause": "GOTO  the lantern closest to the fan decoration",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 0.24 m short of the binding",
+   "xy": null
+  },
+  {
+   "k": 2,
+   "clause": "PASS  near the wardrobe doors",
+   "kind": "PASS",
+   "ok": true,
+   "why": "passed (alongside 'wardrobe doors (gold crane sliding panels)')",
+   "xy": [
+    0.311898385749219,
+    4.481702977038445
+   ]
+  },
+  {
+   "k": 3,
+   "clause": "GOTO  the flowers on the display ledge",
+   "kind": "GOTO",
+   "ok": false,
+   "why": "circling 3.33 m short of the binding",
+   "xy": null
+  }
+ ]
+}
